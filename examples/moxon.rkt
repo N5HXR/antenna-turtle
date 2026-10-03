@@ -1,0 +1,30 @@
+#lang antenna-turtle
+
+(define wavelength (* 10 meter))
+(define long-side (* 0.36 wavelength))
+(define folded-end (* 0.055 wavelength))
+(define spacing (* 0.14 wavelength))
+
+(model-title "Illustrative Moxon rectangle geometry")
+(maximum-segment-length (/ wavelength 120))
+(model-frequency 29.0)
+(wire-diameter (* 2 millimeter))
+
+(define (bent-element length bend inward-turn driven?)
+  ;; Isolate the element's positioning and heading from the surrounding model.
+  (with-push
+    (move back (/ length 2))
+    (with-pen
+      (turn right inward-turn)
+      (forward bend)
+      (turn left inward-turn)
+      (when driven? (feed))
+      (forward length)
+      (turn left inward-turn)
+      (forward bend))))
+
+;; The driven element is centered at the origin. Move directly along local +Y
+;; to place the reflector, whose folds face the opposite direction.
+(bent-element long-side folded-end 90 #t)
+(move left spacing)
+(bent-element (* 1.02 long-side) folded-end -90 #f)

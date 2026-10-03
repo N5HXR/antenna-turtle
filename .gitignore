@@ -1,0 +1,10 @@
+compiled/
+*.zo
+*.dep
+*.nec
+*.maa
+*.m
+*~
+.DS_Store
+scratch/
+work/

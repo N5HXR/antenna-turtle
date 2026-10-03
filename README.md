@@ -1,0 +1,395 @@
+# Antenna Turtle
+
+Antenna Turtle is a Racket DSL for constructing antenna wire geometry with a
+stateful 3D turtle. It exports NEC/`nec2c`, MMANA-GAL Basic, and approximate
+MATLAB Antenna Toolbox geometry.
+
+This is a proof of concept. It generates geometry and unit-voltage,
+zero-phase feed declarations. Ground and detailed simulation or measurement
+setup remain the responsibility of the target application; MATLAB exports
+include a directly runnable far-field directivity stub.
+
+Documentation:
+
+- [User Manual](docs/USER-MANUAL.md), including Windows 11 installation
+- [API Guide](docs/API.md)
+- [Emacs support](editors/antenna-turtle-emacs.el) for indentation and font lock
+
+## Install
+
+From this directory:
+
+```sh
+raco pkg install --auto --link "$PWD"
+```
+
+Run a model with ordinary Racket to construct and validate its geometry without
+creating output files:
+
+```sh
+racket examples/dipole.rkt
+```
+
+Build the standard NEC2C, MMANA, and loft-MATLAB outputs with:
+
+```sh
+raco antenna-turtle build examples/dipole.rkt
+```
+
+MMANA output supports a save-and-regenerate workflow. The first build creates
+the usual default `.maa` file. After you configure and save that file in
+MMANA-GAL, later builds replace the title, frequency, wires, sources, and loads
+while preserving the saved segmentation and calculation settings. Frequency
+remains controlled by `model-frequency`; loads are cleared during regeneration.
+
+To remove the linked package later:
+
+```sh
+raco pkg remove antenna-turtle
+```
+
+## Minimal model
+
+```racket
+#lang antenna-turtle
+
+(define wavelength (* 20 meter))
+(define total-length (/ wavelength 2))
+
+(model-title "Center-fed dipole")
+(maximum-segment-length (/ wavelength 100))
+(model-frequency 14.2) ; MHz; initializes target analysis frequency
+(wire-diameter (* 2 millimeter))
+
+;; Draw one fed segment centered at the global origin.
+(feed)
+(with-pen
+  (spread forward total-length))
+```
+
+`#lang antenna-turtle` otherwise behaves like `#lang racket`: normal
+definitions, functions, lexical scope, loops, recursion, and module imports
+remain available. Functions operate directly on the current turtle and do not
+implicitly push or pop its state.
+
+The same API can be used from `#lang racket` with:
+
+```racket
+(require antenna-turtle)
+```
+
+Call `(reset-model!)` before starting a new model in the same Racket process.
+
+## Coordinates and units
+
+The initial right-handed frame is:
+
+- local `+X`: forward
+- local `+Y`: left
+- local `+Z`: up
+
+All turns use the turtle's current local axes. Angles are degrees.
+
+Length constants are exact numbers expressed in meters:
+
+```racket
+meter meters
+centimeter centimeters
+millimeter millimeters
+inch inches
+foot feet
+```
+
+Because units are ordinary numbers, standard Racket arithmetic works without a
+parallel expression system:
+
+```racket
+(define wavelength (* 20 meter))
+(define quarter-wave (/ wavelength 4))
+```
+
+Exact arithmetic remains exact through translations, rational scaling, and
+quarter turns. General rotations use Racket's inexact trigonometric results.
+
+## Turtle operations
+
+The language implicitly imports version 1.25 of the Racket implementation of
+Common Lisp `LOOP`; antenna programs do not need a separate `require` form.
+For example:
+
+```racket
+(loop for distance in '(0 1 2 3)
+      do (move forward distance))
+```
+
+```racket
+(pen-up)
+(pen-down)
+(with-pen body ...)
+(with-scale factor body ...)
+(with-push body ...)
+(forward distance)
+(back distance)
+(move direction distance [direction distance] ...)
+(spread forward|back|left|right|up|down distance)
+(move-nearest)
+
+(turn left|right|up|down degrees)
+(turn-x degrees)
+(turn-y degrees)
+(turn-z degrees)
+(turn-axis degrees x y z)
+
+(scale factor)
+(scale-all factor)
+(wire-diameter length)
+
+(push)
+(pop)
+(feed)
+```
+
+`turn-axis` takes an arbitrary nonzero vector expressed in local coordinates.
+Its magnitude is irrelevant; it is normalized internally.
+
+`turn` and `move` use contextual direction keywords:
+
+```racket
+(turn left (/ 360 7))
+(move up (* 2 meter))
+```
+
+The value expression is evaluated normally and exactly once. Direction words
+are recognized syntactically only in that position, so an ordinary lexical
+binding such as `(define left 42)` does not change `(turn left 90)` or
+`(move left 10)`. The mappings are:
+
+```text
+turn left  = turn-z positive       move forward = local +X
+turn right = turn-z negative       move back    = local -X
+turn up    = turn-y negative       move left    = local +Y
+turn down  = turn-y positive       move right   = local -Y
+                                      move up    = local +Z
+                                    move down    = local -Z
+```
+
+All movement forms obey pen state. `forward` and `back` are convenient aliases
+for longitudinal movement; `move` provides the complete directional form.
+One `move` may combine several local-axis components:
+
+```racket
+(move forward 10 up 1)
+```
+
+The combined displacement creates one diagonal wire edge when the pen is down.
+It does not perform sequential axis-aligned movements. Direction pairs may be
+repeated or opposed; their components are summed, and each distance expression
+is evaluated exactly once in source order.
+
+`spread` draws or moves one full segment centered on the current position. It
+first repositions silently to the endpoint opposite its named direction, then
+traverses the full distance in that direction. The turtle finishes at that
+endpoint, and a pending `feed` applies to the resulting centered segment.
+
+`with-pen` requires the pen to be up, forces it down for a lexical body, and
+restores it to pen-up on exit:
+
+```racket
+(define (element short long feed?)
+  (with-pen
+    (move forward short)
+    (when feed? (feed))
+    (move left long)
+    (move back short)))
+```
+
+The restoration also occurs if the body raises an exception, and the body's
+result values are returned normally. Entering `with-pen` while the pen is
+already down is an error, which also prevents accidental nested drawing scopes.
+
+`scale` multiplies movement scale but leaves conductor diameter unchanged.
+`scale-all` multiplies movement scale and diameter scale. Both affect explicit
+unit expressions. Neither affects `maximum-segment-length`, which is a global
+world-space export setting.
+
+`with-scale` multiplies movement scale for a lexical body and restores the
+previous movement scale when the body exits, including exceptional exits. It
+does not rewind the turtle: position, orientation, pen state, parameter
+changes, and generated geometry from the body remain in place.
+
+```racket
+(with-scale 2
+  (forward 3)
+  (turn left 90)
+  (forward 1))
+;; The turtle remains at the resulting endpoint, but subsequent movement uses
+;; the scale that was active before with-scale.
+```
+
+`push` saves the complete turtle state: position, orientation, pen, both scale
+factors, diameter, and previous movement information. `pop` restores it without
+removing geometry created since the push. An unmatched push at program exit is
+legal; popping an empty stack is an error.
+
+`with-push` performs an exception-safe `push`/`pop` around its lexical body.
+The complete turtle state is restored afterward, while all geometry generated
+by the body remains in the model.
+
+Together, the scoped forms make centered elements concise:
+
+```racket
+(define (element distance length)
+  (with-push
+    (move forward distance)
+    (with-pen
+      (spread left length))))
+```
+
+## Vertices and movement
+
+Pen-down movement creates a wire edge. Pen-up movement changes only turtle
+state. Zero movement is legal and creates no edge.
+
+Endpoints merge when their three coordinates compare equal with Racket's
+numeric `=`. Crossing wire interiors do not connect automatically.
+
+`move-nearest` searches all existing vertices, excluding:
+
+- vertices coincident with the current position; and
+- the source of the immediately preceding movement.
+
+It moves to the nearest remaining vertex, cloning that vertex's coordinates
+exactly. Ties resolve in vertex creation order. Pen state determines whether the
+movement draws.
+
+## Feed behavior
+
+`feed` marks the next nonzero pen-down edge. Turns and other non-movement
+operations may occur before that movement. Pen-up movement, zero movement, a
+second pending feed, or program termination with an unused feed is an error.
+
+Feed lowering is target-specific:
+
+- NEC and MMANA use the center solver segment of the marked edge.
+- MATLAB splits the rectangular strip at its midpoint and selects the shared
+  transverse mesh edge as the feed line.
+
+For NEC and MMANA, the subdivision count starts at:
+
+```text
+ceiling(edge length / maximum segment length)
+```
+
+If a fed edge would receive an even count, it is increased by one. This both
+preserves the maximum-length bound and provides a unique center segment.
+
+## Exporters
+
+The normal build interface derives output names from the model source:
+
+```sh
+# dipole.nec, dipole.maa, and loft-based dipole.m
+raco antenna-turtle build dipole.rkt
+
+# Select only requested formats.
+raco antenna-turtle build dipole.rkt --mmana
+raco antenna-turtle build dipole.rkt --nec2c --matlab
+
+# Include both MATLAB representations and choose an output directory.
+raco antenna-turtle build dipole.rkt --all --output-dir build
+```
+
+`--matlab` and `--matlab-loft` select the preferred loft representation;
+`--matlab-ribbon` selects the approximate ribbon representation. If both are
+requested, the latter is named `<model>-ribbon.m`.
+
+The `export-nec2c`, `export-mmana`, `export-matlab`, and
+`export-matlab-loft` functions remain public. Programs that generate or mutate
+many models can call them directly instead of invoking the command-line build.
+
+### NEC/nec2c
+
+`export-nec2c` writes `GW`, `GE 0`, unit-voltage `EX`, and `EN` cards. It omits
+frequency, ground, execution, pattern, and measurement cards.
+
+### MMANA-GAL Basic
+
+`export-mmana` writes one row per DSL edge with an explicit subdivision count.
+The model frequency defaults to `1.0` MHz and can be changed with:
+
+```racket
+(model-frequency 14.2)
+```
+
+The former name `mmana-frequency` remains as a compatibility alias, but new
+models should use the target-independent name `model-frequency`.
+
+### MATLAB
+
+`export-matlab` writes an `.m` program containing explicit points, triangles, a
+`shape.Custom3D`, a `customAntenna`, feeds, a `show` call, and a far-field
+directivity calculation. The analysis frequency is initialized from
+`model-frequency`, converted from MHz to Hz, and is easy to edit in the emitted
+script. If a model has no feed, the pattern call is emitted as a comment because
+MATLAB cannot perform driven field analysis yet.
+
+Each cylindrical DSL wire is approximated as a rectangular PEC strip whose
+width equals the wire diameter. Consecutive strips reuse a mitered transverse
+mesh edge at a shared DSL vertex, providing a conduction-current path through
+bends. Pen-up gaps and separately positioned parasitic elements remain distinct
+mesh components.
+
+The MATLAB exporter is intentionally approximate. Coplanar paths, straight
+elements, and simple nonplanar assemblies are its primary rev. 1 scope. Sharp
+nonplanar junctions, branches, and abrupt width changes can have imperfect
+surface joins.
+
+```racket
+(export-matlab "model-ribbon.m")
+(export-matlab-loft "model-loft.m")
+```
+
+`export-matlab-loft` avoids solid Boolean operations. At each bend it shortens
+the adjoining square-prism bodies using a bevel setback based on the turn angle
+and square half-diagonal. It then connects their ordered four-vertex end rings
+with a conformal quad strip. Frames are parallel-transported along each path,
+and the exporter chooses the lowest-distance cyclic corner mapping at every
+joint. Straight continuations share one ring, open endpoints receive flat caps,
+and a fed segment receives a four-edge midpoint ring. The generated program
+checks that every surface edge has exactly two incident triangles. Loft mode
+currently requires equal diameters at a junction, supports degree-two paths and
+loops, and supports zero or one feed. Before analysis, it asks MATLAB to mesh
+the antenna with a maximum edge length equal to the smaller of one-tenth
+wavelength and five times the model's minimum wire diameter. This empirical
+diameter limit helps MATLAB preserve thin square conductors; `MinEdgeLength`
+remains automatic.
+
+## Examples
+
+The `examples` directory includes:
+
+- center-fed dipole
+- quarter-wave vertical geometry
+- illustrative Moxon rectangle
+- three-element Yagi
+- 45-degree end-fed half-wave with counterpoise
+- stacked square, octagonal, and 32-sided loops
+
+Ground and height configuration are deliberately omitted from the DSL and must
+be added in the target application.
+
+## Tests
+
+```sh
+raco test tests/core-test.rkt
+```
+
+The tests cover exact movement, rotations, scaling, stack behavior, vertex
+merging, nearest-vertex closure, feed errors, odd segmentation, and all three
+export formats. They do not run external simulators.
+
+## Deferred ideas
+
+A future revision may support named or recorded geometric coordinates and an
+operation that turns toward a vector derived from a recorded segment. Rev. 1
+contains no such coordinate-recording facility.
