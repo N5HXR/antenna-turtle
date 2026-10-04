@@ -53,13 +53,13 @@ raco pkg remove antenna-turtle
 ```racket
 #lang antenna-turtle
 
-(define wavelength (* 20 meter))
-(define total-length (/ wavelength 2))
+(define wavelength {20 * meter})
+(define total-length {wavelength / 2})
 
 (model-title "Center-fed dipole")
-(maximum-segment-length (/ wavelength 100))
+(maximum-segment-length {wavelength / 100})
 (model-frequency 14.2) ; MHz; initializes target analysis frequency
-(wire-diameter (* 2 millimeter))
+(wire-diameter {2 * millimeter})
 
 ;; Draw one fed segment centered at the global origin.
 (feed)
@@ -108,8 +108,52 @@ parallel expression system:
 (define quarter-wave (/ wavelength 4))
 ```
 
+Common antenna conversions are built in. Frequencies use MHz, matching
+`model-frequency`, and wavelengths use metres:
+
+```racket
+(model-frequency 446)
+(define wavelength (model-wavelength))
+(define wavelength-mm (span wavelength millimeter))
+(define frequency (wavelength->frequency wavelength)) ; 446 MHz
+```
+
+`frequency->wavelength` converts an arbitrary MHz value, and
+`frequency-retuning-scale` calculates the usual inverse-frequency linear scale:
+
+```racket
+(with-scale (frequency-retuning-scale 28.5 29.0)
+  (construct-antenna))
+```
+
 Exact arithmetic remains exact through translations, rational scaling, and
 quarter turns. General rotations use Racket's inexact trigonometric results.
+
+## Curly infix expressions
+
+Within `#lang antenna-turtle`, curly braces contain infix expressions with
+normal operator precedence:
+
+```racket
+(define circumference {diameter * pi})
+(define chord {circumference / segments-per-turn})
+(define angle {360 / segments-per-turn})
+(move forward chord up {pitch / segments-per-turn})
+```
+
+Identifiers retain normal lexical scope, and exact inputs produce exact
+results. Nested braces group subexpressions:
+
+```racket
+{{a + b} * c}
+```
+
+Spaces around operators are required because Racket tokenizes the source
+before the infix parser runs: write `{a + b}`, not `{a+b}`. Parenthesized
+prefix arithmetic remains fully supported and is still preferable for
+functional or generated code. Curly infix is a feature of the
+`#lang antenna-turtle` reader; merely requiring the API from `#lang racket`
+does not change Racket's reader.
 
 ## Turtle operations
 

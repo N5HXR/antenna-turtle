@@ -29,9 +29,21 @@
   "Face for contextual movement and turn directions."
   :group 'scheme)
 
+(defface antenna-turtle-infix-operator-face
+  '((t :inherit font-lock-builtin-face :weight bold))
+  "Face for operators used in Antenna Turtle curly infix expressions."
+  :group 'scheme)
+
+(defface antenna-turtle-infix-delimiter-face
+  '((t :inherit shadow))
+  "Muted face for curly infix delimiters."
+  :group 'scheme)
+
 (defconst antenna-turtle--procedures
   '("model-title" "maximum-segment-length" "model-frequency"
     "mmana-frequency" "wire-diameter"
+    "frequency->wavelength" "wavelength->frequency" "model-wavelength"
+    "span" "frequency-retuning-scale"
     "pen-up" "pen-down" "forward" "back" "move-nearest"
     "turn-x" "turn-y" "turn-z" "turn-axis"
     "scale" "scale-all" "push" "pop" "feed"
@@ -62,6 +74,14 @@
   '("meter" "meters" "centimeter" "centimeters"
     "millimeter" "millimeters" "inch" "inches" "foot" "feet"))
 
+(defconst antenna-turtle--infix-word-operators
+  '("or" "and" "bior" "bxor" "band" "not" "bnot"))
+
+(defconst antenna-turtle--infix-symbol-operator-regexp
+  (concat "\\(?:^\\|[[:space:]{]\\)"
+          "\\(<=>\\|!=\\|>=\\|<=\\|<<\\|>>\\|[+*/%^=<>-]\\)"
+          "\\(?:$\\|[[:space:]}]\\)"))
+
 (defun antenna-turtle--operator-regexp (names)
   "Return a regexp matching one of NAMES in procedure position."
   (concat "(\\s-*\\(" (regexp-opt names) "\\)\\_>"))
@@ -79,7 +99,12 @@
     (,(regexp-opt antenna-turtle--directions 'symbols)
      0 'antenna-turtle-direction-face)
     (,(regexp-opt antenna-turtle--units 'symbols)
-     0 'font-lock-constant-face))
+     0 'font-lock-constant-face)
+    (,(regexp-opt antenna-turtle--infix-word-operators 'symbols)
+     0 'antenna-turtle-infix-operator-face)
+    ("[{}]" 0 'antenna-turtle-infix-delimiter-face)
+    (,antenna-turtle--infix-symbol-operator-regexp
+     1 'antenna-turtle-infix-operator-face))
   "Additional font-lock rules for Antenna Turtle source files.")
 
 (defun antenna-turtle--buffer-p ()

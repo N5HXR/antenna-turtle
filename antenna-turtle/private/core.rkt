@@ -8,6 +8,10 @@
  meter meters centimeter centimeters millimeter millimeters
  inch inches foot feet
 
+ ;; Antenna arithmetic.
+ frequency->wavelength wavelength->frequency model-wavelength
+ span frequency-retuning-scale
+
  ;; Model data, useful to tooling and tests.
  (struct-out point3)
  (struct-out vertex)
@@ -53,6 +57,12 @@
 (define foot (* 12 inch))
 (define feet foot)
 
+;; The SI definition is exact. Public frequency values are in MHz to match
+;; model-frequency, while public wavelength values are in metres to match the
+;; rest of Antenna Turtle's physical-length API.
+(define speed-of-light-metres-per-second 299792458)
+(define hertz-per-megahertz 1000000)
+
 (struct point3 (x y z) #:transparent)
 (struct vertex (id point) #:transparent)
 (struct wire-edge (id start end diameter feed?) #:transparent)
@@ -92,6 +102,41 @@
 ;; Compatibility alias for models written before the frequency became a
 ;; target-independent setting.
 (define mmana-frequency model-frequency)
+
+(define (frequency->wavelength frequency-megahertz)
+  (ensure-positive-real
+   'frequency->wavelength frequency-megahertz "frequency in MHz")
+  (/ speed-of-light-metres-per-second
+     (* frequency-megahertz hertz-per-megahertz)))
+
+(define (wavelength->frequency wavelength-metres)
+  (ensure-positive-real
+   'wavelength->frequency wavelength-metres "wavelength in metres")
+  (/ speed-of-light-metres-per-second
+     (* wavelength-metres hertz-per-megahertz)))
+
+(define (model-wavelength)
+  (frequency->wavelength (model-frequency)))
+
+;; Express a physical length as a count of an arbitrary positive unit. This is
+;; especially useful when a geometry is authored in objective millimetres and
+;; converted to metres later by with-scale.
+(define (span length unit)
+  (ensure-real 'span length "length")
+  (ensure-positive-real 'span unit "unit")
+  (/ length unit))
+
+(define (frequency-retuning-scale observed-frequency-megahertz
+                                    target-frequency-megahertz)
+  (ensure-positive-real
+   'frequency-retuning-scale
+   observed-frequency-megahertz
+   "observed frequency in MHz")
+  (ensure-positive-real
+   'frequency-retuning-scale
+   target-frequency-megahertz
+   "target frequency in MHz")
+  (/ observed-frequency-megahertz target-frequency-megahertz))
 
 (define (reset-model!)
   (current-antenna-model (antenna-model '() '()))

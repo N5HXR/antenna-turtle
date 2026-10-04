@@ -64,8 +64,9 @@ cd C:\Users\YourName\source\antenna-turtle
 raco pkg install --auto --link .
 ```
 
-The first installation may download the pinned Common Lisp `LOOP` package, so
-an Internet connection is useful. Verify the language and build command:
+The first installation may download the `k-infix` package and the pinned
+Common Lisp `LOOP` package, so an Internet connection is useful. Verify the
+language and build command:
 
 ```powershell
 racket .\examples\dipole.rkt
@@ -86,6 +87,7 @@ For an offline installation where the LOOP dependency is not already cached,
 install it while connected and then rerun setup:
 
 ```powershell
+raco pkg install --auto k-infix
 raco planet install jphelps loop.plt 1 25
 raco setup --pkgs antenna-turtle
 ```
@@ -113,13 +115,13 @@ Create `dipole.rkt`:
 ```racket
 #lang antenna-turtle
 
-(define wavelength (* 20 meter))
-(define total-length (/ wavelength 2))
+(define wavelength {20 * meter})
+(define total-length {wavelength / 2})
 
 (model-title "Center-fed half-wave dipole")
 (model-frequency 14.2)                 ; MHz
-(maximum-segment-length (/ wavelength 100))
-(wire-diameter (* 2 millimeter))
+(maximum-segment-length {wavelength / 100})
+(wire-diameter {2 * millimeter})
 
 ;; One wire centered at the origin and directed along local +X.
 (feed)
@@ -145,6 +147,44 @@ source. To keep generated files separate:
 ```powershell
 raco antenna-turtle build .\dipole.rkt --output-dir .\build\dipole
 ```
+
+### 3.1 Curly infix arithmetic
+
+Antenna Turtle retains Racket's S-expression structure while allowing ordinary
+mathematical notation inside curly braces:
+
+```racket
+(define circumference {diameter * pi})
+(define segment-length {circumference / segments-per-turn})
+(define angle {360 / segments-per-turn})
+
+(with-scale {28.5 / 29.0}
+  (with-pen
+    (move forward segment-length up {pitch / segments-per-turn})
+    (turn left angle)))
+```
+
+Multiplication and division bind more tightly than addition and subtraction.
+Nested braces provide explicit grouping, lexical variables work normally, and
+exact inputs remain exact:
+
+```racket
+{1 + 2 * 3}       ; 7
+{{1 + 2} * 3}     ; 9
+{360 / 7}         ; exact 360/7
+```
+
+Put spaces around operators. Racket reads `{a+b}` as a single identifier, so
+write `{a + b}`. Use `~` when embedding a prefix Racket expression that should
+not be interpreted as infix syntax:
+
+```racket
+{radius * ~(sin angle)}
+```
+
+Curly infix notation is provided by the `#lang antenna-turtle` reader. It is
+not enabled in an ordinary `#lang racket` module merely by requiring the API.
+Parenthesized prefix expressions remain available everywhere.
 
 ## 4. Build Command
 
@@ -294,6 +334,31 @@ Resonant frequency varies approximately inversely with linear dimensions, so
 `observed-frequency / target-frequency` is a useful first correction. Physical
 wire diameter remains unchanged. Use `scale-all` only when diameter should
 scale with geometry too.
+
+The conversion helpers remove the unit arithmetic normally needed around this
+workflow:
+
+```racket
+(model-frequency 446)
+
+;; Wavelengths are physical lengths in metres. Convert one to a unitless count
+;; when authoring a section under (with-scale millimeter ...).
+(define wavelength (model-wavelength))
+(define wavelength-mm (span wavelength millimeter))
+
+;; Convert either direction for calculated designs.
+(define two-metre-frequency (wavelength->frequency {2 * meter}))
+(define seventy-centimetre-wave (frequency->wavelength 446))
+
+(with-scale (frequency-retuning-scale 28.5 29.0)
+  (construct-antenna))
+```
+
+`frequency->wavelength` and `wavelength->frequency` accept positive values in
+MHz and metres respectively. They use the exact SI speed of light, so exact
+inputs remain exact. `span` accepts a physical length and a positive unit and
+returns the unitless number of those units; signed lengths are allowed for
+offset calculations.
 
 ## 6. Repetition and Layout Tables
 
@@ -456,6 +521,7 @@ faces for:
 - Antenna Turtle procedures and exporters;
 - DSL macros such as `move`, `turn`, `spread`, and the `with-*` forms;
 - contextual direction words and unit constants;
+- emphasized infix operators with muted `{` and `}` delimiters;
 - `loop` and its Common Lisp clause words.
 
 Load it from `init.el`, using the actual project location. On Windows:

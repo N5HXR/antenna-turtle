@@ -5,6 +5,7 @@
          "private/export-mmana.rkt"
          "private/export-matlab.rkt"
          "private/export-matlab-loft.rkt"
+         k-infix
          (planet jphelps/loop:1:25)
          (for-syntax racket/base
                      racket/list
@@ -14,6 +15,7 @@
 (provide
  (except-out (all-from-out racket) #%module-begin)
  (rename-out [antenna-module-begin #%module-begin])
+ #%braces
  (all-from-out (planet jphelps/loop:1:25))
  (except-out (all-from-out "private/core.rkt")
              move-local move-vector-local spread-local
@@ -28,6 +30,11 @@
  export-mmana
  export-matlab
  export-matlab-loft)
+
+;; The language reader tags {...} as (#%braces ...). Delegate those tokens to
+;; k-infix while retaining the lexical context of identifiers inside the form.
+(define-syntax-rule (#%braces token ...)
+  ($ token ...))
 
 (define-syntax (antenna-module-begin stx)
   (syntax-case stx ()

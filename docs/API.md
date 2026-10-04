@@ -47,6 +47,77 @@ Translations, rational scaling, and exact quarter turns preserve exact
 numbers. General rotations use Racket's inexact trigonometric functions.
 Floating-point conversion otherwise occurs during export.
 
+### Antenna arithmetic
+
+`(frequency->wavelength frequency-megahertz)` converts a positive frequency in
+MHz to a wavelength in metres. `(wavelength->frequency wavelength-metres)`
+performs the inverse conversion and returns MHz. Both use the exact SI speed of
+light, 299,792,458 metres per second, so exact inputs produce exact results.
+
+`(model-wavelength)` is shorthand for converting the current
+`model-frequency`:
+
+```racket
+(model-frequency 446)
+(define wavelength (model-wavelength))
+```
+
+`(span length unit)` expresses a physical length as a unitless count of the
+chosen positive unit. The length may be signed, which also makes `span` useful
+for offsets:
+
+```racket
+(span (model-wavelength) millimeter) ; objective millimetres
+(span {2 * foot} inch)               ; 24
+```
+
+`(frequency-retuning-scale observed-megahertz target-megahertz)` returns the
+linear scale factor `observed / target`. It is intended for the common first
+retuning step where resonant frequency varies inversely with antenna size:
+
+```racket
+(with-scale (frequency-retuning-scale 28.5 29.0)
+  (construct-antenna))
+```
+
+### Curly infix expressions
+
+The `#lang antenna-turtle` reader assigns infix meaning to curly braces:
+
+```racket
+{1 + 2 * 3}                    ; 7
+{360 / 7}                      ; exact 360/7
+{{a + b} * c}                  ; explicit grouping
+{2 * millimeter}               ; exact 1/500 metre
+```
+
+The operators supplied by the underlying `k-infix` parser are:
+
+```text
+or and bior bxor band
+= != >= <= > < <=>
+<< >> + - * / % ^
+not bnot
+```
+
+`^` denotes exponentiation and `%` denotes modulo. Standard precedence and
+associativity apply. Identifiers refer hygienically to the surrounding lexical
+scope. Prefix Racket expressions can be protected from infix parsing with `~`:
+
+```racket
+{radius * ~(sin angle)}
+```
+
+Operators must be separated by whitespace: `{a + b}` is valid, while `{a+b}`
+is read as one Racket identifier. Curly braces no longer act as interchangeable
+parentheses in this language. Ordinary parentheses and square brackets retain
+their standard Racket meanings.
+
+This reader behavior applies only to modules beginning with
+`#lang antenna-turtle`. A `#lang racket` module that uses
+`(require antenna-turtle)` retains the ordinary Racket reader, where `{...}`
+is equivalent to `(...)`.
+
 ## 3. Model Settings
 
 The settings are Racket parameters: call with no arguments to read and one

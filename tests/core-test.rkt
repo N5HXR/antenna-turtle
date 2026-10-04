@@ -7,6 +7,7 @@
          "../antenna-turtle/build.rkt")
 
 (define-runtime-path dipole-model "../examples/dipole.rkt")
+(define-runtime-path curly-infix-model "curly-infix-model.rkt")
 
 ;; Direction words are contextual keywords, so an ordinary lexical binding
 ;; with the same spelling must not affect turn or move.
@@ -19,6 +20,20 @@
 (define (edge-points edge)
   (values (vertex-point (wire-edge-start edge))
           (vertex-point (wire-edge-end edge))))
+
+(test-case "curly infix expressions retain precedence, exactness, and scope"
+  (check-equal? (dynamic-require curly-infix-model 'exact-result) 360/7)
+  (check-equal? (dynamic-require curly-infix-model 'precedence-result) 7)
+  (check-equal? (dynamic-require curly-infix-model 'lexical-result) 14)
+  (check-equal? (dynamic-require curly-infix-model 'nested-result) 9)
+  (check-equal? (dynamic-require curly-infix-model 'escaped-result) 6)
+  (check-true (dynamic-require curly-infix-model 'comparison-result))
+  (define edge (only-edge))
+  (define-values (_start finish) (edge-points edge))
+  (check-equal? (point3-x finish) 7)
+  (check-equal? (point3-y finish) 0)
+  (check-equal? (point3-z finish) 1)
+  (check-equal? (wire-edge-diameter edge) 1/500))
 
 (test-case "antenna-turtle implicitly provides Common Lisp LOOP"
   (check-equal?
@@ -33,6 +48,21 @@
   (check-equal? (mmana-frequency) 28.5)
   (mmana-frequency 29.0)
   (check-equal? (model-frequency) 29.0))
+
+(test-case "frequency, wavelength, span, and retuning helpers remain exact"
+  (reset-model!)
+  (check-equal? (frequency->wavelength 1) 149896229/500000)
+  (check-equal? (wavelength->frequency (frequency->wavelength 446)) 446)
+  (model-frequency 446)
+  (check-equal? (model-wavelength) (frequency->wavelength 446))
+  (check-equal? (span (model-wavelength) millimeter)
+                (/ 149896229 223000))
+  (check-equal? (span (* -2 centimeter) millimeter) -20)
+  (check-equal? (frequency-retuning-scale 57/2 29) 57/58)
+  (check-exn exn:fail? (lambda () (frequency->wavelength 0)))
+  (check-exn exn:fail? (lambda () (wavelength->frequency -1)))
+  (check-exn exn:fail? (lambda () (span 1 0)))
+  (check-exn exn:fail? (lambda () (frequency-retuning-scale 28.5 0))))
 
 (test-case "exact movement, local turns, and vertex coordinates"
   (reset-model!)
