@@ -1,0 +1,36 @@
+* DONE Add a readable idiom for barrel rolling
+Use ~roll-left~ and ~roll-right~ direction pairs in ~turn~.
+
+* DONE Add ~(here)~
+Return the current global ~point3~ coordinates for recording positions.
+
+* DONE Add ~(goto coords)~
+Move directly to coordinates returned by ~here~, independent of local
+orientation and scale.  Wire and feed state still apply.
+
+* DONE Give ~maximum-segment-length~ a wavelength-derived default
+When no override is supplied, exporters and ~edge-segment-count~ use
+~(model-wavelength) / 20~.
+
+* DONE Rename the scoped push/pop idiom
+Use ~(from-here ...)~.  It reads as an excursion that returns to the current
+turtle state while retaining generated geometry.
+
+* DONE Let ~move~ and ~spread~ carry a feed location
+The ~feed~ pair requires one of ~'start~, ~'center~, or ~'end~ rather than a
+Boolean.
+
+* DONE Support a ~(model ...)~ declaration
+The contextual pairs are ~title~, ~frequency~, ~max-length~, and
+~wire-diameter~.  Every setting has a default.
+
+* DONE Support start, center, and end feed locations
+NEC2C selects the first, middle, or last solver segment.  MMANA emits the
+~b~, ~c~, or ~e~ designation.  MATLAB exporters accept center feeds only.
+
+* DONE Let ~turn~ accept multiple direction/angle pairs
+Rotations are applied sequentially in source order.
+
+* DONE Rename pen operations to wire operations
+Use ~wire-on~, ~wire-off~, and ~with-wire~.  The old pen names remain
+compatibility aliases.

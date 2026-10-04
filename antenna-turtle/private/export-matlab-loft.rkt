@@ -117,6 +117,12 @@
   (when (> (length feeds) 1)
     (error who "loft MATLAB export currently supports at most one feed; received ~a"
            (length feeds)))
+  (for ([edge (in-list feeds)]
+        #:unless (eq? (wire-edge-feed-location edge) 'center))
+    (error who
+           "loft MATLAB export supports only center feeds; wire ~a uses ~a"
+           (wire-edge-id edge)
+           (wire-edge-feed-location edge)))
   feeds)
 
 (define (write-path out who name path)

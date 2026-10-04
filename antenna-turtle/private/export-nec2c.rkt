@@ -40,8 +40,13 @@
       (for ([edge (in-list (model-edges))]
             #:when (wire-edge-feed? edge))
         (define count (edge-segment-count edge max-length))
+        (define source-segment
+          (case (wire-edge-feed-location edge)
+            [(start) 1]
+            [(center) (quotient (add1 count) 2)]
+            [(end) count]))
         (fprintf out "EX 0 ~a ~a 0 1.0 0.0\n"
                  (wire-edge-id edge)
-                 (quotient (add1 count) 2)))
+                 source-segment))
       (fprintf out "EN\n")))
   path)

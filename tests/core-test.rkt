@@ -49,6 +49,42 @@
   (mmana-frequency 29.0)
   (check-equal? (model-frequency) 29.0))
 
+(test-case "model defaults require no declaration and model overrides pairs"
+  (reset-model!)
+  (check-equal? (model-title) "Turtle Antenna")
+  (check-equal? (model-frequency) 141/10)
+  (check-equal? (maximum-segment-length) (/ (model-wavelength) 20))
+  (define twenty-metre-default (maximum-segment-length))
+  (model-frequency 282/10)
+  (check-equal? (maximum-segment-length) (/ (model-wavelength) 20))
+  (check-not-equal? (maximum-segment-length) twenty-metre-default)
+  (model-frequency 141/10)
+  (wire-on)
+  (forward (model-wavelength))
+  (check-equal? (edge-segment-count (only-edge)) 20)
+  (check-equal? (wire-edge-diameter (only-edge)) millimeter)
+  (define default-nec
+    (make-temporary-file "antenna-turtle-defaults~a.nec" #f
+                         (current-directory)))
+  (export-nec2c default-nec)
+  (check-regexp-match #rx"CM Turtle Antenna" (file->string default-nec))
+  (check-regexp-match #rx"GW 1 20 " (file->string default-nec))
+  (delete-file default-nec)
+
+  (reset-model!)
+  (model title "Pair-configured model"
+         max-length (/ (model-wavelength) 100)
+         frequency 7
+         wire-diameter (* 2 millimeter))
+  (check-equal? (model-title) "Pair-configured model")
+  (check-equal? (model-frequency) 7)
+  (check-equal? (maximum-segment-length) (/ (model-wavelength) 100))
+  (wire-on)
+  (forward 1)
+  (check-equal? (wire-edge-diameter (only-edge)) (* 2 millimeter))
+  (check-exn exn:fail:syntax?
+             (lambda () (expand #'(model frequency 7 frequency 14)))))
+
 (test-case "frequency, wavelength, span, and retuning helpers remain exact"
   (reset-model!)
   (check-equal? (frequency->wavelength 1) 149896229/500000)
@@ -66,7 +102,7 @@
 
 (test-case "exact movement, local turns, and vertex coordinates"
   (reset-model!)
-  (pen-down)
+  (wire-on)
   (forward 3/2)
   (turn-z 90)
   (forward 2)
@@ -79,7 +115,7 @@
 
 (test-case "scale and scale-all have distinct diameter behavior"
   (reset-model!)
-  (pen-down)
+  (wire-on)
   (scale 2)
   (forward 1)
   (define first-edge (only-edge))
@@ -94,7 +130,7 @@
 (test-case "with-scale restores movement scale without rewinding the turtle"
   (reset-model!)
   (scale 3)
-  (pen-down)
+  (wire-on)
   (with-scale 2
     (forward 1)
     (turn-z 90))
@@ -113,7 +149,7 @@
     (with-scale 5
       (turn-z 90)
       (error 'test "leave the scaled scope")))
-  (pen-down)
+  (wire-on)
   (forward 1)
   ;; The turn remains, but the temporary factor of 5 does not.
   (check-equal? (vertex-point (wire-edge-end (first (model-edges))))
@@ -121,7 +157,7 @@
 
 (test-case "push and pop restore state but not geometry"
   (reset-model!)
-  (pen-down)
+  (wire-on)
   (push)
   (turn-z 90)
   (wire-diameter (* 4 millimeter))
@@ -136,21 +172,21 @@
 
 (test-case "zero movement is legal except when a feed is pending"
   (reset-model!)
-  (pen-down)
+  (wire-on)
   (forward 0)
   (check-equal? (model-edges) '())
-  (feed)
+  (feed 'center)
   (check-exn exn:fail? (lambda () (forward 0))))
 
 (test-case "numeric equality merges exact and inexact endpoints"
   (reset-model!)
-  (pen-down)
+  (wire-on)
   (forward 1)
-  (pen-up)
+  (wire-off)
   (turn-z 180)
   (forward 1.0)
   (turn-z 180)
-  (pen-down)
+  (wire-on)
   (forward 2)
   ;; The second drawn edge begins at 0.0, which is numerically equal to 0.
   (check-equal? (length (model-vertices)) 3)
@@ -158,7 +194,7 @@
 
 (test-case "move-nearest excludes current and previous movement source"
   (reset-model!)
-  (pen-down)
+  (wire-on)
   (forward 1)                       ; vertices 0 and 1
   (turn-z 90)
   (forward 1)                       ; now at (1,1), previous source (1,0)
@@ -169,8 +205,8 @@
 (test-case "fed edges receive an odd subdivision count"
   (reset-model!)
   (maximum-segment-length 3/10)
-  (pen-down)
-  (feed)
+  (wire-on)
+  (feed 'center)
   (forward 1)
   (define edge (only-edge))
   (check-true (wire-edge-feed? edge))
@@ -179,10 +215,24 @@
 (test-case "arbitrary local axis rotation is supported"
   (reset-model!)
   (turn-axis 180 0 0 10)
-  (pen-down)
+  (wire-on)
   (forward 2)
   (check-equal? (current-position) (point3 -2 0 0))
   (check-exn exn:fail? (lambda () (turn-axis 30 0 0 0))))
+
+(test-case "turn chains rotations sequentially and supports readable roll"
+  (reset-model!)
+  (turn left 90 roll-left 90)
+  (wire-on)
+  (move forward 1 left 1)
+  ;; Yaw maps forward to global +Y. A left roll lowers local +Y to global -Z.
+  (check-equal? (current-position) (point3 0 1 -1))
+
+  (reset-model!)
+  (turn roll-right 90)
+  (wire-on)
+  (move left 1)
+  (check-equal? (current-position) (point3 0 0 1)))
 
 (test-case "direction macros accept shadowed words and computed expressions"
   (reset-model!)
@@ -192,7 +242,7 @@
     (/ 360 7))
   (turn left (computed-angle))
   (check-equal? angle-evaluations 1)
-  (pen-down)
+  (wire-on)
   (forward 1)
   (check-= (point3-x (current-position)) (cos (* 2 pi 1/7)) 1e-12)
   (check-= (point3-y (current-position)) (sin (* 2 pi 1/7)) 1e-12)
@@ -202,14 +252,14 @@
   (define (computed-distance)
     (set! distance-evaluations (add1 distance-evaluations))
     7/3)
-  (pen-down)
+  (wire-on)
   (move left (computed-distance))
   (check-equal? distance-evaluations 1)
   (check-equal? (current-position) (point3 0 7/3 0)))
 
 (test-case "direction convenience forms use the local frame"
   (reset-model!)
-  (pen-down)
+  (wire-on)
   (move forward 2)
   (turn up 90)
   (move forward 3)
@@ -224,14 +274,30 @@
 (test-case "move combines direction pairs into one local segment"
   (reset-model!)
   (scale 2)
-  (pen-down)
-  (feed)
+  (wire-on)
+  (feed 'center)
   (move forward 10 up 1 left 2 back 3 down 1/2)
   (define edge (only-edge))
   (check-equal? (current-position) (point3 14 4 1))
   (check-true (wire-edge-feed? edge))
   (check-equal? (vertex-point (wire-edge-start edge)) (point3 0 0 0))
   (check-equal? (vertex-point (wire-edge-end edge)) (point3 14 4 1)))
+
+(test-case "move and spread accept explicit feed locations"
+  (reset-model!)
+  (wire-on)
+  (move forward 2 feed 'start)
+  (check-equal? (wire-edge-feed-location (only-edge)) 'start)
+
+  (reset-model!)
+  (wire-on)
+  (spread left 10 feed 'end)
+  (check-equal? (wire-edge-feed-location (only-edge)) 'end)
+  (check-exn #rx"start.*center.*end"
+             (lambda ()
+               (reset-model!)
+               (wire-on)
+               (move forward 1 feed #t))))
 
 (test-case "chained move evaluates distances once in source order"
   (reset-model!)
@@ -247,30 +313,30 @@
   ;; Local +X has rotated to global +Y; local +Z remains global +Z.
   (check-equal? (current-position) (point3 0 12 1)))
 
-(test-case "with-pen scopes pen state and rejects an already-down pen"
+(test-case "with-wire scopes pen state and rejects an already-down pen"
   (reset-model!)
   (define result
-    (with-pen
+    (with-wire
       (define distance 2)
       (move forward distance)
       'body-result))
   (check-equal? result 'body-result)
-  (move forward 1) ; initial pen-up state was restored
+  (move forward 1) ; initial wire-off state was restored
   (check-equal? (length (model-edges)) 1)
   (check-equal? (current-position) (point3 3 0 0))
 
   (reset-model!)
-  (pen-down)
-  (check-exn #rx"pen is already down"
-             (lambda () (with-pen (move forward 1))))
+  (wire-on)
+  (check-exn #rx"wire is already on"
+             (lambda () (with-wire (move forward 1))))
   (move forward 1)
   (check-equal? (length (model-edges)) 1))
 
-(test-case "with-pen restores pen state after an exception"
+(test-case "with-wire restores pen state after an exception"
   (reset-model!)
   (check-exn exn:fail?
              (lambda ()
-               (with-pen
+               (with-wire
                  (move forward 1)
                  (error 'model "deliberate test failure"))))
   (move forward 1)
@@ -279,8 +345,8 @@
 
 (test-case "spread draws one centered segment and preserves a pending feed"
   (reset-model!)
-  (pen-down)
-  (feed)
+  (wire-on)
+  (feed 'center)
   (spread left 10)
   (define edge (only-edge))
   (check-equal? (vertex-point (wire-edge-start edge)) (point3 0 -5 0))
@@ -289,7 +355,7 @@
   (check-true (wire-edge-feed? edge))
 
   (reset-model!)
-  (pen-down)
+  (wire-on)
   (spread right 10)
   (define reverse-edge (only-edge))
   (check-equal? (vertex-point (wire-edge-start reverse-edge))
@@ -297,10 +363,10 @@
   (check-equal? (vertex-point (wire-edge-end reverse-edge))
                 (point3 0 -5 0)))
 
-(test-case "with-push restores turtle state and retains geometry"
+(test-case "from-here restores turtle state and retains geometry"
   (reset-model!)
-  (pen-down)
-  (with-push
+  (wire-on)
+  (from-here
     (forward 2)
     (turn-z 90)
     (forward 3))
@@ -308,19 +374,72 @@
   (check-equal? (length (model-edges)) 2)
   ;; Restoration also occurs on exceptional exit.
   (with-handlers ([exn:fail? void])
-    (with-push
+    (from-here
       (forward 4)
       (error 'test "leave pushed scope")))
   (check-equal? (current-position) (point3 0 0 0))
   (check-equal? (length (model-edges)) 3))
+
+(test-case "here and goto use exact global coordinates"
+  (reset-model!)
+  (move forward 2 up 3)
+  (define recorded (here))
+  (check-equal? recorded (point3 2 0 3))
+  (turn left 90)
+  (scale 5)
+  (move forward 1)
+  (wire-on)
+  (goto recorded)
+  (define edge (only-edge))
+  (check-equal? (current-position) recorded)
+  (check-equal? (vertex-point (wire-edge-end edge)) recorded)
+  (check-exn exn:fail:contract? (lambda () (goto '(2 0 3)))))
+
+(test-case "NEC2C and MMANA encode all feed locations and MATLAB rejects ends"
+  (define (export-location location)
+    (reset-model!)
+    (maximum-segment-length 3/10)
+    (wire-on)
+    (move forward 1 feed location)
+    (define temp-dir
+      (make-temporary-file "antenna-turtle-feed-location~a" 'directory
+                           (current-directory)))
+    (define nec-path (build-path temp-dir "model.nec"))
+    (define maa-path (build-path temp-dir "model.maa"))
+    (define matlab-path (build-path temp-dir "model.m"))
+    (define loft-path (build-path temp-dir "model-loft.m"))
+    (export-nec2c nec-path)
+    (export-mmana maa-path)
+    (values temp-dir nec-path maa-path matlab-path loft-path))
+  (for ([location '(start center end)]
+        [segment '(1 3 4)]
+        [suffix '("b" "c" "e")])
+    (define-values (temp-dir nec-path maa-path matlab-path loft-path)
+      (export-location location))
+    (check-regexp-match
+     (regexp (format "EX 0 1 ~a 0" segment))
+     (file->string nec-path))
+    (check-regexp-match
+     (regexp (format "w1~a," suffix))
+     (file->string maa-path))
+    (if (eq? location 'center)
+        (begin
+          (check-not-exn (lambda () (export-matlab matlab-path)))
+          (check-not-exn (lambda () (export-matlab-loft loft-path))))
+        (begin
+          (check-exn #rx"supports only center feeds"
+                     (lambda () (export-matlab matlab-path)))
+          (check-exn #rx"supports only center feeds"
+                     (lambda () (export-matlab-loft loft-path)))))
+    (delete-directory/files temp-dir)))
 
 (test-case "exporters encode target-specific feed geometry"
   (reset-model!)
   (model-title "Export smoke test")
   (maximum-segment-length 3/10)
   (model-frequency 14.2)
-  (pen-down)
-  (feed)
+  (wire-on)
+  (feed 'center)
   (forward 1)
   (define temp-dir
     (make-temporary-file "antenna-turtle-test~a" 'directory
@@ -354,8 +473,8 @@
   (model-title "First generated model")
   (model-frequency 14.2)
   (maximum-segment-length 1/10)
-  (pen-down)
-  (feed)
+  (wire-on)
+  (feed 'center)
   (forward 1)
   (define maa-path
     (make-temporary-file "antenna-turtle-mmana-update~a.maa" #f
@@ -394,10 +513,10 @@
   (model-title "Regenerated model")
   (model-frequency 28.5)
   (maximum-segment-length 1/10)
-  (pen-down)
+  (wire-on)
   (forward 1)
   (turn-z 90)
-  (feed)
+  (feed 'center)
   (forward 1)
   (export-mmana maa-path)
   (define updated (file->bytes maa-path))
@@ -416,7 +535,7 @@
   (reset-model!)
   (model-frequency 7.1)
   (maximum-segment-length 1/10)
-  (pen-down)
+  (wire-on)
   (forward 1)
   (define maa-path
     (make-temporary-file "antenna-turtle-mmana-invalid~a.maa" #f
@@ -431,7 +550,7 @@
 
 (test-case "MATLAB strips share a conforming edge at a bend"
   (reset-model!)
-  (pen-down)
+  (wire-on)
   (forward 1)
   (turn-z 90)
   (forward 1)
@@ -461,9 +580,9 @@
   (model-title "Loft export smoke test")
   (model-frequency 7.1)
   (wire-diameter (* 2 millimeter))
-  (pen-down)
+  (wire-on)
   (forward 1)
-  (feed)
+  (feed 'center)
   (turn-z 90)
   (forward 1)
   (define matlab-path
@@ -501,7 +620,7 @@
 (test-case "experimental loft MATLAB export enforces junction constraints"
   (reset-model!)
   (wire-diameter (* 2 millimeter))
-  (pen-down)
+  (wire-on)
   (forward 1)
   (wire-diameter (* 3 millimeter))
   (turn-z 90)
@@ -514,7 +633,7 @@
   (delete-file diameter-path)
 
   (reset-model!)
-  (pen-down)
+  (wire-on)
   (push)
   (forward 1)
   (pop)

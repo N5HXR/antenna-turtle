@@ -2,17 +2,17 @@
 
 (define wavelength (* 2 meter))
 
-(model-title "Stacked full-wave polygon loops")
-(maximum-segment-length (/ wavelength 120))
-(model-frequency 150.0)
-(wire-diameter (* 3 millimeter))
+(model title "Stacked full-wave polygon loops"
+       frequency 150.0
+       max-length (/ wavelength 120)
+       wire-diameter (* 3 millimeter))
 
 (define (regular-loop sides perimeter fed?)
   (define side-length (/ perimeter sides))
   (define exterior-angle (/ 360 sides))
-  (with-push
-    (with-pen
-      (when fed? (feed))
+  (from-here
+    (with-wire
+      (when fed? (feed 'center))
       ;; Draw all but the closing side. `move-nearest` then clones the exact
       ;; starting coordinate, avoiding a nearly-closed floating-point loop.
       (loop repeat (sub1 sides)

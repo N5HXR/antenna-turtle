@@ -44,6 +44,7 @@
     "mmana-frequency" "wire-diameter"
     "frequency->wavelength" "wavelength->frequency" "model-wavelength"
     "span" "frequency-retuning-scale"
+    "wire-off" "wire-on" "here" "goto"
     "pen-up" "pen-down" "forward" "back" "move-nearest"
     "turn-x" "turn-y" "turn-z" "turn-axis"
     "scale" "scale-all" "push" "pop" "feed"
@@ -55,7 +56,8 @@
     "export-matlab-loft" "build-model"))
 
 (defconst antenna-turtle--macros
-  '("move" "spread" "turn" "with-pen" "with-scale" "with-push"
+  '("model" "move" "spread" "turn"
+    "with-wire" "from-here" "with-scale" "with-pen" "with-push"
     "loop" "return" "return-from"))
 
 (defconst antenna-turtle--loop-clauses
@@ -68,7 +70,14 @@
     "if" "when" "unless" "else" "end" "and" "with" "then"))
 
 (defconst antenna-turtle--directions
-  '("forward" "back" "left" "right" "up" "down"))
+  '("forward" "back" "left" "right" "up" "down"
+    "roll-left" "roll-right"))
+
+(defconst antenna-turtle--contextual-keywords
+  '("title" "frequency" "max-length" "wire-diameter" "feed"))
+
+(defconst antenna-turtle--feed-locations
+  '("start" "center" "end"))
 
 (defconst antenna-turtle--units
   '("meter" "meters" "centimeter" "centimeters"
@@ -98,6 +107,10 @@
      0 'antenna-turtle-loop-clause-face)
     (,(regexp-opt antenna-turtle--directions 'symbols)
      0 'antenna-turtle-direction-face)
+    (,(regexp-opt antenna-turtle--contextual-keywords 'symbols)
+     0 'antenna-turtle-loop-clause-face)
+    (,(regexp-opt antenna-turtle--feed-locations 'symbols)
+     0 'font-lock-constant-face)
     (,(regexp-opt antenna-turtle--units 'symbols)
      0 'font-lock-constant-face)
     (,(regexp-opt antenna-turtle--infix-word-operators 'symbols)
@@ -121,6 +134,8 @@
 ;; Teach scheme-mode which arguments precede each macro body. These symbol
 ;; properties are global, but the names are specific to Antenna Turtle.
 (put 'with-scale 'scheme-indent-function 1)
+(put 'with-wire 'scheme-indent-function 0)
+(put 'from-here 'scheme-indent-function 0)
 (put 'with-pen 'scheme-indent-function 0)
 (put 'with-push 'scheme-indent-function 0)
 

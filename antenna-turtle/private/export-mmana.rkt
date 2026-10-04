@@ -70,9 +70,13 @@
   (fprintf out "*** Sources ***\n")
   (fprintf out "~a,\t1\n" (length feeds))
   (for ([edge (in-list feeds)])
-    ;; MMANA names sources by wire and a/b/c position. Odd segmentation
-    ;; guarantees c is the center of a solver segment rather than a vertex.
-    (fprintf out "w~ac,\t0.0,\t1.0\n" (wire-edge-id edge)))
+    ;; MMANA names sources by wire and beginning/center/end position.
+    (define suffix
+      (case (wire-edge-feed-location edge)
+        [(start) "b"]
+        [(center) "c"]
+        [(end) "e"]))
+    (fprintf out "w~a~a,\t0.0,\t1.0\n" (wire-edge-id edge) suffix))
   ;; Loads are intentionally Antenna Turtle-owned for now. This clears manual
   ;; MMANA loads rather than risking stale wire references after regeneration.
   (fprintf out "*** Loads ***\n")

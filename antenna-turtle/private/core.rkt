@@ -16,6 +16,7 @@
  (struct-out point3)
  (struct-out vertex)
  (struct-out wire-edge)
+ wire-edge-feed?
  (struct-out antenna-model)
  current-antenna-model
  model-vertices
@@ -30,8 +31,11 @@
  mmana-frequency
 
  ;; Turtle operations.
- pen-up pen-down call-with-pen call-with-scale call-with-push
+ wire-off wire-on call-with-wire call-with-scale call-from-here
+ ;; Compatibility names retained for existing models.
+ pen-up pen-down call-with-pen call-with-push
  forward back move-local move-vector-local spread-local move-nearest
+ here goto
  turn-x turn-y turn-z turn-axis
  scale scale-all
  wire-diameter
@@ -65,7 +69,7 @@
 
 (struct point3 (x y z) #:transparent)
 (struct vertex (id point) #:transparent)
-(struct wire-edge (id start end diameter feed?) #:transparent)
+(struct wire-edge (id start end diameter feed-location) #:transparent)
 (struct antenna-model (vertices edges) #:mutable #:transparent)
 
 ;; An orientation is a row-major 3x3 local-to-global matrix.
@@ -92,13 +96,14 @@
   (make-parameter (antenna-model '() '())))
 (define current-turtle-state (make-parameter (initial-state)))
 (define current-turtle-stack (make-parameter '()))
-(define pending-feed? (make-parameter #f))
+(define pending-feed-location (make-parameter #f))
 
-;; These are ordinary Racket parameters: callers can dynamically scope them,
-;; or set them for the remainder of a module with a one-argument call.
-(define model-title (make-parameter "Antenna Turtle model"))
-(define maximum-segment-length (make-parameter #f))
-(define model-frequency (make-parameter 1.0))
+;; Title and frequency are ordinary Racket parameters. Maximum segment length
+;; has the same zero/one-argument interface, with #f stored internally to mean
+;; a dynamic one-twentieth-wavelength default.
+(define model-title (make-parameter "Turtle Antenna"))
+(define maximum-segment-length-override (make-parameter #f))
+(define model-frequency (make-parameter 141/10))
 ;; Compatibility alias for models written before the frequency became a
 ;; target-independent setting.
 (define mmana-frequency model-frequency)
@@ -117,6 +122,19 @@
 
 (define (model-wavelength)
   (frequency->wavelength (model-frequency)))
+
+(define maximum-segment-length
+  (case-lambda
+    [()
+     (or (maximum-segment-length-override)
+         (/ (model-wavelength) 20))]
+    [(length)
+     (if length
+         (begin
+           (ensure-positive-real
+            'maximum-segment-length length "maximum segment length")
+           (maximum-segment-length-override length))
+         (maximum-segment-length-override #f))]))
 
 ;; Express a physical length as a count of an arbitrary positive unit. This is
 ;; especially useful when a geometry is authored in objective millimetres and
@@ -142,15 +160,16 @@
   (current-antenna-model (antenna-model '() '()))
   (current-turtle-state (initial-state))
   (current-turtle-stack '())
-  (pending-feed? #f)
-  (model-title "Antenna Turtle model")
-  (maximum-segment-length #f)
-  (model-frequency 1.0)
+  (pending-feed-location #f)
+  (model-title "Turtle Antenna")
+  (maximum-segment-length-override #f)
+  (model-frequency 141/10)
   (void))
 
 (define (validate-model!)
-  (when (pending-feed?)
-    (error 'antenna-turtle "feed marker was not consumed by a nonzero pen-down movement"))
+  (when (pending-feed-location)
+    (error 'antenna-turtle
+           "feed marker was not consumed by a nonzero wire-on movement"))
   (void))
 
 (define (model-vertices [m (current-antenna-model)])
@@ -272,32 +291,39 @@
 (define (turn-y degrees) (turn-axis degrees 0 1 0))
 (define (turn-z degrees) (turn-axis degrees 0 0 1))
 
-(define (pen-up)
+(define (wire-off)
   (current-turtle-state
    (struct-copy turtle-state (current-turtle-state) [pen-down? #f]))
   (void))
 
-(define (pen-down)
+(define (wire-on)
   (current-turtle-state
    (struct-copy turtle-state (current-turtle-state) [pen-down? #t]))
   (void))
 
-(define (call-with-pen thunk)
-  (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
-    (raise-argument-error 'call-with-pen "(procedure-arity-includes/c 0)" thunk))
-  (when (turtle-state-pen-down? (current-turtle-state))
-    (error 'with-pen "pen is already down"))
-  (dynamic-wind
-    pen-down
-    thunk
-    pen-up))
+(define pen-up wire-off)
+(define pen-down wire-on)
 
-(define (call-with-push thunk)
+(define (call-with-wire thunk)
   (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
-    (raise-argument-error 'call-with-push
+    (raise-argument-error 'call-with-wire "(procedure-arity-includes/c 0)" thunk))
+  (when (turtle-state-pen-down? (current-turtle-state))
+    (error 'with-wire "wire is already on"))
+  (dynamic-wind
+    wire-on
+    thunk
+    wire-off))
+
+(define call-with-pen call-with-wire)
+
+(define (call-from-here thunk)
+  (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
+    (raise-argument-error 'call-from-here
                           "(procedure-arity-includes/c 0)"
                           thunk))
   (dynamic-wind push thunk pop))
+
+(define call-with-push call-from-here)
 
 (define (scale factor)
   (ensure-positive-real 'scale factor "scale factor")
@@ -319,7 +345,7 @@
     (lambda () (scale factor))
     thunk
     (lambda ()
-      ;; Restore only movement scale. Position, orientation, pen state, wire
+      ;; Restore only movement scale. Position, orientation, wire state,
       ;; settings, and other effects produced by the body remain in force.
       (define final-state (current-turtle-state))
       (current-turtle-state
@@ -350,6 +376,9 @@
 (define (current-position)
   (turtle-state-position (current-turtle-state)))
 
+(define (here)
+  (current-position))
+
 (define (push)
   (current-turtle-stack
    (cons (current-turtle-state) (current-turtle-stack)))
@@ -362,11 +391,18 @@
   (current-turtle-stack (cdr (current-turtle-stack)))
   (void))
 
-(define (feed)
-  (when (pending-feed?)
+(define feed-locations '(start center end))
+
+(define (feed location)
+  (unless (memq location feed-locations)
+    (raise-argument-error 'feed "(or/c 'start 'center 'end)" location))
+  (when (pending-feed-location)
     (error 'feed "a feed marker is already waiting for a drawn edge"))
-  (pending-feed? #t)
+  (pending-feed-location location)
   (void))
+
+(define (wire-edge-feed? edge)
+  (and (wire-edge-feed-location edge) #t))
 
 (define (find-equal-vertex point)
   (for/first ([candidate (in-list (model-vertices))]
@@ -388,7 +424,7 @@
   (define end (intern-vertex! end-point))
   (cond
     [(eq? start end)
-     (when (pending-feed?)
+     (when (pending-feed-location)
        (error 'feed "cannot place a feed on a zero-length edge"))]
     [else
      (define new-edge
@@ -396,18 +432,18 @@
                   start
                   end
                   (current-wire-diameter)
-                  (pending-feed?)))
+                  (pending-feed-location)))
      (set-antenna-model-edges! m (append edges (list new-edge)))
-     (when (pending-feed?) (pending-feed? #f))])
+     (when (pending-feed-location) (pending-feed-location #f))])
   (void))
 
 (define (perform-movement destination)
   (define state (current-turtle-state))
   (define source (turtle-state-position state))
   (define draws? (turtle-state-pen-down? state))
-  (when (and (pending-feed?) (not draws?))
-    (error 'feed "the movement following feed occurred while the pen was up"))
-  (when (and (pending-feed?) (point=? source destination))
+  (when (and (pending-feed-location) (not draws?))
+    (error 'feed "the movement following feed occurred while the wire was off"))
+  (when (and (pending-feed-location) (point=? source destination))
     (error 'feed "the movement following feed must create a nonzero edge"))
   (when (and draws? (not (point=? source destination)))
     (append-edge! source destination))
@@ -416,6 +452,15 @@
      [position destination]
      [previous-source source]))
   (void))
+
+(define (goto destination)
+  (unless (point3? destination)
+    (raise-argument-error 'goto "point3?" destination))
+  (for ([component (in-list (list (point3-x destination)
+                                  (point3-y destination)
+                                  (point3-z destination)))])
+    (ensure-real 'goto component "coordinate"))
+  (perform-movement destination))
 
 (define (move-vector-local x-distance y-distance z-distance)
   (for ([component (in-list (list x-distance y-distance z-distance))])
@@ -490,11 +535,14 @@
    (point- (vertex-point (wire-edge-end edge))
            (vertex-point (wire-edge-start edge)))))
 
-(define (edge-segment-count edge [max-length (maximum-segment-length)])
+(define (edge-segment-count
+         edge
+         [max-length (maximum-segment-length)])
   (ensure-positive-real 'edge-segment-count max-length
                         "maximum segment length")
   (define base-count
     (max 1 (inexact->exact (ceiling (/ (edge-length edge) max-length)))))
-  (if (and (wire-edge-feed? edge) (even? base-count))
+  (if (and (eq? (wire-edge-feed-location edge) 'center)
+           (even? base-count))
       (add1 base-count)
       base-count))

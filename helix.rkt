@@ -4,10 +4,10 @@
 
 ;; Document info
 
-(model-title            "Helical antenna")
-(maximum-segment-length {50 * millimeter})
-(model-frequency        freq)
-(wire-diameter          {3 * millimeter})
+(model title         "Helical antenna"
+       frequency     freq
+       max-length    {50 * millimeter}
+       wire-diameter {3 * millimeter})
 
 (define wave    (span (model-wavelength) millimeter)) ;; wavelength in objective mm
 (define diam    200)                          ;; design diameter of helix
@@ -22,19 +22,18 @@
 (define (helix)
   (let [(ldz dz)]
     (with-scale {1.24 * millimeter}
-      (with-pen
-	(feed)
-	(move up 20)
+      (with-wire
+	(move up 20 feed 'center)
 	(loop for i from 1 to {turns * seg-per} do
-	      (move forward seg up dz)
+	      (move forward seg up ldz)
 	      (turn left angle)
-	      ;(set! ldz {ldz * 1.02})
+	      (set! ldz {ldz * 1.02})
 	      )))))
 
 (define dist {0.5 * meter})
 
 (loop for i from 1 to 4 do
-      (with-push
+      (from-here
 	(turn left {i * 90})
 	(move forward dist)
 	(turn right {i * 90})

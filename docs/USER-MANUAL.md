@@ -3,8 +3,8 @@
 ## 1. What Antenna Turtle Does
 
 Antenna Turtle is a Racket language for describing wire antennas by moving a
-stateful three-dimensional turtle. Pen-down movement creates PEC wire geometry;
-pen-up movement only repositions the turtle. Models can be built into:
+stateful three-dimensional turtle. Wire-on movement creates PEC wire geometry;
+wire-off movement only repositions the turtle. Models can be built into:
 
 - NEC/`nec2c` input (`.nec`);
 - MMANA-GAL Basic input (`.maa`);
@@ -118,15 +118,23 @@ Create `dipole.rkt`:
 (define wavelength {20 * meter})
 (define total-length {wavelength / 2})
 
-(model-title "Center-fed half-wave dipole")
-(model-frequency 14.2)                 ; MHz
-(maximum-segment-length {wavelength / 100})
-(wire-diameter {2 * millimeter})
+(model title "Center-fed half-wave dipole"
+       frequency 14.2
+       max-length {wavelength / 100}
+       wire-diameter {2 * millimeter})
 
 ;; One wire centered at the origin and directed along local +X.
-(feed)
-(with-pen
-  (spread forward total-length))
+(with-wire
+  (spread forward total-length feed 'center))
+```
+
+The entire `model` form is optional. With no declaration, the title is
+`"Turtle Antenna"`, frequency is 14.1 MHz, wire diameter is 1 mm, and maximum
+segment length is one-twentieth wavelength. Therefore this is also complete:
+
+```racket
+#lang antenna-turtle
+(with-wire (move forward 5))
 ```
 
 Validate it:
@@ -159,7 +167,7 @@ mathematical notation inside curly braces:
 (define angle {360 / segments-per-turn})
 
 (with-scale {28.5 / 29.0}
-  (with-pen
+  (with-wire
     (move forward segment-length up {pitch / segments-per-turn})
     (turn left angle)))
 ```
@@ -256,7 +264,7 @@ Several local axes can be combined into one movement:
 (move forward 10 up 1)
 ```
 
-With the pen down, that expression draws one diagonal wire—not two wires with
+With the wire on, that expression draws one diagonal wire—not two wires with
 a corner between them. This is useful for polygonal approximations of curves.
 For example, one turn of a rising helix can be written as:
 
@@ -273,51 +281,83 @@ For example, one turn of a rising helix can be written as:
 Any number of direction/distance pairs may be combined. All are interpreted in
 the same local frame, and together they produce one segment.
 
-### 5.2 Pen State
+Turns may also be chained, but they are applied sequentially because 3D
+rotations do not commute:
 
-Pen-down movement creates a wire segment. Pen-up movement only repositions the
+```racket
+(turn left 90 up 15 roll-right 30)
+```
+
+`roll-left` and `roll-right` rotate around local forward. The direction is
+named from the turtle's point of view looking forward; roll-left lowers its
+local left side.
+
+`here` records the current global `point3`, and `goto` returns directly to a
+recorded global coordinate regardless of current local orientation or scale:
+
+```racket
+(define anchor (here))
+(move forward 10 up 2)
+(goto anchor)
+```
+
+Wire state still determines whether `goto` merely repositions or draws.
+
+### 5.2 Wire State
+
+Wire-on movement creates a wire segment. Wire-off movement only repositions the
 turtle. Prefer the scoped form for drawing:
 
 ```racket
-(with-pen
+(with-wire
   (move forward 1)
   (turn left 90)
   (move forward 1))
 ```
 
-`with-pen` requires the pen to be up on entry. It restores pen-up even if the
-body raises an error, helping reveal accidentally overlapping drawing scopes.
+`with-wire` requires the wire to be off on entry. It restores wire-off even if
+the body raises an error, helping reveal accidentally overlapping drawing
+scopes.
+The former `pen-up`, `pen-down`, and `with-pen` names remain compatibility
+aliases, but new models should use wire terminology.
 
 ### 5.3 Centered Elements
 
 `spread` creates a segment centered at the current point:
 
 ```racket
-(with-pen
+(with-wire
   (spread left (* 1/2 wavelength)))
 ```
 
 For `spread left`, the turtle silently repositions to the right endpoint and
 then traverses the full length toward the left. `spread right` creates the same
-geometry with reversed segment orientation. A feed immediately before
-`spread` lies at the segment center.
+geometry with reversed segment orientation. A center feed can be attached
+directly:
+
+```racket
+(with-wire (spread left length feed 'center))
+```
 
 ### 5.4 Temporary Coordinate Contexts
 
-`with-push` restores the complete turtle state after its body but retains all
+`from-here` restores the complete turtle state after its body but retains all
 geometry produced inside it:
 
 ```racket
 (define (element boom-position length driven?)
-  (with-push
+  (from-here
     (move forward boom-position)
-    (when driven? (feed))
-    (with-pen
-      (spread left length))))
+    (with-wire
+      (if driven?
+          (spread left length feed 'center)
+          (spread left length)))))
 ```
 
 This is useful for arrays because each element can be positioned relative to a
 stable boom origin.
+
+The former name `with-push` remains a compatibility alias.
 
 ### 5.5 Scaling and Frequency Retuning
 
@@ -374,10 +414,12 @@ role, boom position, and length together:
     (director-2 339 308)))
 
 (define (element role position length)
-  (with-push
+  (from-here
     (move forward position)
-    (when (eq? role 'driven) (feed))
-    (with-pen (spread left length))))
+    (with-wire
+      (if (eq? role 'driven)
+          (spread left length feed 'center)
+          (spread left length)))))
 
 ;; The table contains millimetres; scale only the movements in this scope.
 (with-scale millimeter
@@ -395,8 +437,8 @@ draw all but the final side and use `move-nearest`:
 ```racket
 (define (regular-loop sides perimeter)
   (define side (/ perimeter sides))
-  (with-push
-    (with-pen
+  (from-here
+    (with-wire
       (loop repeat (sub1 sides)
             do (forward side)
                (turn left (/ 360 sides)))
@@ -408,13 +450,22 @@ excludes the current point and the source of the immediately preceding move.
 
 ## 8. Feeds and Segmentation
 
-`feed` marks the next nonzero pen-down segment. Turns and non-movement settings
-may occur between `feed` and that segment, but a pen-up move is an error.
+`feed` requires one of `'start`, `'center`, or `'end` and marks the next
+nonzero wire-on segment. Turns and non-movement settings may occur between
+`feed` and that segment, but a wire-off move is an error. Usually the inline
+form is clearer:
+
+```racket
+(move forward radiator feed 'start)
+(spread left driven-length feed 'center)
+```
 
 NEC2C and MMANA subdivide every DSL edge according to
-`maximum-segment-length`. A fed edge always receives an odd subdivision count
-so the source occupies the unique center solver segment. MATLAB places its feed
-on the midpoint boundary generated for the marked DSL edge.
+`maximum-segment-length`. When no explicit maximum is supplied, one-twentieth
+of `model-wavelength` is used. A center-fed edge receives an odd subdivision
+count so the source occupies the unique center solver segment. Start and end
+feeds use the first and last NEC segment or MMANA's `b` and `e` locations.
+MATLAB supports center feeds only and reports an error for start/end feeds.
 
 Multiple feeds are supported by the core language and wire exporters. The loft
 MATLAB exporter currently supports at most one.
@@ -491,15 +542,16 @@ raco planet install jphelps loop.plt 1 25
 raco setup --pkgs antenna-turtle
 ```
 
-### `with-pen: pen is already down`
+### `with-wire: wire is already on`
 
-Remove an outer `pen-down` or nested `with-pen`. Scoped drawing deliberately
-rejects an already-down pen.
+Remove an outer `wire-on` or nested `with-wire`. Scoped drawing deliberately
+rejects an already-on wire.
 
 ### Unused or misplaced feed error
 
-Ensure `(feed)` is followed by a nonzero movement while the pen is down. With a
-centered element, use `(feed)` immediately before `(with-pen (spread ...))`.
+Ensure `(feed location)` is followed by a nonzero movement while the wire is
+on. Prefer `(move ... feed location)` or `(spread ... feed location)` when the
+feed belongs directly to that edge.
 
 ### Loft MATLAB export rejects geometry
 

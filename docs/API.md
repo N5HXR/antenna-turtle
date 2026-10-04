@@ -120,17 +120,37 @@ is equivalent to `(...)`.
 
 ## 3. Model Settings
 
-The settings are Racket parameters: call with no arguments to read and one
-argument to set.
+Every setting has a useful default, so a module may begin tracing wire without
+any model declaration. The defaults are title `"Turtle Antenna"`, frequency
+`14.1` MHz, maximum segment length of one-twentieth wavelength, and wire
+diameter of one millimetre.
+
+### `(model [setting value] ...)`
+
+Sets any desired subset using contextual `title`, `frequency`, `max-length`,
+and `wire-diameter` pairs. Each setting may appear at most once:
+
+```racket
+(model title "Three-element Yagi"
+       frequency 14.1
+       max-length {(model-wavelength) / 40}
+       wire-diameter {2 * millimeter})
+```
+
+Pair order is not significant. Frequency is applied before maximum length, so
+a `max-length` expression may safely call `model-wavelength` in any order.
+
+The individual setting operations below remain available for calculated or
+dynamically scoped programs.
 
 ### `(model-title [title])`
 
-- Default: `"Antenna Turtle model"`.
+- Default: `"Turtle Antenna"`.
 - Supplies the human-readable title written by exporters.
 
 ### `(model-frequency [megahertz])`
 
-- Default: `1.0`.
+- Default: `14.1`.
 - Units: MHz.
 - Written into MMANA output and used to initialize MATLAB analysis and its
   wavelength-based mesh bound.
@@ -138,11 +158,13 @@ argument to set.
 
 ### `(maximum-segment-length [length])`
 
-- Default: `#f`.
+- Default behavior: one-twentieth of the wavelength at `model-frequency`.
+- The zero-argument form resolves the current wavelength-derived default.
+- Passing `#f` restores automatic behavior after an explicit override.
 - Units: metres.
-- Must be a positive real before NEC2C or MMANA export.
+- An explicit value must be a positive real before export.
 - The count for an edge is `ceiling(edge-length / maximum-segment-length)`.
-- A fed edge's count is increased when necessary to make it odd.
+- A center-fed edge's count is increased when necessary to make it odd.
 
 ### `(wire-diameter length)`
 
@@ -151,28 +173,31 @@ argument to set.
 - Sets the base diameter for subsequently created edges.
 - Effective diameter also includes the current `scale-all` diameter factor.
 
-## 4. Pen Operations
+## 4. Wire Operations
 
-### `(pen-up)`
+### `(wire-off)`
 
 Subsequent movement changes turtle state without generating an edge.
 
-### `(pen-down)`
+### `(wire-on)`
 
 Subsequent nonzero movement generates a wire edge.
 
-### `(with-pen body ...+)`
+### `(with-wire body ...+)`
 
-Requires the pen to be up, sets it down for `body`, and restores pen-up on
-normal or exceptional exit. Returns the body's values. Entering with an
-already-down pen is an error.
+Requires the wire to be off, turns it on for `body`, and restores wire-off on
+normal or exceptional exit. Returns the body's values. Entering while wire is
+already on is an error.
 
 ```racket
-(with-pen
+(with-wire
   (forward 1)
   (turn left 90)
   (forward 1))
 ```
+
+`pen-up`, `pen-down`, and `with-pen` remain as compatibility aliases for
+existing models; new code should use the wire terminology.
 
 ## 5. Movement
 
@@ -187,7 +212,7 @@ Moves along local `+X`.
 
 Moves along local `-X`.
 
-### `(move direction distance [direction distance] ...)`
+### `(move direction distance ... [feed location])`
 
 `direction` is a contextual keyword and does not require quoting:
 
@@ -209,21 +234,28 @@ frame:
 (move forward 10 up 1)
 ```
 
+The optional contextual `feed` pair marks the resulting edge at `'start`,
+`'center`, or `'end`:
+
+```racket
+(move forward length feed 'start)
+```
+
 This creates one diagonal edge from the old position to the new position when
-the pen is down. It does not create a forward edge followed by an upward edge.
+the wire is on. It does not create a forward edge followed by an upward edge.
 Pairs may be supplied in any order, repeated directions are added, and opposing
 directions subtract. Every distance expression is evaluated exactly once in
 source order. The current movement scale applies uniformly to the completed
 local displacement vector.
 
-### `(spread direction distance)`
+### `(spread direction distance [feed location])`
 
 Creates or traverses one full movement centered at the original position.
 The turtle silently relocates by half the distance opposite `direction`, then
 performs one full ordinary movement in `direction`.
 
-- Pen down: creates exactly one centered edge.
-- Pen up: changes position but creates no edge.
+- Wire on: creates exactly one centered edge.
+- Wire off: changes position but creates no edge.
 - Pending feed: applies to the centered full edge.
 - Final position: the endpoint in the named direction.
 
@@ -233,8 +265,20 @@ All six `move` direction words are accepted.
 
 Moves to the closest existing model vertex, copying its coordinates exactly.
 The search excludes vertices equal to the current point and the source of the
-immediately preceding movement. Ties retain vertex creation order. Pen state
+immediately preceding movement. Ties retain vertex creation order. Wire state
 controls whether the closing movement draws.
+
+### `(here)` and `(goto coordinates)`
+
+`here` returns the current global `point3`. `goto` moves directly to such a
+global coordinate, ignoring local orientation and movement scale while still
+honoring wire and pending-feed state:
+
+```racket
+(define origin (here))
+(move forward 10)
+(goto origin)
+```
 
 ### Zero movement
 
@@ -245,17 +289,20 @@ pending because no segment would receive the feed.
 
 Rotations occur in place around local axes and use degrees.
 
-### `(turn direction degrees)`
+### `(turn direction degrees [direction degrees] ...)`
 
 ```racket
 (turn left degrees)   ; positive local Z
 (turn right degrees)  ; negative local Z
 (turn up degrees)     ; negative local Y
 (turn down degrees)   ; positive local Y
+(turn roll-left degrees)  ; negative local X
+(turn roll-right degrees) ; positive local X
 ```
 
-The direction is a contextual keyword; the degree expression is evaluated
-exactly once.
+The directions are contextual keywords. Chained rotations occur sequentially
+in source order because 3D rotations do not commute. Roll names use the
+turtle's point of view looking forward: roll-left lowers local `+Y`.
 
 ### Axis-specific forms
 
@@ -283,7 +330,7 @@ Multiplies both movement scale and diameter scale by a positive factor.
 ### `(with-scale factor body ...+)`
 
 Temporarily multiplies movement scale for the body, then restores the prior
-movement scale on every exit. It does not rewind position, orientation, pen
+movement scale on every exit. It does not rewind position, orientation, wire
 state, other settings, or generated geometry.
 
 Neither scaling form changes the global `maximum-segment-length` setting.
@@ -292,36 +339,40 @@ Neither scaling form changes the global `maximum-segment-length` setting.
 
 ### `(push)` and `(pop)`
 
-`push` saves position, orientation, pen state, movement and diameter scales,
+`push` saves position, orientation, wire state, movement and diameter scales,
 base diameter, and previous-movement information. `pop` restores that state.
 Generated geometry is global and is not removed. Popping an empty stack is an
 error; exiting a model with unmatched pushes is legal.
 
-### `(with-push body ...+)`
+### `(from-here body ...+)`
 
 Exception-safe `push`/`pop`. Returns the body's values, restores the complete
 turtle state, and retains geometry generated inside the body.
 
+`with-push` remains as a compatibility alias.
+
 ## 9. Feeds
 
-### `(feed)`
+### `(feed location)`
 
-Marks the next nonzero pen-down edge as fed. Multiple model feeds are permitted
-unless a selected exporter imposes a narrower limit.
+Marks the next nonzero wire-on edge with mandatory location `'start`, `'center`,
+or `'end`. Multiple model feeds are permitted unless an exporter imposes a
+narrower limit. `move` and `spread` can attach the same location inline.
 
 Before the marked edge, the program may rotate or change non-movement settings.
 These are errors while a feed is pending:
 
 - another `feed`;
-- pen-up movement;
+- wire-off movement;
 - zero movement;
 - module termination without a consuming edge.
 
 Target behavior:
 
-- NEC2C: `1.0` volt, `0` degree source on the center solver segment;
-- MMANA: source at the fed wire's center segment;
-- MATLAB: feed boundary at the DSL edge midpoint.
+- NEC2C: `1.0` volt, `0` degree source on the first, middle, or last solver
+  segment;
+- MMANA: `b`, `c`, or `e` source designation;
+- MATLAB: center feeds only; start or end feeds produce an export error.
 
 ## 10. Model Lifecycle and Inspection
 
@@ -336,6 +387,8 @@ Currently verifies that no feed marker remains unused.
 ### `(current-position)`
 
 Returns the current `point3`.
+
+`here` is the preferred geometry-facing synonym.
 
 ### `(current-wire-diameter)`
 
@@ -354,11 +407,13 @@ Return model vertices and edges; the current model is the default.
 ```racket
 (point3 x y z)
 (vertex id point)
-(wire-edge id start end diameter feed?)
+(wire-edge id start end diameter feed-location)
 (antenna-model vertices edges)
 ```
 
-All structure predicates and accessors are exported. `antenna-model` also
+`wire-edge-feed-location` returns `#f`, `'start`, `'center`, or `'end`.
+`wire-edge-feed?` remains available as a Boolean convenience predicate. All
+structure predicates and accessors are exported. `antenna-model` also
 exports mutators because it is declared mutable; tooling should prefer normal
 turtle operations unless deliberate model transformation is required.
 
@@ -368,8 +423,9 @@ Returns Euclidean edge length.
 
 ### `(edge-segment-count edge maximum-length)`
 
-Returns the solver subdivision count, including odd-count adjustment for a fed
-edge.
+Returns the solver subdivision count, including odd-count adjustment for a
+center-fed edge. `maximum-length` is optional; its default is the explicit
+model value or one-twentieth wavelength.
 
 ## 11. Export Functions
 
@@ -406,7 +462,8 @@ raises an error and leaves the original file untouched.
 ### `(export-matlab path)`
 
 Writes the approximate rectangular-ribbon representation, a `customAntenna`,
-feed creation, geometry display, and directivity stub.
+feed creation, geometry display, and directivity stub. Only center feeds are
+supported.
 
 ### `(export-matlab-loft path)`
 
@@ -419,6 +476,7 @@ Current loft restrictions:
 - degree-two paths and loops only; no branch vertex;
 - equal diameters among edges incident on one vertex;
 - zero or one feed;
+- center feed location only;
 - no 180-degree path reversal;
 - enough adjacent length to construct every bevel setback.
 
@@ -495,8 +553,8 @@ semantics are clearer for a particular model.
 
 ## 14. Geometry Semantics
 
-- Every pen-down nonzero movement creates one DSL edge.
-- Geometry survives `pop` and `with-push`.
+- Every wire-on nonzero movement creates one DSL edge.
+- Geometry survives `pop` and `from-here`.
 - Vertices merge only when all coordinates compare equal with numeric `=`.
 - Crossing wire interiors do not connect automatically.
 - `move-nearest` is the explicit tool for robust loop closure.

@@ -5,20 +5,20 @@
 (define folded-end (* 0.055 wavelength))
 (define spacing (* 0.14 wavelength))
 
-(model-title "Illustrative Moxon rectangle geometry")
-(maximum-segment-length (/ wavelength 120))
-(model-frequency 29.0)
-(wire-diameter (* 2 millimeter))
+(model title "Illustrative Moxon rectangle geometry"
+       frequency 29.0
+       max-length (/ wavelength 120)
+       wire-diameter (* 2 millimeter))
 
 (define (bent-element length bend inward-turn driven?)
   ;; Isolate the element's positioning and heading from the surrounding model.
-  (with-push
+  (from-here
     (move back (/ length 2))
-    (with-pen
+    (with-wire
       (turn right inward-turn)
       (forward bend)
       (turn left inward-turn)
-      (when driven? (feed))
+      (when driven? (feed 'center))
       (forward length)
       (turn left inward-turn)
       (forward bend))))

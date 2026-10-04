@@ -202,6 +202,13 @@
   (define who 'export-matlab)
   (when (null? (model-edges))
     (error who "cannot export an empty model"))
+  (for ([edge (in-list (model-edges))]
+        #:when (and (wire-edge-feed? edge)
+                    (not (eq? (wire-edge-feed-location edge) 'center))))
+    (error who
+           "MATLAB ribbon export supports only center feeds; wire ~a uses ~a"
+           (wire-edge-id edge)
+           (wire-edge-feed-location edge)))
   (define mesh (mesh-builder '() '() '() (make-hash)))
   (build-vertex-joins! mesh)
   (for ([edge (in-list (model-edges))])

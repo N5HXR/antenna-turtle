@@ -14,6 +14,6 @@
 (maximum-segment-length {1 / 10})
 (wire-diameter {2 * millimeter})
 
-(with-pen
+(with-wire
   (move forward {1 + 2 * 3}
         up {divisor - 6}))

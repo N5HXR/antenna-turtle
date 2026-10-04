@@ -53,18 +53,19 @@ raco pkg remove antenna-turtle
 ```racket
 #lang antenna-turtle
 
-(define wavelength {20 * meter})
-(define total-length {wavelength / 2})
+;; Defaults: 14.1 MHz, wavelength/20 segmentation, 1 mm wire, and the title
+;; "Turtle Antenna". Draw a center-fed half-wave segment at the origin.
+(with-wire
+  (spread forward {(model-wavelength) / 2} feed 'center))
+```
 
-(model-title "Center-fed dipole")
-(maximum-segment-length {wavelength / 100})
-(model-frequency 14.2) ; MHz; initializes target analysis frequency
-(wire-diameter {2 * millimeter})
+Override any subset declaratively when needed:
 
-;; Draw one fed segment centered at the global origin.
-(feed)
-(with-pen
-  (spread forward total-length))
+```racket
+(model title "Center-fed dipole"
+       frequency 14.2
+       max-length {(model-wavelength) / 100}
+       wire-diameter {2 * millimeter})
 ```
 
 `#lang antenna-turtle` otherwise behaves like `#lang racket`: normal
@@ -167,18 +168,21 @@ For example:
 ```
 
 ```racket
-(pen-up)
-(pen-down)
-(with-pen body ...)
+(model [setting value] ...)
+(wire-off)
+(wire-on)
+(with-wire body ...)
 (with-scale factor body ...)
-(with-push body ...)
+(from-here body ...)
+(here)
+(goto coordinates)
 (forward distance)
 (back distance)
-(move direction distance [direction distance] ...)
-(spread forward|back|left|right|up|down distance)
+(move direction distance ... [feed location])
+(spread direction distance [feed location])
 (move-nearest)
 
-(turn left|right|up|down degrees)
+(turn direction degrees [direction degrees] ...)
 (turn-x degrees)
 (turn-y degrees)
 (turn-z degrees)
@@ -190,7 +194,7 @@ For example:
 
 (push)
 (pop)
-(feed)
+(feed location) ; location is 'start, 'center, or 'end
 ```
 
 `turn-axis` takes an arbitrary nonzero vector expressed in local coordinates.
@@ -213,11 +217,17 @@ turn left  = turn-z positive       move forward = local +X
 turn right = turn-z negative       move back    = local -X
 turn up    = turn-y negative       move left    = local +Y
 turn down  = turn-y positive       move right   = local -Y
+turn roll-left  = turn-x negative
+turn roll-right = turn-x positive
                                       move up    = local +Z
                                     move down    = local -Z
 ```
 
-All movement forms obey pen state. `forward` and `back` are convenient aliases
+One `turn` may contain several direction/angle pairs. They execute
+sequentially in source order; `roll-left` and `roll-right` are named from the
+turtle's viewpoint looking forward.
+
+All movement forms obey wire state. `forward` and `back` are convenient aliases
 for longitudinal movement; `move` provides the complete directional form.
 One `move` may combine several local-axis components:
 
@@ -225,7 +235,7 @@ One `move` may combine several local-axis components:
 (move forward 10 up 1)
 ```
 
-The combined displacement creates one diagonal wire edge when the pen is down.
+The combined displacement creates one diagonal wire edge when the wire is on.
 It does not perform sequential axis-aligned movements. Direction pairs may be
 repeated or opposed; their components are summed, and each distance expression
 is evaluated exactly once in source order.
@@ -235,21 +245,22 @@ first repositions silently to the endpoint opposite its named direction, then
 traverses the full distance in that direction. The turtle finishes at that
 endpoint, and a pending `feed` applies to the resulting centered segment.
 
-`with-pen` requires the pen to be up, forces it down for a lexical body, and
-restores it to pen-up on exit:
+`with-wire` requires the wire to be off, turns it on for a lexical body, and
+restores it to wire-off on exit:
 
 ```racket
-(define (element short long feed?)
-  (with-pen
+(define (element short long driven?)
+  (with-wire
     (move forward short)
-    (when feed? (feed))
-    (move left long)
+    (if driven?
+        (move left long feed 'center)
+        (move left long))
     (move back short)))
 ```
 
 The restoration also occurs if the body raises an exception, and the body's
-result values are returned normally. Entering `with-pen` while the pen is
-already down is an error, which also prevents accidental nested drawing scopes.
+result values are returned normally. Entering `with-wire` while the wire is
+already on is an error, which also prevents accidental nested drawing scopes.
 
 `scale` multiplies movement scale but leaves conductor diameter unchanged.
 `scale-all` multiplies movement scale and diameter scale. Both affect explicit
@@ -258,7 +269,7 @@ world-space export setting.
 
 `with-scale` multiplies movement scale for a lexical body and restores the
 previous movement scale when the body exits, including exceptional exits. It
-does not rewind the turtle: position, orientation, pen state, parameter
+does not rewind the turtle: position, orientation, wire state, parameter
 changes, and generated geometry from the body remain in place.
 
 ```racket
@@ -270,28 +281,32 @@ changes, and generated geometry from the body remain in place.
 ;; the scale that was active before with-scale.
 ```
 
-`push` saves the complete turtle state: position, orientation, pen, both scale
+`push` saves the complete turtle state: position, orientation, wire state, both scale
 factors, diameter, and previous movement information. `pop` restores it without
 removing geometry created since the push. An unmatched push at program exit is
 legal; popping an empty stack is an error.
 
-`with-push` performs an exception-safe `push`/`pop` around its lexical body.
+`from-here` performs an exception-safe `push`/`pop` around its lexical body.
 The complete turtle state is restored afterward, while all geometry generated
 by the body remains in the model.
+
+`here` returns the current global `point3`. `goto` moves directly to one of
+those recorded global coordinates without applying local orientation or scale;
+wire and feed state still determine whether the movement draws.
 
 Together, the scoped forms make centered elements concise:
 
 ```racket
 (define (element distance length)
-  (with-push
+  (from-here
     (move forward distance)
-    (with-pen
+    (with-wire
       (spread left length))))
 ```
 
 ## Vertices and movement
 
-Pen-down movement creates a wire edge. Pen-up movement changes only turtle
+Wire-on movement creates a wire edge. Wire-off movement changes only turtle
 state. Zero movement is legal and creates no edge.
 
 Endpoints merge when their three coordinates compare equal with Racket's
@@ -303,20 +318,21 @@ numeric `=`. Crossing wire interiors do not connect automatically.
 - the source of the immediately preceding movement.
 
 It moves to the nearest remaining vertex, cloning that vertex's coordinates
-exactly. Ties resolve in vertex creation order. Pen state determines whether the
+exactly. Ties resolve in vertex creation order. Wire state determines whether the
 movement draws.
 
 ## Feed behavior
 
-`feed` marks the next nonzero pen-down edge. Turns and other non-movement
-operations may occur before that movement. Pen-up movement, zero movement, a
-second pending feed, or program termination with an unused feed is an error.
+`feed` requires `'start`, `'center`, or `'end` and marks the next nonzero
+wire-on edge. Turns and other non-movement operations may occur before that
+movement. Wire-off movement, zero movement, a second pending feed, or program
+termination with an unused feed is an error.
 
 Feed lowering is target-specific:
 
-- NEC and MMANA use the center solver segment of the marked edge.
-- MATLAB splits the rectangular strip at its midpoint and selects the shared
-  transverse mesh edge as the feed line.
+- NEC uses the first, middle, or last solver segment.
+- MMANA uses its `b`, `c`, or `e` wire-source designation.
+- MATLAB accepts center feeds only and rejects start/end feeds explicitly.
 
 For NEC and MMANA, the subdivision count starts at:
 
@@ -324,8 +340,8 @@ For NEC and MMANA, the subdivision count starts at:
 ceiling(edge length / maximum segment length)
 ```
 
-If a fed edge would receive an even count, it is increased by one. This both
-preserves the maximum-length bound and provides a unique center segment.
+If a center-fed edge would receive an even count, it is increased by one. This
+both preserves the maximum-length bound and provides a unique center segment.
 
 ## Exporters
 
@@ -359,7 +375,7 @@ frequency, ground, execution, pattern, and measurement cards.
 ### MMANA-GAL Basic
 
 `export-mmana` writes one row per DSL edge with an explicit subdivision count.
-The model frequency defaults to `1.0` MHz and can be changed with:
+The model frequency defaults to `14.1` MHz and can be changed with:
 
 ```racket
 (model-frequency 14.2)
@@ -380,7 +396,7 @@ MATLAB cannot perform driven field analysis yet.
 Each cylindrical DSL wire is approximated as a rectangular PEC strip whose
 width equals the wire diameter. Consecutive strips reuse a mitered transverse
 mesh edge at a shared DSL vertex, providing a conduction-current path through
-bends. Pen-up gaps and separately positioned parasitic elements remain distinct
+bends. Wire-off gaps and separately positioned parasitic elements remain distinct
 mesh components.
 
 The MATLAB exporter is intentionally approximate. Coplanar paths, straight
