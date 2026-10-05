@@ -34,3 +34,11 @@ Rotations are applied sequentially in source order.
 * DONE Rename pen operations to wire operations
 Use ~wire-on~, ~wire-off~, and ~with-wire~.  The old pen names remain
 compatibility aliases.
+
+* commit ffd9c635c72bda742a803e4c88cd3ba56e7de878
+* TODO syntax highlighting and indentation for:
+with-wire
+(move ... feed 'where)
+from-here
+* TODO add 'backward' and 'backwards' as synonyms to 'back'
+Also, ensure 'forward' and 'forwards' both exist
