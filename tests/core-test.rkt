@@ -178,6 +178,39 @@
   (check-equal? (edge-length second-edge) 6)
   (check-equal? (wire-edge-diameter second-edge) (* 3 millimeter)))
 
+(test-case "wire-used measures actual generated conductor length"
+  (reset-model!)
+  (check-equal? (wire-used) 0)
+
+  ;; Wire-off travel and a lone point anchor do not consume conductor.
+  (move forward 9)
+  (point right 2)
+  (check-equal? (wire-used) 0)
+  (wire-off)
+
+  ;; Combined-axis movement is measured by its Euclidean edge length after
+  ;; movement scale has been applied, rather than by its component distances.
+  (define mark (wire-used))
+  (with-scale 2
+    (with-wire
+      (move forward 3 up 4)))
+  (check-equal? (- (wire-used) mark) 10)
+
+  ;; Stationary point geometry and reflected copies count as physical wire.
+  (with-points
+    (point left 1)
+    (point left 1 up 5))
+  (check-equal? (wire-used) 15)
+  (reflect up
+    (with-wire (move up 2)))
+  (check-equal? (wire-used) 19)
+
+  ;; Tooling may inspect a retained model after the active model is reset.
+  (define completed-model (current-antenna-model))
+  (reset-model!)
+  (check-equal? (wire-used) 0)
+  (check-equal? (wire-used completed-model) 19))
+
 (test-case "with-scale restores movement scale without rewinding the turtle"
   (reset-model!)
   (scale 3)

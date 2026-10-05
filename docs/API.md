@@ -494,6 +494,23 @@ A parameter containing the mutable `antenna-model` value.
 
 Return model vertices and edges; the current model is the default.
 
+### `(wire-used [model])`
+
+Returns the sum of the model's physical wire-edge lengths in metres; the
+current model is the default. This is an odometer over completed geometry, so
+saved readings can measure one construction without special marker state:
+
+```racket
+(define mark (wire-used))
+(curl)
+(define curl-length (- (wire-used) mark))
+```
+
+The result reflects actual final endpoints after movement scaling, arbitrary
+rotations, point tracing, snapping, and reflection. Wire-off movement, a lone
+point anchor, and solver subdivision do not contribute. Deliberately generated
+overlapping edges each count because each represents a laid wire edge.
+
 ### Public structures
 
 ```racket

@@ -183,6 +183,7 @@ For example:
 (from-here body ...)
 (here)
 (goto coordinates)
+(wire-used)
 (forward distance)  (forwards distance)
 (back distance)     (backward distance)  (backwards distance)
 (move direction distance ... [feed location])
@@ -308,6 +309,19 @@ already on is an error, which also prevents accidental nested drawing scopes.
 `with-points` similarly requires wire-off and no active point trace. It starts
 an independent point path and terminates that path on normal or exceptional
 exit without rewinding other turtle state or removing geometry.
+
+`wire-used` returns the total physical length in metres of all wire geometry
+generated so far. Save and subtract readings to measure a construction:
+
+```racket
+(define mark (wire-used))
+(curl)
+(displayln (- (wire-used) mark))
+```
+
+The measurement uses actual generated endpoints, so it includes movement
+scale, diagonal point paths, snapping, and reflected copies. Wire-off travel,
+lone point anchors, and exporter subdivision add no length.
 
 `scale` multiplies movement scale but leaves conductor diameter unchanged.
 `scale-all` multiplies movement scale and diameter scale. Both affect explicit

@@ -452,6 +452,31 @@ offset calculations. The read-only identifiers `wavelength`, `half-wave`, and
 therefore follow `reset-model!` and a subsequent frequency change in iterative
 generators. `(model-wavelength)` remains the equivalent procedural API.
 
+### 5.7 Measuring Wire Usage
+
+`wire-used` reports the total physical conductor length generated so far in
+metres. Record a reading before a helper call and subtract it afterward to
+measure that construction:
+
+```racket
+(define curl-start (wire-used))
+(curl #f)
+(displayln (- (wire-used) curl-start))
+```
+
+The same idiom measures a complete antenna:
+
+```racket
+(define antenna-start (wire-used))
+(construct-antenna)
+(define required-wire (- (wire-used) antenna-start))
+```
+
+This is an odometer over actual model edges. It accounts for movement scale,
+diagonal point-to-point distances, snapped endpoints, and reflected geometry.
+It ignores wire-off positioning, an unpaired point anchor, and the solver's
+export-time segmentation because none of those adds physical conductor.
+
 ## 6. Repetition and Layout Tables
 
 Normal Racket iteration is available, and Antenna Turtle also imports the

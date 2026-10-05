@@ -51,7 +51,7 @@
     "scale" "scale-all" "push" "pop" "feed"
     "reset-model!" "validate-model!" "current-position"
     "current-wire-diameter" "current-antenna-model"
-    "model-vertices" "model-edges" "edge-length"
+    "model-vertices" "model-edges" "wire-used" "edge-length"
     "edge-segment-count"
     "export-nec2c" "export-mmana" "export-matlab"
     "export-matlab-loft" "build-model"))

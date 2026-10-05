@@ -21,6 +21,7 @@
  current-antenna-model
  model-vertices
  model-edges
+ wire-used
 
  ;; Model settings.
  reset-model!
@@ -724,6 +725,15 @@
   (point-length
    (point- (vertex-point (wire-edge-end edge))
            (vertex-point (wire-edge-start edge)))))
+
+;; Return the physical conductor length represented by the model. Computing
+;; this from the finished edges keeps the measurement honest after scaling,
+;; point tracing, snapping, reflection, or any future geometry transform.
+;; Exporter subdivision does not change physical wire length and is therefore
+;; intentionally irrelevant here.
+(define (wire-used [m (current-antenna-model)])
+  (for/sum ([edge (in-list (model-edges m))])
+    (edge-length edge)))
 
 (define (edge-segment-count
          edge
