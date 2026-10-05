@@ -5,21 +5,22 @@
  frequency 915)
 
 ;; some antenna design parameters
-(define element-count 3)
+(define element-count 1)
 
 ;; empirically determined tuning parameters
-(define tune-stub 1.03) 
-(define tune-scale 0.98)
+(define tune-stub 1.05) 
+(define tune-scale 1.02)
 
 ;; franklin arrays use tuning stubs to align collinear elements
 (define stub-length (* tune-stub quarter-wave))
-(define stub-width centimeter)
+(define stub-width (half centimeter))
 
 ;; construct a franklin array
 (with-scale tune-scale
+  (from-here (with-wire (spread up half-wave feed 'center)))
   (reflect up
+    (move up quarter-wave)
     (with-wire
-      (move up quarter-wave feed 'start)
       (loop repeat element-count do
 	    (move left stub-length)
 	    (move up stub-width)
