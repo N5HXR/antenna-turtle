@@ -53,10 +53,10 @@ raco pkg remove antenna-turtle
 ```racket
 #lang antenna-turtle
 
-;; Defaults: 14.1 MHz, wavelength/20 segmentation, 1 mm wire, and the title
-;; "Turtle Antenna". Draw a center-fed half-wave segment at the origin.
+;; Defaults: 14.1 MHz, wavelength/20 segmentation, wavelength/1e6 vertex
+;; snapping, 1 mm wire, and the title "Turtle Antenna".
 (with-wire
-  (spread forward {(model-wavelength) / 2} feed 'center))
+  (spread forward half-wave feed 'center))
 ```
 
 Override any subset declaratively when needed:
@@ -64,7 +64,8 @@ Override any subset declaratively when needed:
 ```racket
 (model title "Center-fed dipole"
        frequency 14.2
-       max-length {(model-wavelength) / 100}
+       max-length {wavelength / 100}
+       snaplen {wavelength / 1000000}
        wire-diameter {2 * millimeter})
 ```
 
@@ -110,14 +111,19 @@ parallel expression system:
 ```
 
 Common antenna conversions are built in. Frequencies use MHz, matching
-`model-frequency`, and wavelengths use metres:
+`model-frequency`, and wavelengths use metres. The read-only `wavelength`,
+`half-wave`, and `quarter-wave` identifiers always resolve from the current
+model frequency:
 
 ```racket
 (model-frequency 446)
-(define wavelength (model-wavelength))
 (define wavelength-mm (span wavelength millimeter))
 (define frequency (wavelength->frequency wavelength)) ; 446 MHz
 ```
+
+These identifiers are dynamic expressions rather than values captured at
+module initialization, so they also follow `reset-model!` in an iterative
+generator. `(model-wavelength)` remains available as the equivalent function.
 
 `frequency->wavelength` converts an arbitrary MHz value, and
 `frequency-retuning-scale` calculates the usual inverse-frequency linear scale:
@@ -172,15 +178,18 @@ For example:
 (wire-off)
 (wire-on)
 (with-wire body ...)
+(with-points body ...)
 (with-scale factor body ...)
 (from-here body ...)
 (here)
 (goto coordinates)
-(forward distance)
-(back distance)
+(forward distance)  (forwards distance)
+(back distance)     (backward distance)  (backwards distance)
 (move direction distance ... [feed location])
+(point direction distance ... [feed location])
 (spread direction distance [feed location])
 (move-nearest)
+(reflect direction body ...)
 
 (turn direction degrees [direction degrees] ...)
 (turn-x degrees)
@@ -199,6 +208,12 @@ For example:
 
 `turn-axis` takes an arbitrary nonzero vector expressed in local coordinates.
 Its magnitude is irrelevant; it is normalized internally.
+
+`reflect` executes its body once and mirrors only the geometry produced by the
+body across a plane through the entry position in the entry local frame. The
+direction selects the plane normal: up/down mirrors local Z, left/right mirrors
+local Y, and forward/back mirrors local X. Feeds are retained on the original
+geometry and suppressed on the reflected copy.
 
 `turn` and `move` use contextual direction keywords:
 
@@ -227,8 +242,10 @@ One `turn` may contain several direction/angle pairs. They execute
 sequentially in source order; `roll-left` and `roll-right` are named from the
 turtle's viewpoint looking forward.
 
-All movement forms obey wire state. `forward` and `back` are convenient aliases
-for longitudinal movement; `move` provides the complete directional form.
+All movement forms obey wire state. `forward`/`forwards` and
+`back`/`backward`/`backwards` are equivalent longitudinal operations; `move`
+accepts the same direction spellings and provides the complete directional
+form.
 One `move` may combine several local-axis components:
 
 ```racket
@@ -239,6 +256,32 @@ The combined displacement creates one diagonal wire edge when the wire is on.
 It does not perform sequential axis-aligned movements. Direction pairs may be
 repeated or opposed; their components are summed, and each distance expression
 is evaluated exactly once in source order.
+
+`point` accepts the same directional grammar but leaves the turtle itself in
+place. It is available only while the wire is off. The first call establishes
+a stationary trace anchor; each later call draws from that anchor to its newly
+calculated relative point and advances the anchor. This makes radial geometry
+such as a rising helix direct to express:
+
+```racket
+(point right radius)
+(loop repeat segment-count do
+  (turn left segment-angle)
+  (move up segment-rise)
+  (point right radius))
+```
+
+Calling either `wire-on` or `wire-off` terminates an open point trace. A lone
+anchor is discarded, and program termination with an open anchor is legal.
+Point-generated edges use ordinary diameter, feed, exact-merging, and
+proximity-snapping behavior. Prefer `with-points` for an exception-safe lexical
+path whose final anchor is discarded automatically:
+
+```racket
+(with-points
+  (point right radius)
+  ...)
+```
 
 `spread` draws or moves one full segment centered on the current position. It
 first repositions silently to the endpoint opposite its named direction, then
@@ -262,6 +305,10 @@ The restoration also occurs if the body raises an exception, and the body's
 result values are returned normally. Entering `with-wire` while the wire is
 already on is an error, which also prevents accidental nested drawing scopes.
 
+`with-points` similarly requires wire-off and no active point trace. It starts
+an independent point path and terminates that path on normal or exceptional
+exit without rewinding other turtle state or removing geometry.
+
 `scale` multiplies movement scale but leaves conductor diameter unchanged.
 `scale-all` multiplies movement scale and diameter scale. Both affect explicit
 unit expressions. Neither affects `maximum-segment-length`, which is a global
@@ -282,9 +329,9 @@ changes, and generated geometry from the body remain in place.
 ```
 
 `push` saves the complete turtle state: position, orientation, wire state, both scale
-factors, diameter, and previous movement information. `pop` restores it without
-removing geometry created since the push. An unmatched push at program exit is
-legal; popping an empty stack is an error.
+factors, diameter, previous movement information, and any open point-trace
+anchor. `pop` restores it without removing geometry created since the push. An
+unmatched push at program exit is legal; popping an empty stack is an error.
 
 `from-here` performs an exception-safe `push`/`pop` around its lexical body.
 The complete turtle state is restored afterward, while all geometry generated
@@ -307,7 +354,8 @@ Together, the scoped forms make centered elements concise:
 ## Vertices and movement
 
 Wire-on movement creates a wire edge. Wire-off movement changes only turtle
-state. Zero movement is legal and creates no edge.
+state, except that an explicit `point` sequence emits stationary relative
+geometry. Zero movement is legal and creates no edge.
 
 Endpoints merge when their three coordinates compare equal with Racket's
 numeric `=`. Crossing wire interiors do not connect automatically.
@@ -323,10 +371,12 @@ movement draws.
 
 ## Feed behavior
 
-`feed` requires `'start`, `'center`, or `'end` and marks the next nonzero
-wire-on edge. Turns and other non-movement operations may occur before that
-movement. Wire-off movement, zero movement, a second pending feed, or program
-termination with an unused feed is an error.
+`feed` requires `'start`, `'center`, or `'end` and marks the next nonzero wire
+edge. Turns and other non-movement operations may occur before that edge.
+Wire-off movement, zero movement, a second pending feed, or program termination
+with an unused feed is an error. A completed `point` edge may consume the feed
+while ordinary turtle movement remains wire-off; the first point of a trace
+cannot carry a feed because it establishes only an anchor.
 
 Feed lowering is target-specific:
 

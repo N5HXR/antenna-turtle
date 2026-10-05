@@ -54,6 +54,7 @@
   (check-equal? (model-title) "Turtle Antenna")
   (check-equal? (model-frequency) 141/10)
   (check-equal? (maximum-segment-length) (/ (model-wavelength) 20))
+  (check-equal? (snap-length) (/ (model-wavelength) 1000000))
   (define twenty-metre-default (maximum-segment-length))
   (model-frequency 282/10)
   (check-equal? (maximum-segment-length) (/ (model-wavelength) 20))
@@ -73,25 +74,75 @@
 
   (reset-model!)
   (model title "Pair-configured model"
-         max-length (/ (model-wavelength) 100)
+         max-length (/ wavelength 100)
          frequency 7
+         snaplen (/ wavelength 2000000)
          wire-diameter (* 2 millimeter))
   (check-equal? (model-title) "Pair-configured model")
   (check-equal? (model-frequency) 7)
   (check-equal? (maximum-segment-length) (/ (model-wavelength) 100))
+  (check-equal? (snap-length) (/ (model-wavelength) 2000000))
   (wire-on)
   (forward 1)
   (check-equal? (wire-edge-diameter (only-edge)) (* 2 millimeter))
   (check-exn exn:fail:syntax?
              (lambda () (expand #'(model frequency 7 frequency 14)))))
 
+(test-case "proximity snapping repairs drift and zero disables it"
+  (reset-model!)
+  (snap-length 1/100)
+  (wire-on)
+  (forward 1)
+  (wire-off)
+  (goto (point3 2 0 0))
+  (wire-on)
+  (goto (point3 1001/1000 0 0))
+  (check-equal? (current-position) (point3 1 0 0))
+  (check-equal? (length (model-vertices)) 3)
+  (check-equal? (vertex-id (wire-edge-end (second (model-edges)))) 2)
+
+  ;; A near start reached while the wire is off is canonicalized when drawing
+  ;; resumes, so subsequent geometry shares the existing junction.
+  (wire-off)
+  (goto (point3 1001/1000 0 0))
+  (wire-on)
+  (forward 1)
+  (check-equal? (vertex-id (wire-edge-start (third (model-edges)))) 2)
+
+  ;; The source of the prospective edge is not an eligible proximity target;
+  ;; otherwise a deliberately short segment would disappear.
+  (reset-model!)
+  (snap-length 1/100)
+  (wire-on)
+  (forward 1/1000)
+  (check-equal? (length (model-edges)) 1)
+  (check-equal? (length (model-vertices)) 2)
+
+  (reset-model!)
+  (snap-length 0)
+  (wire-on)
+  (forward 1)
+  (wire-off)
+  (goto (point3 2 0 0))
+  (wire-on)
+  (goto (point3 1001/1000 0 0))
+  (check-equal? (current-position) (point3 1001/1000 0 0))
+  (check-equal? (length (model-vertices)) 4)
+  (check-exn exn:fail? (lambda () (snap-length -1))))
+
 (test-case "frequency, wavelength, span, and retuning helpers remain exact"
   (reset-model!)
+  (check-equal? wavelength (model-wavelength))
+  (check-equal? half-wave (/ wavelength 2))
+  (check-equal? quarter-wave (/ wavelength 4))
   (check-equal? (frequency->wavelength 1) 149896229/500000)
   (check-equal? (wavelength->frequency (frequency->wavelength 446)) 446)
   (model-frequency 446)
+  ;; The identifier forms resolve dynamically rather than retaining the
+  ;; wavelength that was current before model-frequency changed.
   (check-equal? (model-wavelength) (frequency->wavelength 446))
-  (check-equal? (span (model-wavelength) millimeter)
+  (check-equal? wavelength (frequency->wavelength 446))
+  (check-equal? (span wavelength millimeter)
                 (/ 149896229 223000))
   (check-equal? (span (* -2 centimeter) millimeter) -20)
   (check-equal? (frequency-retuning-scale 57/2 29) 57/58)
@@ -271,6 +322,17 @@
   (back 3)
   (check-equal? (current-position) (point3 7 -4 0)))
 
+(test-case "longitudinal direction synonyms are equivalent"
+  (reset-model!)
+  (wire-on)
+  (forwards 5)
+  (backward 1)
+  (backwards 1)
+  (move forwards 2 backward 1 backwards 1)
+  (check-equal? (current-position) (point3 3 0 0))
+  (spread backwards 2)
+  (check-equal? (current-position) (point3 2 0 0)))
+
 (test-case "move combines direction pairs into one local segment"
   (reset-model!)
   (scale 2)
@@ -282,6 +344,126 @@
   (check-true (wire-edge-feed? edge))
   (check-equal? (vertex-point (wire-edge-start edge)) (point3 0 0 0))
   (check-equal? (vertex-point (wire-edge-end edge)) (point3 14 4 1)))
+
+(test-case "point traces stationary relative endpoints while the wire is off"
+  (reset-model!)
+  (define evaluations 0)
+  (define (radius)
+    (set! evaluations (add1 evaluations))
+    2)
+  (point right (radius))
+  (check-equal? evaluations 1)
+  (check-equal? (model-vertices) '()) ; a lone point is only an anchor
+  (check-equal? (current-position) (point3 0 0 0))
+  (turn left 90)
+  (move up 1)
+  (point right 2)
+  (define edge (only-edge))
+  (check-equal? (vertex-point (wire-edge-start edge)) (point3 0 -2 0))
+  (check-equal? (vertex-point (wire-edge-end edge)) (point3 2 0 1))
+  ;; Point tracing never relocates the turtle itself.
+  (check-equal? (current-position) (point3 0 0 1)))
+
+(test-case "point supports chained directions, feeds, and snapping"
+  (reset-model!)
+  (snap-length 1/100)
+  (point forward 1 up 2)
+  (point forward 2 up 2 feed 'center)
+  (check-equal? (wire-edge-feed-location (only-edge)) 'center)
+  ;; The next endpoint is close enough to the first endpoint to close there.
+  (point forward 1001/1000 up 2)
+  (check-equal? (length (model-vertices)) 2)
+  (check-equal? (vertex-id (wire-edge-end (second (model-edges)))) 1)
+  (check-equal? (current-position) (point3 0 0 0)))
+
+(test-case "point requires wire-off and either wire state command terminates its trace"
+  (reset-model!)
+  (point forward 1)
+  (wire-on) ; discard the lone point anchor
+  (check-exn #rx"wire to be off" (lambda () (point forward 2)))
+  (wire-off)
+  (point forward 2)
+  (point forward 3)
+  (define edge (only-edge))
+  (check-equal? (vertex-point (wire-edge-start edge)) (point3 2 0 0))
+  (check-equal? (vertex-point (wire-edge-end edge)) (point3 3 0 0))
+  ;; Ending with an open point anchor is explicitly valid.
+  (validate-model!)
+
+  ;; wire-off also snips a trace without requiring an extraneous wire-on.
+  (reset-model!)
+  (point forward 1)
+  (wire-off)
+  (point forward 2)
+  (point forward 4)
+  (define snipped-edge (only-edge))
+  (check-equal? (vertex-point (wire-edge-start snipped-edge))
+                (point3 2 0 0))
+  (check-equal? (vertex-point (wire-edge-end snipped-edge))
+                (point3 4 0 0)))
+
+(test-case "with-points scopes a point trace and cleans up after exceptions"
+  (reset-model!)
+  (define result
+    (with-points
+      (point left 1)
+      (point left 2)
+      'body-result))
+  (check-equal? result 'body-result)
+  (point right 3)
+  (point right 4)
+  (define edges (model-edges))
+  (check-equal? (length edges) 2)
+  (check-equal? (vertex-point (wire-edge-start (second edges)))
+                (point3 0 -3 0))
+
+  (reset-model!)
+  (check-exn exn:fail?
+             (lambda ()
+               (with-points
+                 (point forward 1)
+                 (error 'model "deliberate test failure"))))
+  (point forward 2)
+  (point forward 3)
+  (define post-error-edge (only-edge))
+  (check-equal? (vertex-point (wire-edge-start post-error-edge))
+                (point3 2 0 0))
+
+  (reset-model!)
+  (wire-on)
+  (check-exn #rx"wire must be off"
+             (lambda () (with-points (void))))
+  (wire-off)
+  (point forward 1)
+  (check-exn #rx"already active"
+             (lambda () (with-points (void)))))
+
+(test-case "point rejects a feed before its first segment"
+  (reset-model!)
+  (check-exn #rx"first point" (lambda () (point forward 1 feed 'center)))
+  (check-equal? (model-edges) '())
+  (validate-model!)
+  (check-exn #rx"start.*center.*end"
+             (lambda () (point forward 1 feed #t))))
+
+(test-case "push and pop restore the point trace anchor"
+  (reset-model!)
+  (point forward 1)
+  (push)
+  (turn left 90)
+  (point forward 2)
+  (pop)
+  (point forward 3)
+  (define edges (model-edges))
+  (check-equal? (length edges) 2)
+  (check-equal? (vertex-point (wire-edge-start (first edges)))
+                (point3 1 0 0))
+  (check-equal? (vertex-point (wire-edge-end (first edges)))
+                (point3 0 2 0))
+  (check-equal? (vertex-point (wire-edge-start (second edges)))
+                (point3 1 0 0))
+  (check-equal? (vertex-point (wire-edge-end (second edges)))
+                (point3 3 0 0)))
 
 (test-case "move and spread accept explicit feed locations"
   (reset-model!)
@@ -379,6 +561,52 @@
       (error 'test "leave pushed scope")))
   (check-equal? (current-position) (point3 0 0 0))
   (check-equal? (length (model-edges)) 3))
+
+(test-case "reflect copies scoped geometry in the captured local frame"
+  (reset-model!)
+  (wire-diameter (* 3 millimeter))
+  (define result
+    (reflect up
+      (with-wire
+        (move up 2 feed 'start)
+        (move left 1))
+      'body-result))
+  (check-equal? result 'body-result)
+  (check-equal? (current-position) (point3 0 1 2))
+  (check-equal? (length (model-edges)) 4)
+  (check-equal? (length (filter wire-edge-feed? (model-edges))) 1)
+  (check-equal? (wire-edge-feed-location (first (model-edges))) 'start)
+  (check-false (wire-edge-feed-location (third (model-edges))))
+  (check-equal? (wire-edge-diameter (third (model-edges)))
+                (* 3 millimeter))
+  (define reflected-first (third (model-edges)))
+  (define reflected-second (fourth (model-edges)))
+  (check-equal? (vertex-point (wire-edge-start reflected-first))
+                (point3 0 0 0))
+  (check-equal? (vertex-point (wire-edge-end reflected-first))
+                (point3 0 0 -2))
+  (check-equal? (vertex-point (wire-edge-end reflected-second))
+                (point3 0 1 -2))
+
+  ;; Geometry wholly inside the reflection plane is not duplicated.
+  (reset-model!)
+  (reflect down
+    (with-wire (move forward 1)))
+  (check-equal? (length (model-edges)) 1)
+
+  ;; "up" is relative to the orientation captured on entry, not global Z.
+  (reset-model!)
+  (turn up 90)
+  (reflect up
+    (with-wire (move up 2)))
+  (check-equal? (length (model-edges)) 2)
+  (define endpoints
+    (map (lambda (edge) (vertex-point (wire-edge-end edge)))
+         (model-edges)))
+  (check-equal? endpoints (list (point3 -2 0 0) (point3 2 0 0)))
+
+  (check-exn exn:fail:syntax?
+             (lambda () (expand #'(reflect roll-left (void))))))
 
 (test-case "here and goto use exact global coordinates"
   (reset-model!)

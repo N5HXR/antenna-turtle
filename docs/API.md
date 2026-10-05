@@ -54,20 +54,28 @@ MHz to a wavelength in metres. `(wavelength->frequency wavelength-metres)`
 performs the inverse conversion and returns MHz. Both use the exact SI speed of
 light, 299,792,458 metres per second, so exact inputs produce exact results.
 
-`(model-wavelength)` is shorthand for converting the current
-`model-frequency`:
+Three read-only identifiers are always available and resolve against the
+current `model-frequency` whenever they are used:
 
 ```racket
 (model-frequency 446)
-(define wavelength (model-wavelength))
+wavelength
+half-wave
+quarter-wave
 ```
+
+They therefore remain correct across `reset-model!` and iterative generators;
+they are identifier macros rather than values captured when a module starts.
+Normal evaluation order still applies if their value is saved in another
+variable. `(model-wavelength)` remains the equivalent procedural API and is
+useful to libraries and tooling.
 
 `(span length unit)` expresses a physical length as a unitless count of the
 chosen positive unit. The length may be signed, which also makes `span` useful
 for offsets:
 
 ```racket
-(span (model-wavelength) millimeter) ; objective millimetres
+(span wavelength millimeter)         ; objective millimetres
 (span {2 * foot} inch)               ; 24
 ```
 
@@ -122,23 +130,25 @@ is equivalent to `(...)`.
 
 Every setting has a useful default, so a module may begin tracing wire without
 any model declaration. The defaults are title `"Turtle Antenna"`, frequency
-`14.1` MHz, maximum segment length of one-twentieth wavelength, and wire
-diameter of one millimetre.
+`14.1` MHz, maximum segment length of one-twentieth wavelength, snap length of
+one-millionth wavelength, and wire diameter of one millimetre.
 
 ### `(model [setting value] ...)`
 
 Sets any desired subset using contextual `title`, `frequency`, `max-length`,
-and `wire-diameter` pairs. Each setting may appear at most once:
+`snaplen`, and `wire-diameter` pairs. Each setting may appear at most once:
 
 ```racket
 (model title "Three-element Yagi"
        frequency 14.1
-       max-length {(model-wavelength) / 40}
+       max-length {wavelength / 40}
+       snaplen {wavelength / 1000000}
        wire-diameter {2 * millimeter})
 ```
 
-Pair order is not significant. Frequency is applied before maximum length, so
-a `max-length` expression may safely call `model-wavelength` in any order.
+Pair order is not significant. Frequency is applied before derived lengths, so
+`max-length` and `snaplen` expressions may safely call `model-wavelength` in
+any order.
 
 The individual setting operations below remain available for calculated or
 dynamically scoped programs.
@@ -166,6 +176,21 @@ dynamically scoped programs.
 - The count for an edge is `ceiling(edge-length / maximum-segment-length)`.
 - A center-fed edge's count is increased when necessary to make it odd.
 
+### `(snap-length [length])`
+
+- Default behavior: one-millionth of the wavelength at `model-frequency`.
+- Units: metres in the global model coordinate system.
+- Passing `#f` restores the automatic wavelength-derived default.
+- Passing `0` disables proximity snapping; exactly equal coordinates still
+  share a vertex.
+- A positive setting snaps a newly drawn endpoint to the nearest eligible
+  existing vertex within the distance. Exact coordinates are copied, and the
+  turtle finishes at the canonical coordinate.
+- Ties retain vertex creation order. The prospective edge's own source is
+  excluded so that an intentionally short edge is not silently collapsed.
+- Snapping applies only to explicit vertices, not crossings or the interior of
+  an existing edge.
+
 ### `(wire-diameter length)`
 
 - Initial value: `1 millimeter`.
@@ -177,11 +202,13 @@ dynamically scoped programs.
 
 ### `(wire-off)`
 
-Subsequent movement changes turtle state without generating an edge.
+Subsequent movement changes turtle state without generating an edge. Calling
+it also terminates any open `point` trace, even when the wire is already off.
 
 ### `(wire-on)`
 
-Subsequent nonzero movement generates a wire edge.
+Subsequent nonzero movement generates a wire edge and any open `point` trace is
+terminated.
 
 ### `(with-wire body ...+)`
 
@@ -204,11 +231,11 @@ existing models; new code should use the wire terminology.
 All directions below are in the current local frame. Distance expressions are
 evaluated exactly once and multiplied by the current movement scale.
 
-### `(forward distance)`
+### `(forward distance)` / `(forwards distance)`
 
 Moves along local `+X`.
 
-### `(back distance)`
+### `(back distance)` / `(backward distance)` / `(backwards distance)`
 
 Moves along local `-X`.
 
@@ -217,8 +244,11 @@ Moves along local `-X`.
 `direction` is a contextual keyword and does not require quoting:
 
 ```racket
-(move forward distance) ; +X
-(move back distance)    ; -X
+(move forward distance)   ; +X
+(move forwards distance)  ; +X
+(move back distance)      ; -X
+(move backward distance)  ; -X
+(move backwards distance) ; -X
 (move left distance)    ; +Y
 (move right distance)   ; -Y
 (move up distance)      ; +Z
@@ -247,6 +277,44 @@ Pairs may be supplied in any order, repeated directions are added, and opposing
 directions subtract. Every distance expression is evaluated exactly once in
 source order. The current movement scale applies uniformly to the completed
 local displacement vector.
+
+### `(point direction distance ... [feed location])`
+
+Calculates a point relative to the current turtle position and local frame
+without relocating the turtle. It accepts the same chained directions,
+scaling, contextual keywords, and evaluate-once behavior as `move`.
+
+`point` is legal only while the wire is off. The first call stores a trace
+anchor but does not insert an isolated model vertex. Each subsequent call
+creates an edge from the saved anchor to the newly calculated point, then saves
+the canonical, possibly snapped endpoint as the next anchor:
+
+```racket
+(point right radius)
+(turn left angle)
+(move up rise)
+(point right radius)
+```
+
+Wire-off movement, turning, and scaling leave an open point trace intact.
+Calling either `wire-on` or `wire-off` terminates it; a lone anchor is silently
+discarded. An open anchor at export or program termination is legal.
+
+Inline `feed` applies to the edge ending at that call. It is an error on the
+first point because no edge exists. Zero-length point edges follow ordinary
+zero-movement feed rules. Completed point edges use current wire diameter,
+exact endpoint merging, and proximity snapping. The point anchor is part of
+the complete turtle state saved and restored by `push`, `pop`, and `from-here`.
+
+### `(with-points body ...+)`
+
+Runs `body` as an independent, exception-safe point trace. Wire must be off and
+no point trace may already be active on entry. The final trace anchor is
+discarded on normal or exceptional exit; generated geometry, position,
+orientation, scales, settings, and body result values otherwise survive.
+
+Use a direct `(wire-off)` call as the lower-level way to snip an open point
+trace without first turning the wire on.
 
 ### `(spread direction distance [feed location])`
 
@@ -351,13 +419,32 @@ turtle state, and retains geometry generated inside the body.
 
 `with-push` remains as a compatibility alias.
 
+### `(reflect direction body ...+)`
+
+Executes `body` exactly once, then copies the wire edges it created across a
+reflection plane through the turtle position captured on entry. The plane is
+oriented in the local frame captured on entry:
+
+- `up` or `down`: negate local Z across the local XY plane;
+- `left` or `right`: negate local Y across the local XZ plane;
+- `forward`, `forwards`, `back`, `backward`, or `backwards`: negate local X
+  across the local YZ plane.
+
+Opposite direction names intentionally select the same plane. Reflected edges
+retain their diameters but never copy feeds. Vertices in the plane are shared,
+and an edge wholly in the plane is not duplicated. Vertex snapping applies to
+the copy. Arbitrary Racket effects in the body occur only once; the body's
+result values and final turtle state are preserved. The body must not reset or
+replace the current model.
+
 ## 9. Feeds
 
 ### `(feed location)`
 
-Marks the next nonzero wire-on edge with mandatory location `'start`, `'center`,
-or `'end`. Multiple model feeds are permitted unless an exporter imposes a
-narrower limit. `move` and `spread` can attach the same location inline.
+Marks the next nonzero edge with mandatory location `'start`, `'center`, or
+`'end`. Multiple model feeds are permitted unless an exporter imposes a
+narrower limit. `move`, `point`, and `spread` can attach the same location
+inline.
 
 Before the marked edge, the program may rotate or change non-movement settings.
 These are errors while a feed is pending:
@@ -366,6 +453,10 @@ These are errors while a feed is pending:
 - wire-off movement;
 - zero movement;
 - module termination without a consuming edge.
+
+A completed `point` edge may consume a feed while ordinary turtle movement is
+wire-off. Inline feed notation on the first point of a trace is an error
+because that call establishes only an anchor.
 
 Target behavior:
 
@@ -378,7 +469,8 @@ Target behavior:
 
 ### `(reset-model!)`
 
-Clears geometry, turtle state, stack, pending feed, and settings.
+Clears geometry, turtle state (including any point-trace anchor), stack,
+pending feed, and settings.
 
 ### `(validate-model!)`
 

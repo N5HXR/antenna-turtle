@@ -36,13 +36,25 @@ Use ~wire-on~, ~wire-off~, and ~with-wire~.  The old pen names remain
 compatibility aliases.
 
 * commit ffd9c635c72bda742a803e4c88cd3ba56e7de878
-* TODO syntax highlighting and indentation for:
+* DONE syntax highlighting and indentation for:
 with-wire
 (move ... feed 'where)
 from-here
-* TODO add 'backward' and 'backwards' as synonyms to 'back'
+* DONE add 'backward' and 'backwards' as synonyms to 'back'
 Also, ensure 'forward' and 'forwards' both exist
-* TODO need to add a "snap" feature
+* DONE need to add a "snap" feature
 If, due to imprecision, a vertex ends up eerily close to another, but not exactly equal, I'd like to "snap" them together.  I had a model that traced some wire curves where an expected intersection didn't actually occur.  
 
-There should be a defaulted distance metric based on wavelength.  If two points are within, say, lambda/1000, they should be connected.  The user can override this with a (model ...) parameter pair which should be "snaplen METERS".  
+There is a conservative default distance of lambda/1000000 for floating-point
+drift. The user can override it with the ~(model snaplen METERS)~ pair; zero
+disables proximity snapping while retaining exact vertex merging.
+
+* DONE Add wavelength globals
+Provide the read-only, dynamically resolved identifiers ~wavelength~,
+~half-wave~, and ~quarter-wave~. Keep ~(model-wavelength)~ as the procedural
+compatibility and tooling API.
+
+* DONE Add local-relative reflection
+~(reflect direction body ...)~ executes the body once and mirrors its new wire
+geometry across the corresponding local plane. Reflected feeds are suppressed,
+plane vertices are shared, and wholly in-plane edges are not duplicated.

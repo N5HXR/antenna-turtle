@@ -9,7 +9,7 @@
        max-length    {50 * millimeter}
        wire-diameter {3 * millimeter})
 
-(define wave    (span (model-wavelength) millimeter)) ;; wavelength in objective mm
+(define wave    (span wavelength millimeter)) ;; wavelength in objective mm
 (define diam    200)                          ;; design diameter of helix
 (define circ    {diam * pi})                  ;; calculated circumference
 (define seg-per 12)                           ;; segments per turn

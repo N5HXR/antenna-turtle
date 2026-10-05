@@ -17,15 +17,22 @@
  (rename-out [antenna-module-begin #%module-begin])
  #%braces
  (all-from-out (planet jphelps/loop:1:25))
+ wavelength
+ half-wave
+ quarter-wave
  (except-out (all-from-out "private/core.rkt")
-             move-local move-vector-local spread-local
-             call-with-wire call-with-scale call-from-here
+             move-local move-vector-local point-vector-local spread-local
+             call-with-wire call-with-points call-with-scale call-from-here
+             call-with-reflection
              call-with-pen call-with-push)
  model
  turn
  move
+ point
  spread
+ reflect
  with-wire
+ with-points
  from-here
  ;; Compatibility forms retained for existing models.
  with-pen
@@ -40,6 +47,21 @@
 ;; k-infix while retaining the lexical context of identifiers inside the form.
 (define-syntax-rule (#%braces token ...)
   ($ token ...))
+
+;; These read like global geometry constants, but deliberately resolve at each
+;; use so reset-model! and iterative generators always see the current model
+;; frequency rather than a value captured when the module was initialized.
+(define-syntax wavelength
+  (syntax-id-rules ()
+    [wavelength (model-wavelength)]))
+
+(define-syntax half-wave
+  (syntax-id-rules ()
+    [half-wave (/ (model-wavelength) 2)]))
+
+(define-syntax quarter-wave
+  (syntax-id-rules ()
+    [quarter-wave (/ (model-wavelength) 4)]))
 
 (define-syntax (antenna-module-begin stx)
   (syntax-case stx ()
@@ -80,8 +102,8 @@
 
   (define (move-direction-components direction whole-form)
     (case (syntax-e direction)
-      [(forward) '(1 0 0)]
-      [(back)    '(-1 0 0)]
+      [(forward forwards) '(1 0 0)]
+      [(back backward backwards) '(-1 0 0)]
       [(left)    '(0 1 0)]
       [(right)   '(0 -1 0)]
       [(up)      '(0 0 1)]
@@ -89,7 +111,9 @@
       [else
        (raise-syntax-error
         'move
-        "expected a direction: forward, back, left, right, up, or down"
+        (string-append
+         "expected forward/forwards, back/backward/backwards, left, right, "
+         "up, or down")
         whole-form
         direction)]))
 
@@ -107,7 +131,21 @@
     (cond
       [(null? terms) #'0]
       [(null? (cdr terms)) (car terms)]
-      [else #`(+ #,@terms)])))
+      [else #`(+ #,@terms)]))
+
+  (define (reflection-axis direction whole-form)
+    (case (syntax-e direction)
+      [(forward forwards back backward backwards) 'x]
+      [(left right) 'y]
+      [(up down) 'z]
+      [else
+       (raise-syntax-error
+        'reflect
+        (string-append
+         "expected forward/forwards, back/backward/backwards, left, right, "
+         "up, or down")
+        whole-form
+        direction)])))
 
 ;; Direction words are contextual syntax keywords. Matching by datum is
 ;; deliberate: ordinary lexical bindings with these names remain legal.
@@ -163,6 +201,50 @@
              (list #`(feed #,(car feed-temporaries))))
       (move-vector-local #,x-expression #,y-expression #,z-expression)))
 
+;; Place stationary geometry endpoints relative to the current turtle frame.
+;; The first call establishes a trace anchor; later calls emit edges without
+;; moving the turtle itself. Its direction grammar deliberately mirrors move.
+(define-syntax (point stx)
+  (define pairs
+    (syntax-pairs
+     'point stx
+     (string-append
+      "expected direction/distance pairs and an optional feed/location pair, "
+      "for example (point right radius up height feed 'center)")))
+  (define values (map cdr pairs))
+  (define temporaries (generate-temporaries values))
+  (define direction-pairs
+    (for/list ([pair (in-list pairs)]
+               [temporary (in-list temporaries)]
+               #:unless (eq? (syntax-e (car pair)) 'feed))
+      (cons (move-direction-components (car pair) stx) temporary)))
+  (when (null? direction-pairs)
+    (raise-syntax-error 'point "expected at least one point direction" stx))
+  (define feed-temporaries
+    (for/list ([pair (in-list pairs)]
+               [temporary (in-list temporaries)]
+               #:when (eq? (syntax-e (car pair)) 'feed))
+      temporary))
+  (when (> (length feed-temporaries) 1)
+    (raise-syntax-error 'point "feed may be specified only once" stx))
+  (define components (map car direction-pairs))
+  (define distance-temporaries (map cdr direction-pairs))
+  (define bindings
+    (for/list ([temporary (in-list temporaries)]
+               [value (in-list values)])
+      #`[#,temporary #,value]))
+  (define x-expression
+    (move-axis-expression components distance-temporaries 0))
+  (define y-expression
+    (move-axis-expression components distance-temporaries 1))
+  (define z-expression
+    (move-axis-expression components distance-temporaries 2))
+  (define feed-expression
+    (if (null? feed-temporaries) #'#f (car feed-temporaries)))
+  #`(let* (#,@bindings)
+      (point-vector-local #,x-expression #,y-expression #,z-expression
+                          #,feed-expression)))
+
 (define-syntax (spread stx)
   (syntax-parse stx
     [(_ direction:id distance:expr)
@@ -182,6 +264,20 @@
        "(spread direction distance feed location)")
       stx)]))
 
+;; The direction names select the normal of a reflection plane in the local
+;; frame captured on entry. Opposite names intentionally describe the same
+;; plane: up and down both reflect across local XY, for example.
+(define-syntax (reflect stx)
+  (syntax-parse stx
+    [(_ direction:id body ...+)
+     (define axis (reflection-axis #'direction stx))
+     #`(call-with-reflection '#,axis (lambda () body ...))]
+    [(_ . _)
+     (raise-syntax-error
+      'reflect
+      "expected (reflect direction body ...+)"
+      stx)]))
+
 (define-syntax (model stx)
   (define pairs
     (if (null? (cdr (syntax->list stx)))
@@ -190,15 +286,15 @@
          'model stx
          (string-append
           "expected setting/value pairs using title, frequency, max-length, "
-          "or wire-diameter"))))
+          "snaplen, or wire-diameter"))))
   (define seen (make-hasheq))
   (define settings (make-hasheq))
   (for ([pair (in-list pairs)])
     (define key (syntax-e (car pair)))
-    (unless (memq key '(title frequency max-length wire-diameter))
+    (unless (memq key '(title frequency max-length snaplen wire-diameter))
       (raise-syntax-error
        'model
-       "expected title, frequency, max-length, or wire-diameter"
+       "expected title, frequency, max-length, snaplen, or wire-diameter"
        stx
        (car pair)))
     (when (hash-ref seen key #f)
@@ -212,18 +308,22 @@
   (define forms
     (filter
      values
-     (for/list ([key '(title frequency max-length wire-diameter)])
+     (for/list ([key '(title frequency max-length snaplen wire-diameter)])
        (define value (hash-ref settings key #f))
        (and value
             (case key
               [(title)         #`(model-title #,value)]
               [(frequency)     #`(model-frequency #,value)]
               [(max-length)    #`(maximum-segment-length #,value)]
+              [(snaplen)       #`(snap-length #,value)]
               [(wire-diameter) #`(wire-diameter #,value)])))))
   #`(begin #,@forms))
 
 (define-syntax-rule (with-wire body ...)
   (call-with-wire (lambda () body ...)))
+
+(define-syntax-rule (with-points body ...)
+  (call-with-points (lambda () body ...)))
 
 (define-syntax-rule (from-here body ...)
   (call-from-here (lambda () body ...)))

@@ -115,13 +115,13 @@ Create `dipole.rkt`:
 ```racket
 #lang antenna-turtle
 
-(define wavelength {20 * meter})
-(define total-length {wavelength / 2})
-
 (model title "Center-fed half-wave dipole"
        frequency 14.2
        max-length {wavelength / 100}
+       snaplen {wavelength / 1000000}
        wire-diameter {2 * millimeter})
+
+(define total-length half-wave)
 
 ;; One wire centered at the origin and directed along local +X.
 (with-wire
@@ -129,8 +129,9 @@ Create `dipole.rkt`:
 ```
 
 The entire `model` form is optional. With no declaration, the title is
-`"Turtle Antenna"`, frequency is 14.1 MHz, wire diameter is 1 mm, and maximum
-segment length is one-twentieth wavelength. Therefore this is also complete:
+`"Turtle Antenna"`, frequency is 14.1 MHz, wire diameter is 1 mm, maximum
+segment length is one-twentieth wavelength, and vertex snap length is
+one-millionth wavelength. Therefore this is also complete:
 
 ```racket
 #lang antenna-turtle
@@ -251,7 +252,8 @@ written atomically, and the existing LF or CRLF line-ending style is retained.
 
 The initial local frame is right-handed:
 
-- forward is `+X`;
+- forward/forwards is `+X`;
+- back/backward/backwards is `-X`;
 - left is `+Y`;
 - up is `+Z`.
 
@@ -265,21 +267,28 @@ Several local axes can be combined into one movement:
 ```
 
 With the wire on, that expression draws one diagonal wire—not two wires with
-a corner between them. This is useful for polygonal approximations of curves.
-For example, one turn of a rising helix can be written as:
+a corner between them.
+
+For radial curves, `point` can instead emit endpoints relative to a stationary
+turtle. The first point establishes a trace anchor; later points connect to it
+without moving the turtle itself. One turn of a rising helix can therefore be
+written directly in terms of radius:
 
 ```racket
 (define segments-per-turn 12)
 (define angle (/ 360 segments-per-turn))
 (define rise-per-segment (/ helix-pitch segments-per-turn))
 
+(point right helix-radius)
 (loop repeat segments-per-turn
-      do (move forward chord-length up rise-per-segment)
-         (turn left angle))
+      do (turn left angle)
+         (move up rise-per-segment)
+         (point right helix-radius))
 ```
 
-Any number of direction/distance pairs may be combined. All are interpreted in
-the same local frame, and together they produce one segment.
+No circumference, chord-length, or pi calculation is needed. Any number of
+direction/distance pairs may be combined in either `move` or `point`. All are
+interpreted in the same local frame.
 
 Turns may also be chained, but they are applied sequentially because 3D
 rotations do not commute:
@@ -318,6 +327,27 @@ turtle. Prefer the scoped form for drawing:
 `with-wire` requires the wire to be off on entry. It restores wire-off even if
 the body raises an error, helping reveal accidentally overlapping drawing
 scopes.
+
+An explicit `point` sequence is the exception to the usual wire-off geometry
+rule. It traces between stationary relative endpoints while ordinary turtle
+movement remains non-drawing. `point` is an error while the wire is on. Calling
+either `wire-on` or `wire-off` ends any open point trace, so `wire-off` is the
+simple low-level way to separate independent paths. A single unconnected point
+is discarded, including at normal program termination.
+
+Prefer `with-points` when a path has a natural lexical extent:
+
+```racket
+(with-points
+  (point right radius)
+  (loop repeat segments do
+    (turn roll-left angle)
+    (point right radius)))
+```
+
+It requires wire-off and no active point trace, and discards its final anchor
+on normal or exceptional exit. Geometry and other turtle changes survive.
+
 The former `pen-up`, `pen-down`, and `with-pen` names remain compatibility
 aliases, but new models should use wire terminology.
 
@@ -359,7 +389,27 @@ stable boom origin.
 
 The former name `with-push` remains a compatibility alias.
 
-### 5.5 Scaling and Frequency Retuning
+### 5.5 Bilateral Symmetry
+
+`reflect` executes a construction once and mirrors the wire geometry produced
+inside it. Directions are local and select the normal of the reflection plane:
+
+```racket
+(reflect up
+  (construct-upper-half))
+```
+
+Here the original geometry is reflected across the local XY plane through the
+turtle's position at entry. `down` is equivalent. Likewise, left/right reflect
+local Y and forward/back reflect local X. This remains local-relative after any
+prior turtle rotation.
+
+Only geometry is copied: the body and its ordinary Racket side effects execute
+once. Wire diameter is retained, feeds are suppressed on the reflected copy,
+and geometry in the reflection plane is shared rather than duplicated. The
+turtle remains wherever the original body finished.
+
+### 5.6 Scaling and Frequency Retuning
 
 `scale` multiplies movement distances but not conductor diameter. The scoped
 form makes frequency correction concise:
@@ -381,9 +431,8 @@ workflow:
 ```racket
 (model-frequency 446)
 
-;; Wavelengths are physical lengths in metres. Convert one to a unitless count
-;; when authoring a section under (with-scale millimeter ...).
-(define wavelength (model-wavelength))
+;; The wavelength identifiers are physical lengths in metres. Convert one to a
+;; unitless count when authoring under (with-scale millimeter ...).
 (define wavelength-mm (span wavelength millimeter))
 
 ;; Convert either direction for calculated designs.
@@ -398,7 +447,10 @@ workflow:
 MHz and metres respectively. They use the exact SI speed of light, so exact
 inputs remain exact. `span` accepts a physical length and a positive unit and
 returns the unitless number of those units; signed lengths are allowed for
-offset calculations.
+offset calculations. The read-only identifiers `wavelength`, `half-wave`, and
+`quarter-wave` resolve from the current model frequency whenever used. They
+therefore follow `reset-model!` and a subsequent frequency change in iterative
+generators. `(model-wavelength)` remains the equivalent procedural API.
 
 ## 6. Repetition and Layout Tables
 
@@ -469,6 +521,23 @@ MATLAB supports center feeds only and reports an error for start/end feeds.
 
 Multiple feeds are supported by the core language and wire exporters. The loft
 MATLAB exporter currently supports at most one.
+
+### Vertex snapping
+
+Newly drawn endpoints snap to an existing model vertex when they differ only
+by the configured tolerance. The default is `model-wavelength / 1000000`,
+which is intended to absorb floating-point rotation error without closing
+ordinary intentional gaps. Override it in metres or disable proximity snapping:
+
+```racket
+(model snaplen {0.5 * millimeter})
+(model snaplen 0) ; exact coordinate merging remains enabled
+```
+
+The nearest qualifying vertex wins, with creation order breaking ties. The
+turtle adopts the copied exact coordinate, preventing drift from propagating.
+Only endpoints are considered: crossing wires and endpoints near the interior
+of another wire do not become junctions automatically.
 
 ## 9. MATLAB Workflow
 
@@ -549,9 +618,10 @@ rejects an already-on wire.
 
 ### Unused or misplaced feed error
 
-Ensure `(feed location)` is followed by a nonzero movement while the wire is
-on. Prefer `(move ... feed location)` or `(spread ... feed location)` when the
-feed belongs directly to that edge.
+Ensure `(feed location)` is followed by a nonzero wire-on movement or a
+completed point-trace edge. Prefer `(move ... feed location)`,
+`(point ... feed location)`, or `(spread ... feed location)` when the feed
+belongs directly to that edge.
 
 ### Loft MATLAB export rejects geometry
 
@@ -571,7 +641,7 @@ The project includes `editors/antenna-turtle-emacs.el`. It teaches
 faces for:
 
 - Antenna Turtle procedures and exporters;
-- DSL macros such as `move`, `turn`, `spread`, and the `with-*` forms;
+- DSL macros such as `move`, `point`, `turn`, `spread`, and the `with-*` forms;
 - contextual direction words and unit constants;
 - emphasized infix operators with muted `{` and `}` delimiters;
 - `loop` and its Common Lisp clause words.
@@ -582,9 +652,9 @@ Load it from `init.el`, using the actual project location. On Windows:
 (load "C:/Users/YourName/source/antenna-turtle/editors/antenna-turtle-emacs.el")
 ```
 
-After adding the line, restart Emacs. For an already-open source buffer, use
-`M-x normal-mode` to reinstall font lock, followed by `M-x font-lock-ensure` if
-the buffer is not immediately recolored.
+After adding the line, restart Emacs. Loading or reloading the helper refreshes
+already-open Antenna Turtle buffers. Its setup command is also available as
+`M-x antenna-turtle-scheme-setup`; re-entering `scheme-mode` is unnecessary.
 
 The extension activates font-lock additions only when the buffer starts with
 `#lang antenna-turtle`; ordinary Scheme buffers retain their normal coloring.

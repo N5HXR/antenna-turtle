@@ -27,14 +27,17 @@
  validate-model!
  model-title
  maximum-segment-length
+ snap-length
  model-frequency
  mmana-frequency
 
  ;; Turtle operations.
- wire-off wire-on call-with-wire call-with-scale call-from-here
+ wire-off wire-on call-with-wire call-with-points call-with-scale call-from-here
+ call-with-reflection
  ;; Compatibility names retained for existing models.
  pen-up pen-down call-with-pen call-with-push
- forward back move-local move-vector-local spread-local move-nearest
+ forward forwards back backward backwards
+ move-local move-vector-local point-vector-local spread-local move-nearest
  here goto
  turn-x turn-y turn-z turn-axis
  scale scale-all
@@ -78,7 +81,7 @@
 ;; An orientation is a row-major 3x3 local-to-global matrix.
 (struct turtle-state
   (position orientation pen-down? movement-scale diameter-scale
-            base-diameter previous-source)
+            base-diameter previous-source point-anchor)
   #:transparent)
 
 (define identity-matrix
@@ -93,6 +96,7 @@
                 1
                 1
                 millimeter
+                #f
                 #f))
 
 (define current-antenna-model
@@ -106,6 +110,7 @@
 ;; a dynamic one-twentieth-wavelength default.
 (define model-title (make-parameter "Turtle Antenna"))
 (define maximum-segment-length-override (make-parameter #f))
+(define snap-length-override (make-parameter #f))
 (define model-frequency (make-parameter 141/10))
 ;; Compatibility alias for models written before the frequency became a
 ;; target-independent setting.
@@ -139,6 +144,25 @@
            (maximum-segment-length-override length))
          (maximum-segment-length-override #f))]))
 
+;; Proximity snapping is deliberately much tighter than solver segmentation:
+;; it repairs floating-point drift without treating deliberate small gaps as
+;; junctions. An explicit zero disables proximity snapping while exact points
+;; continue to share one vertex.
+(define snap-length
+  (case-lambda
+    [()
+     (if (eq? (snap-length-override) #f)
+         (/ (model-wavelength) 1000000)
+         (snap-length-override))]
+    [(length)
+     (cond
+       [(eq? length #f) (snap-length-override #f)]
+       [else
+        (ensure-real 'snap-length length "snap length")
+        (when (negative? length)
+          (raise-argument-error 'snap-length "nonnegative-real?" length))
+        (snap-length-override length)])]))
+
 ;; Express a physical length as a count of an arbitrary positive unit. This is
 ;; especially useful when a geometry is authored in objective millimetres and
 ;; converted to metres later by with-scale.
@@ -166,13 +190,14 @@
   (pending-feed-location #f)
   (model-title "Turtle Antenna")
   (maximum-segment-length-override #f)
+  (snap-length-override #f)
   (model-frequency 141/10)
   (void))
 
 (define (validate-model!)
   (when (pending-feed-location)
     (error 'antenna-turtle
-           "feed marker was not consumed by a nonzero wire-on movement"))
+           "feed marker was not consumed by a nonzero wire edge"))
   (void))
 
 (define (model-vertices [m (current-antenna-model)])
@@ -296,12 +321,19 @@
 
 (define (wire-off)
   (current-turtle-state
-   (struct-copy turtle-state (current-turtle-state) [pen-down? #f]))
+   (struct-copy turtle-state (current-turtle-state)
+     [pen-down? #f]
+     [point-anchor #f]))
   (void))
 
 (define (wire-on)
+  ;; Explicit movement drawing and stationary point tracing are mutually
+  ;; exclusive. Existing point-generated geometry survives; only the open
+  ;; trace anchor is discarded.
   (current-turtle-state
-   (struct-copy turtle-state (current-turtle-state) [pen-down? #t]))
+   (struct-copy turtle-state (current-turtle-state)
+     [pen-down? #t]
+     [point-anchor #f]))
   (void))
 
 (define pen-up wire-off)
@@ -318,6 +350,23 @@
     wire-off))
 
 (define call-with-pen call-with-wire)
+
+(define (call-with-points thunk)
+  (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
+    (raise-argument-error 'call-with-points
+                          "(procedure-arity-includes/c 0)" thunk))
+  (define state (current-turtle-state))
+  (when (turtle-state-pen-down? state)
+    (error 'with-points "wire must be off"))
+  (when (turtle-state-point-anchor state)
+    (error 'with-points "a point trace is already active"))
+  ;; wire-off now doubles as the explicit point-trace terminator. Running it
+  ;; in the post-thunk guarantees that a path cannot leak from this lexical
+  ;; scope, including when the body exits through an exception.
+  (dynamic-wind
+    void
+    thunk
+    wire-off))
 
 (define (call-from-here thunk)
   (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
@@ -412,8 +461,25 @@
               #:when (point=? point (vertex-point candidate)))
     candidate))
 
-(define (intern-vertex! point)
-  (or (find-equal-vertex point)
+(define (find-snap-vertex point [excluded #f])
+  (define tolerance (snap-length))
+  (and (positive? tolerance)
+       (for/fold ([best #f]
+                  [best-distance #f]
+                  #:result best)
+                 ([candidate (in-list (model-vertices))]
+                  #:unless (eq? candidate excluded))
+         (define distance
+           (squared-distance point (vertex-point candidate)))
+         (if (and (<= distance (* tolerance tolerance))
+                  (or (not best-distance) (< distance best-distance)))
+             (values candidate distance)
+             (values best best-distance)))))
+
+(define (intern-vertex! point [excluded #f])
+  (or (let ([equal (find-equal-vertex point)])
+        (and (not (eq? equal excluded)) equal))
+      (find-snap-vertex point excluded)
       (let* ([m (current-antenna-model)]
              [vertices (antenna-model-vertices m)]
              [new-vertex (vertex (add1 (length vertices)) point)])
@@ -424,7 +490,13 @@
   (define m (current-antenna-model))
   (define edges (antenna-model-edges m))
   (define start (intern-vertex! start-point))
-  (define end (intern-vertex! end-point))
+  ;; Do not collapse an intentionally short new edge merely because its end is
+  ;; within the snapping tolerance of its own source. Exact closure to that
+  ;; source remains a zero-length movement, as it was before snapping existed.
+  (define end
+    (if (point=? end-point (vertex-point start))
+        start
+        (intern-vertex! end-point start)))
   (cond
     [(eq? start end)
      (when (pending-feed-location)
@@ -438,7 +510,73 @@
                   (pending-feed-location)))
      (set-antenna-model-edges! m (append edges (list new-edge)))
      (when (pending-feed-location) (pending-feed-location #f))])
+  (values (vertex-point start) (vertex-point end)))
+
+(define (same-undirected-edge? edge start end diameter)
+  (and (= (wire-edge-diameter edge) diameter)
+       (or (and (eq? (wire-edge-start edge) start)
+                (eq? (wire-edge-end edge) end))
+           (and (eq? (wire-edge-start edge) end)
+                (eq? (wire-edge-end edge) start)))))
+
+(define (append-reflected-edge! start-point end-point diameter)
+  (define m (current-antenna-model))
+  (define start (intern-vertex! start-point))
+  (define end
+    (if (point=? end-point (vertex-point start))
+        start
+        (intern-vertex! end-point start)))
+  (unless (or (eq? start end)
+              (for/or ([edge (in-list (antenna-model-edges m))])
+                (same-undirected-edge? edge start end diameter)))
+    (define edges (antenna-model-edges m))
+    (define reflected-edge
+      (wire-edge (add1 (length edges)) start end diameter #f))
+    (set-antenna-model-edges! m (append edges (list reflected-edge))))
   (void))
+
+(define (reflect-point-across-plane point anchor normal)
+  (define offset (point- point anchor))
+  (define normal-length-squared (point-length-squared normal))
+  (define projection-factor
+    (/ (* 2 (point-dot offset normal)) normal-length-squared))
+  (point- point (point-scale normal projection-factor)))
+
+(define (call-with-reflection axis thunk)
+  (unless (memq axis '(x y z))
+    (raise-argument-error 'call-with-reflection "(or/c 'x 'y 'z)" axis))
+  (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
+    (raise-argument-error 'call-with-reflection
+                          "(procedure-arity-includes/c 0)"
+                          thunk))
+  (define entry-model (current-antenna-model))
+  (define entry-edge-count (length (model-edges entry-model)))
+  (define entry-state (current-turtle-state))
+  (define anchor (turtle-state-position entry-state))
+  (define local-normal
+    (case axis
+      [(x) (point3 1 0 0)]
+      [(y) (point3 0 1 0)]
+      [(z) (point3 0 0 1)]))
+  (define normal
+    (mat*point (turtle-state-orientation entry-state) local-normal))
+  ;; Execute arbitrary user code once. Reflection copies only the geometry it
+  ;; produced, so feeds and unrelated Racket side effects are never repeated.
+  (define results (call-with-values thunk list))
+  (unless (eq? (current-antenna-model) entry-model)
+    (error 'reflect "the body may not reset or replace the current model"))
+  (define current-edges (model-edges entry-model))
+  (when (< (length current-edges) entry-edge-count)
+    (error 'reflect "the body may not remove existing model edges"))
+  (define created-edges (drop current-edges entry-edge-count))
+  (for ([edge (in-list created-edges)])
+    (append-reflected-edge!
+     (reflect-point-across-plane
+      (vertex-point (wire-edge-start edge)) anchor normal)
+     (reflect-point-across-plane
+      (vertex-point (wire-edge-end edge)) anchor normal)
+     (wire-edge-diameter edge)))
+  (apply values results))
 
 (define (perform-movement destination)
   (define state (current-turtle-state))
@@ -448,12 +586,14 @@
     (error 'feed "the movement following feed occurred while the wire was off"))
   (when (and (pending-feed-location) (point=? source destination))
     (error 'feed "the movement following feed must create a nonzero edge"))
-  (when (and draws? (not (point=? source destination)))
-    (append-edge! source destination))
+  (define-values (canonical-source canonical-destination)
+    (if (and draws? (not (point=? source destination)))
+        (append-edge! source destination)
+        (values source destination)))
   (current-turtle-state
    (struct-copy turtle-state state
-     [position destination]
-     [previous-source source]))
+     [position canonical-destination]
+     [previous-source canonical-source]))
   (void))
 
 (define (goto destination)
@@ -476,6 +616,48 @@
                        (* y-distance movement-scale)
                        (* z-distance movement-scale))))
   (perform-movement (point+ (turtle-state-position state) displacement)))
+
+;; Emit a stationary point-trace endpoint relative to the current turtle
+;; frame. Unlike movement, this does not change the turtle position. The first
+;; point merely establishes an anchor; each later point emits one edge and
+;; advances that anchor to the canonical (possibly snapped) endpoint.
+(define (point-vector-local x-distance y-distance z-distance
+                            [inline-feed-location #f])
+  (for ([component (in-list (list x-distance y-distance z-distance))])
+    (ensure-real 'point component "distance component"))
+  (when (and inline-feed-location
+             (not (memq inline-feed-location feed-locations)))
+    (raise-argument-error 'point "(or/c 'start 'center 'end)"
+                          inline-feed-location))
+  (define state (current-turtle-state))
+  (when (turtle-state-pen-down? state)
+    (error 'point "point tracing requires the wire to be off"))
+  (define anchor (turtle-state-point-anchor state))
+  (when (and (not anchor)
+             (or inline-feed-location (pending-feed-location)))
+    (error 'point "cannot place a feed on the first point of a trace"))
+  (define movement-scale (turtle-state-movement-scale state))
+  (define displacement
+    (mat*point (turtle-state-orientation state)
+               (point3 (* x-distance movement-scale)
+                       (* y-distance movement-scale)
+                       (* z-distance movement-scale))))
+  (define destination
+    (point+ (turtle-state-position state) displacement))
+  (cond
+    [(not anchor)
+     ;; Do not intern an isolated point. If the trace is abandoned, it leaves
+     ;; no invisible model vertex for snapping or move-nearest to discover.
+     (current-turtle-state
+      (struct-copy turtle-state state [point-anchor destination]))]
+    [else
+     (when inline-feed-location (feed inline-feed-location))
+     (define-values (_canonical-source canonical-destination)
+       (append-edge! anchor destination))
+     (current-turtle-state
+      (struct-copy turtle-state state
+        [point-anchor canonical-destination]))])
+  (void))
 
 (define (move-local x y z distance)
   (for ([component (in-list (list x y z))])
@@ -507,8 +689,13 @@
 (define (forward distance)
   (move-local 1 0 0 distance))
 
+(define forwards forward)
+
 (define (back distance)
   (move-local -1 0 0 distance))
+
+(define backward back)
+(define backwards back)
 
 (define (squared-distance a b)
   (point-length-squared (point- a b)))
