@@ -42,3 +42,7 @@ with-wire
 from-here
 * TODO add 'backward' and 'backwards' as synonyms to 'back'
 Also, ensure 'forward' and 'forwards' both exist
+* TODO need to add a "snap" feature
+If, due to imprecision, a vertex ends up eerily close to another, but not exactly equal, I'd like to "snap" them together.  I had a model that traced some wire curves where an expected intersection didn't actually occur.  
+
+There should be a defaulted distance metric based on wavelength.  If two points are within, say, lambda/1000, they should be connected.  The user can override this with a (model ...) parameter pair which should be "snaplen METERS".  

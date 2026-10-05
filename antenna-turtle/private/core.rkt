@@ -42,6 +42,9 @@
  push pop
  feed
 
+ ;; some utility functions
+ half
+ 
  ;; Exporter support.
  edge-length
  edge-segment-count
@@ -546,3 +549,6 @@
            (even? base-count))
       (add1 base-count)
       base-count))
+
+(define (half x)
+  (/ x 2))
