@@ -3,8 +3,10 @@
 (require rackunit
          racket/file
          racket/runtime-path
+         plot/no-gui
          "../antenna-turtle/main.rkt"
-         "../antenna-turtle/build.rkt")
+         "../antenna-turtle/build.rkt"
+         "../antenna-turtle/private/view.rkt")
 
 (define-runtime-path dipole-model "../examples/dipole.rkt")
 (define-runtime-path curly-infix-model "curly-infix-model.rkt")
@@ -146,10 +148,27 @@
                 (/ 149896229 223000))
   (check-equal? (span (* -2 centimeter) millimeter) -20)
   (check-equal? (frequency-retuning-scale 57/2 29) 57/58)
+  (define dish-height (paraboloid 5))
+  (check-equal? (dish-height 3 4) 5/4)
+  (define dome-height (dome 5))
+  (define bowl-height (bowl 5))
+  (define catenary-height (catenary 10 2))
+  (check-equal? (dome-height 0 0) 0)
+  (check-equal? (bowl-height 0 0) 0)
+  (check-equal? (dome-height 3 4) -5)
+  (check-equal? (bowl-height 3 4) 5)
+  (check-= (catenary-height -5 0) 0 1e-12)
+  (check-= (catenary-height 0 0) -2 1e-12)
+  (check-= (catenary-height 5 100) 0 1e-12)
+  (check-true (< (catenary-height 5/2 0) 0))
   (check-exn exn:fail? (lambda () (frequency->wavelength 0)))
   (check-exn exn:fail? (lambda () (wavelength->frequency -1)))
   (check-exn exn:fail? (lambda () (span 1 0)))
-  (check-exn exn:fail? (lambda () (frequency-retuning-scale 28.5 0))))
+  (check-exn exn:fail? (lambda () (frequency-retuning-scale 28.5 0)))
+  (check-exn exn:fail? (lambda () (paraboloid 0)))
+  (check-exn exn:fail? (lambda () (catenary 0 1)))
+  (check-exn exn:fail? (lambda () (catenary 1 0)))
+  (check-exn exn:fail? (lambda () ((dome 5) 6 0))))
 
 (test-case "exact movement, local turns, and vertex coordinates"
   (reset-model!)
@@ -364,7 +383,7 @@
   (move forwards 2 backward 1 backwards 1)
   (check-equal? (current-position) (point3 3 0 0))
   (spread backwards 2)
-  (check-equal? (current-position) (point3 2 0 0)))
+  (check-equal? (current-position) (point3 3 0 0)))
 
 (test-case "move combines direction pairs into one local segment"
   (reset-model!)
@@ -377,6 +396,104 @@
   (check-true (wire-edge-feed? edge))
   (check-equal? (vertex-point (wire-edge-start edge)) (point3 0 0 0))
   (check-equal? (vertex-point (wire-edge-end edge)) (point3 14 4 1)))
+
+(test-case "move steps subdivides one combined displacement"
+  (reset-model!)
+  (scale 2)
+  (wire-on)
+  (define evaluations 0)
+  (define (step-count)
+    (set! evaluations (add1 evaluations))
+    4)
+  (move forward 2 up 1 steps (step-count))
+  (check-equal? evaluations 1)
+  (check-equal? (length (model-edges)) 4)
+  (check-equal? (current-position) (point3 4 0 2))
+  (check-equal?
+   (map (lambda (edge) (vertex-point (wire-edge-end edge))) (model-edges))
+   (list (point3 1 0 1/2)
+         (point3 2 0 1)
+         (point3 3 0 3/2)
+         (point3 4 0 2)))
+
+  (reset-model!)
+  (wire-on)
+  (check-exn exn:fail:contract?
+             (lambda () (move forward 1 steps 0)))
+  (check-exn exn:fail:syntax?
+             (lambda ()
+               (expand #'(move forward 1 steps 3 feed 'start))))
+  (feed 'center)
+  (check-exn #rx"segmented move cannot consume a pending feed"
+             (lambda () (move forward 1 steps 3))))
+
+(test-case "segmented movement supplies explicit vertices to a surface warp"
+  (reset-model!)
+  (with-surface (paraboloid 1)
+    (with-wire
+      (move forward 2 steps 2)))
+  (check-equal? (length (model-edges)) 2)
+  (check-equal?
+   (map (lambda (edge) (vertex-point (wire-edge-end edge))) (model-edges))
+   (list (point3 1 0 1/4) (point3 2 0 1)))
+  (check-equal? (current-position) (point3 0 0 0)))
+
+(test-case "cylinder wraps local X arc length around local Y"
+  (reset-model!)
+  (with-warp (cylinder 1)
+    (with-wire
+      (move forward (* 2 pi) steps 4)))
+  (check-equal? (length (model-edges)) 4)
+  (check-equal? (length (model-vertices)) 4)
+  (define endpoints
+    (map (lambda (edge) (vertex-point (wire-edge-end edge))) (model-edges)))
+  (check-= (point3-x (first endpoints)) 1 1e-12)
+  (check-= (point3-z (first endpoints)) 1 1e-12)
+  (check-= (point3-x (second endpoints)) 0 1e-12)
+  (check-= (point3-z (second endpoints)) 2 1e-12)
+  (check-eq? (wire-edge-end (last (model-edges)))
+             (wire-edge-start (first (model-edges)))))
+
+(test-case "radial-repeat uses absolute headings, preserves feeds, and nests"
+  (reset-model!)
+  (define count-evaluations 0)
+  (define observed '())
+  (radial-repeat
+   (begin (set! count-evaluations (add1 count-evaluations)) 4)
+   (set! observed (append observed (list radial-iterations)))
+   (with-wire
+     (move forward 1 feed 'start)))
+  (check-equal? count-evaluations 1)
+  (check-equal? observed
+                '(((0 4)) ((1 4)) ((2 4)) ((3 4))))
+  (check-equal? (length (model-edges)) 4)
+  (check-equal? (length (filter wire-edge-feed? (model-edges))) 4)
+  (check-equal? (here) (point3 0 0 0))
+  (define endpoints
+    (map (lambda (edge) (vertex-point (wire-edge-end edge))) (model-edges)))
+  (check-equal? endpoints
+                (list (point3 1 0 0)
+                      (point3 0 1 0)
+                      (point3 -1 0 0)
+                      (point3 0 -1 0)))
+
+  (set! observed '())
+  (radial-repeat 2
+    (radial-repeat 3
+      (set! observed (append observed (list radial-iterations)))))
+  (check-equal?
+   observed
+   '(((0 2) (0 3))
+     ((0 2) (1 3))
+     ((0 2) (2 3))
+     ((1 2) (0 3))
+     ((1 2) (1 3))
+     ((1 2) (2 3))))
+  (check-exn #rx"used outside radial-repeat" (lambda () radial-iterations))
+  (check-exn exn:fail:contract? (lambda () (radial-repeat 0 (void))))
+  (feed 'center)
+  (check-exn #rx"cannot enter with a pending feed"
+             (lambda () (radial-repeat 2 (void)))))
 
 (test-case "point traces stationary relative endpoints while the wire is off"
   (reset-model!)
@@ -558,7 +675,7 @@
   (check-equal? (length (model-edges)) 1)
   (check-equal? (current-position) (point3 2 0 0)))
 
-(test-case "spread draws one centered segment and preserves a pending feed"
+(test-case "spread draws one centered segment without moving the turtle"
   (reset-model!)
   (wire-on)
   (feed 'center)
@@ -566,7 +683,7 @@
   (define edge (only-edge))
   (check-equal? (vertex-point (wire-edge-start edge)) (point3 0 -5 0))
   (check-equal? (vertex-point (wire-edge-end edge)) (point3 0 5 0))
-  (check-equal? (current-position) (point3 0 5 0))
+  (check-equal? (current-position) (point3 0 0 0))
   (check-true (wire-edge-feed? edge))
 
   (reset-model!)
@@ -576,7 +693,16 @@
   (check-equal? (vertex-point (wire-edge-start reverse-edge))
                 (point3 0 5 0))
   (check-equal? (vertex-point (wire-edge-end reverse-edge))
-                (point3 0 -5 0)))
+                (point3 0 -5 0))
+  (check-equal? (current-position) (point3 0 0 0))
+
+  ;; A wire-off spread is a state-preserving no-op.
+  (reset-model!)
+  (move forward 3)
+  (define before-spread (here))
+  (spread up 10)
+  (check-equal? (here) before-spread)
+  (check-equal? (model-edges) '()))
 
 (test-case "from-here restores turtle state and retains geometry"
   (reset-model!)
@@ -594,6 +720,100 @@
       (error 'test "leave pushed scope")))
   (check-equal? (current-position) (point3 0 0 0))
   (check-equal? (length (model-edges)) 3))
+
+(test-case "with-warp maps emitted geometry in the entry-local frame"
+  (reset-model!)
+  (move forward 10)
+  (turn left 90)
+  (define entry-position (here))
+  (define result
+    (with-warp
+     (lambda (x y z) (list x y (+ z x)))
+     (with-wire
+       (move forward 2 feed 'center))
+     'warp-result))
+  (check-equal? result 'warp-result)
+  (check-equal? (here) entry-position)
+  (define edge (only-edge))
+  (check-equal? (vertex-point (wire-edge-start edge)) (point3 10 0 0))
+  (check-equal? (vertex-point (wire-edge-end edge)) (point3 10 2 2))
+  (check-equal? (wire-edge-feed-location edge) 'center)
+  (check-= (wire-used) (sqrt 8) 1e-12)
+  ;; Orientation is restored along with position, so forward remains global Y.
+  (move forward 1)
+  (check-equal? (here) (point3 10 1 0)))
+
+(test-case "with-surface adds entry-local Z height and restores state"
+  (reset-model!)
+  (turn left 90)
+  (with-surface
+   (lambda (x y) (+ x (* 2 y)))
+   (with-points
+     (point forward 0)
+     (point forward 2 up 1)))
+  (check-equal? (here) (point3 0 0 0))
+  (define edge (only-edge))
+  (check-equal? (vertex-point (wire-edge-start edge)) (point3 0 0 0))
+  ;; Local (2,0,1) receives height 2, then entry-local forward maps to global Y.
+  (check-equal? (vertex-point (wire-edge-end edge)) (point3 0 2 3)))
+
+(test-case "warped point rings close through physical vertex snapping"
+  (reset-model!)
+  (with-surface
+   (lambda (x y) (/ (+ (* x x) (* y y)) 8))
+   (with-points
+     (for ([index (in-range 43)])
+       (point forward 2)
+       (turn left (/ 360 42)))))
+  (check-equal? (length (model-edges)) 42)
+  (check-equal? (length (model-vertices)) 42)
+  (define first-edge (first (model-edges)))
+  (define last-edge (last (model-edges)))
+  (check-eq? (wire-edge-start first-edge) (wire-edge-end last-edge)))
+
+(test-case "reflection may wrap completed warped geometry"
+  (reset-model!)
+  (reflect up
+    (with-warp
+     (lambda (x y z) (list x y (+ z x)))
+     (with-wire (move forward 1))))
+  (check-equal? (length (model-edges)) 2)
+  (check-equal? (map (lambda (edge) (vertex-point (wire-edge-end edge)))
+                     (model-edges))
+                (list (point3 1 0 1) (point3 1 0 -1))))
+
+(test-case "warp validation and unsupported operations fail explicitly"
+  (reset-model!)
+  (check-exn
+   #rx"list of exactly three coordinates"
+   (lambda ()
+     (with-warp (lambda (_x _y _z) '(0 0))
+       (with-wire (move forward 1)))))
+  (check-exn
+   #rx"collapsed a nonzero wire edge"
+   (lambda ()
+     (with-warp (lambda (_x _y _z) '(0 0 0))
+       (with-wire (move forward 1)))))
+  (check-exn
+   #rx"may not be nested"
+   (lambda ()
+     (with-surface (lambda (_x _y) 0)
+       (with-warp (lambda (x y z) (list x y z)) (void)))))
+  (check-exn
+   #rx"unavailable inside"
+   (lambda ()
+     (with-surface (lambda (_x _y) 0) (move-nearest))))
+  (check-exn
+   #rx"may not be used inside"
+   (lambda ()
+     (with-surface (lambda (_x _y) 0)
+       (reflect up (void)))))
+  (check-exn
+   #rx"cannot reset the model inside"
+   (lambda ()
+     (with-surface (lambda (_x _y) 0) (reset-model!))))
+  ;; Every exceptional exit still has from-here semantics.
+  (check-equal? (here) (point3 0 0 0)))
 
 (test-case "reflect copies scoped geometry in the captured local frame"
   (reset-model!)
@@ -910,6 +1130,27 @@
   (check-exn #rx"does not yet support branch vertex"
              (lambda () (export-matlab-loft branch-path)))
   (delete-file branch-path))
+
+(test-case "Plot3D viewer renders conductors, feeds, and optional vertices"
+  (reset-model!)
+  (model-title "Viewer smoke test")
+  (wire-on)
+  (move forward 1 feed 'center)
+  (turn left 90)
+  (move forward 1)
+  (define plain-renderers (model->plot-renderers))
+  (define detailed-renderers
+    (model->plot-renderers #:vertices? #t #:wire-color "steelblue"))
+  ;; Two conductor renderers plus one feed renderer; the detailed form adds
+  ;; one renderer containing all model vertices.
+  (check-equal? (length plain-renderers) 3)
+  (check-equal? (length detailed-renderers) 4)
+  (define preview
+    (plot3d-bitmap detailed-renderers #:width 320 #:height 240))
+  (check-equal? (send preview get-width) 320)
+  (check-equal? (send preview get-height) 240)
+  (reset-model!)
+  (check-exn #rx"empty model" model->plot-renderers))
 
 (test-case "build-model derives output names and supports every format"
   (define output-directory

@@ -1,19 +1,18 @@
 #lang antenna-turtle
 
-(define wavelength (* 10 meter))
-(define long-side (* 0.36 wavelength))
-(define folded-end (* 0.055 wavelength))
-(define spacing (* 0.14 wavelength))
-
 (model title "Illustrative Moxon rectangle geometry"
        frequency 29.0
        max-length (/ wavelength 120)
        wire-diameter (* 2 millimeter))
 
+(define long-side (* 0.36 wavelength))
+(define folded-end (* 0.055 wavelength))
+(define spacing (* 0.14 wavelength))
+
 (define (bent-element length bend inward-turn driven?)
   ;; Isolate the element's positioning and heading from the surrounding model.
   (from-here
-    (move back (/ length 2))
+    (move back (half length))
     (with-wire
       (turn right inward-turn)
       (forward bend)

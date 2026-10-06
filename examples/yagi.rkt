@@ -1,6 +1,5 @@
 #lang antenna-turtle
 
-(define wavelength (* 2 meter))
 (model title "Three-element Yagi geometry"
        frequency 150.0
        max-length (/ wavelength 100)

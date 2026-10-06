@@ -7,7 +7,8 @@
          "private/export-nec2c.rkt"
          "private/export-mmana.rkt"
          "private/export-matlab.rkt"
-         "private/export-matlab-loft.rkt")
+         "private/export-matlab-loft.rkt"
+         "private/view.rkt")
 
 (provide build-model default-build-formats supported-build-formats)
 
@@ -30,7 +31,8 @@
 
 (define (build-model source-path
                      #:output-directory [requested-output-directory #f]
-                     #:formats [requested-formats default-build-formats])
+                     #:formats [requested-formats default-build-formats]
+                     #:view? [view? #f])
   (define source
     (simplify-path (path->complete-path source-path)))
   (unless (file-exists? source)
@@ -38,6 +40,8 @@
                       "model source does not exist: ~a"
                       source))
   (define formats (remove-duplicates requested-formats))
+  (unless (boolean? view?)
+    (raise-argument-error 'build-model "boolean?" view?))
   (for ([format (in-list formats)])
     (unless (member format supported-build-formats)
       (raise-arguments-error 'build-model
@@ -60,12 +64,15 @@
     (path->string
      (path-replace-extension (file-name-from-path source) #"")))
 
-  (for/list ([format (in-list formats)])
-    (define output-path
-      (format-output-path output-directory stem format formats))
-    (case format
-      [(nec2c) (export-nec2c output-path)]
-      [(mmana) (export-mmana output-path)]
-      [(matlab) (export-matlab-loft output-path)]
-      [(matlab-ribbon) (export-matlab output-path)])
-    output-path))
+  (define output-paths
+    (for/list ([format (in-list formats)])
+      (define output-path
+        (format-output-path output-directory stem format formats))
+      (case format
+        [(nec2c) (export-nec2c output-path)]
+        [(mmana) (export-mmana output-path)]
+        [(matlab) (export-matlab-loft output-path)]
+        [(matlab-ribbon) (export-matlab output-path)])
+      output-path))
+  (when view? (show-model))
+  output-paths)

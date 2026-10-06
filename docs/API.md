@@ -239,7 +239,7 @@ Moves along local `+X`.
 
 Moves along local `-X`.
 
-### `(move direction distance ... [feed location])`
+### `(move direction distance ... [feed location | steps count])`
 
 `direction` is a contextual keyword and does not require quoting:
 
@@ -277,6 +277,20 @@ Pairs may be supplied in any order, repeated directions are added, and opposing
 directions subtract. Every distance expression is evaluated exactly once in
 source order. The current movement scale applies uniformly to the completed
 local displacement vector.
+
+The optional contextual `steps` pair divides that one combined displacement
+into `count` equal edges:
+
+```racket
+(move forward width up rise steps 8)
+```
+
+`count` must be an exact positive integer and is evaluated once. Every target
+is calculated from the original position, avoiding accumulated stepping drift.
+This is particularly useful when a warp needs explicit intermediate vertices;
+exporter segmentation cannot bend a chord after mapping. `feed` and `steps`
+cannot be combined, and a segmented move cannot consume an already pending
+feed. Mark the desired constituent segment explicitly when it needs a feed.
 
 ### `(point direction distance ... [feed location])`
 
@@ -318,16 +332,18 @@ trace without first turning the wire on.
 
 ### `(spread direction distance [feed location])`
 
-Creates or traverses one full movement centered at the original position.
-The turtle silently relocates by half the distance opposite `direction`, then
-performs one full ordinary movement in `direction`.
+Creates one full segment centered at the current position without moving the
+turtle. Conceptually, the turtle stretches a conductor equally in both
+directions and leaves it in place.
 
 - Wire on: creates exactly one centered edge.
-- Wire off: changes position but creates no edge.
+- Wire off: creates no edge and changes no turtle state.
 - Pending feed: applies to the centered full edge.
-- Final position: the endpoint in the named direction.
+- Final position and all other turtle state are unchanged.
 
-All six `move` direction words are accepted.
+All six `move` direction words are accepted. Opposite names create identical
+geometry with reversed edge orientation, which matters for `'start` and `'end`
+feed locations.
 
 ### `(move-nearest)`
 
@@ -437,7 +453,143 @@ the copy. Arbitrary Racket effects in the body occur only once; the body's
 result values and final turtle state are preserved. The body must not reset or
 replace the current model.
 
-## 9. Feeds
+### `(radial-repeat count body ...+)`
+
+Executes `body` at `count` evenly spaced headings around the entry frame's
+local up axis. The first copy uses the current heading. Later copies use
+absolute `index * 360/count` rotations from the captured entry orientation, so
+roundoff does not accumulate between copies. `count` must be an exact positive
+integer and is evaluated once.
+
+Every copy begins with the complete entry turtle state, and the form restores
+that state on normal or exceptional exit. Geometry is retained. The body truly
+executes `count` times, so ordinary side effects and feeds are repeated too.
+The form returns `void`.
+
+`radial-iterations` is available in the body as an outermost-to-innermost list
+of zero-based `(index count)` pairs. For example, the third copy of six
+containing the fifth copy of eight sees:
+
+```racket
+'((2 6) (4 8))
+```
+
+This supports nested radial repetition without losing the outer context.
+Using `radial-iterations` outside `radial-repeat` is an error. Entering with a
+pending feed, leaving an iteration with an unconsumed feed, or resetting the
+model in the body is also an error.
+
+## 9. Coordinate Warping and Surfaces
+
+### `(with-warp mapper body ...+)`
+
+Generates `body` in a transformed coordinate space. `mapper` receives local
+`x`, `y`, and `z` and must return a list containing exactly three finite real
+coordinates. It should be deterministic because a shared logical endpoint may
+be mapped once for each incident edge:
+
+```racket
+(with-warp
+ (lambda (x y z)
+   (list x y (+ z (/ (+ (* x x) (* y y)) (* 4 focal-length)))))
+ (construct-flat-dish-grid))
+```
+
+The mapper's coordinate system is the turtle frame captured on entry: `x` is
+forward, `y` is left, and `z` is up. Returned coordinates are interpreted in
+that same fixed frame. Only emitted model vertices are mapped; turtle movement,
+`here`, and point tracing remain in ordinary logical space inside the body.
+On every exit, the complete entry turtle state is restored like `from-here`,
+while transformed geometry and the body's return values are retained.
+
+Warps may not be nested. `move-nearest`, `reset-model!`, and a `reflect` call
+inside a warp are rejected because they require an inverse or an ambiguous
+physical frame. A warp may be wrapped by `reflect`, which copies the completed
+physical geometry. Collapsing a nonzero logical edge to one mapped point is an
+error.
+
+### `(with-surface height-function body ...+)`
+
+Height-field shorthand for the common case. `height-function` receives
+entry-local `x` and `y` and returns one finite real height. The effective map
+is `(list x y (+ z height))`, so logical `z` remains a straight-up offset in
+the enclosing coordinate system rather than an offset along the surface
+normal.
+
+```racket
+(define (paraboloid-height x y)
+  (/ (+ (* x x) (* y y)) (* 4 focal-length)))
+
+(with-surface paraboloid-height
+  (construct-flat-dish-grid))
+```
+
+Warping maps vertices, not the continuous interior of an edge. Each edge is
+the straight chord between mapped endpoints, so curved paths need enough
+explicit points for the desired approximation. Exporter segmentation cannot
+bend an existing chord. Snapping, feeds, `wire-used`, viewing, and exporters
+use the resulting physical geometry. Movement scaling occurs before mapping;
+wire diameter is unchanged.
+
+### `(paraboloid focal-length)`
+
+Returns the centered height function
+`(x² + y²) / (4 * focal-length)` for use with `with-surface`:
+
+```racket
+(with-surface (paraboloid focal-length)
+  (construct-flat-dish-grid))
+```
+
+`focal-length` must be a positive finite real number. The aperture plane is
+local XY and the surface rises along local positive Z.
+
+### `(cylinder radius)`
+
+Returns a three-coordinate mapper for `with-warp`. Local X is arc length around
+the cylinder, local Y is its axis, and local Z is an inward radial offset. At
+X zero, logical and physical axes coincide; the unoffset surface curves toward
+local positive Z:
+
+```racket
+(with-warp (cylinder radius)
+  (with-wire
+    (move forward (* 2 pi radius) steps 48)))
+```
+
+One circumference returns to the seam. `radius` must be positive.
+
+### `(dome radius)` and `(bowl radius)`
+
+Return hemispherical height fields for `with-surface`. Both place their vertex
+at local origin and accept coordinates within the radius:
+
+- `dome` falls away from its crown toward local negative Z;
+- `bowl` rises away from its bottom toward local positive Z.
+
+Their respective formulas are `sqrt(radius² - x² - y²) - radius` and its
+negative. Coordinates outside the circular domain produce an error; tiny
+floating-point overshoot at the rim is tolerated.
+
+### `(catenary span sag)`
+
+Returns a centered hanging-catenary height field for `with-surface`. The curve
+runs along local X and is extruded unchanged along local Y. Its supports are at
+`x = -span/2` and `x = span/2`, both at height zero; its lowest point is at
+`x = 0`, at height `-sag`:
+
+```racket
+(with-surface (catenary support-spacing center-sag)
+  (construct-segmented-hanging-wire))
+```
+
+Both arguments must be positive finite real numbers. `span` calibrates the
+curve but does not restrict its domain, so coordinates beyond the nominal
+supports continue along the same mathematical catenary. As with every warp,
+the body must emit intermediate vertices: one straight edge between the two
+supports would remain a straight chord and would not represent the sag.
+
+## 10. Feeds
 
 ### `(feed location)`
 
@@ -465,7 +617,7 @@ Target behavior:
 - MMANA: `b`, `c`, or `e` source designation;
 - MATLAB: center feeds only; start or end feeds produce an export error.
 
-## 10. Model Lifecycle and Inspection
+## 11. Model Lifecycle and Inspection
 
 ### `(reset-model!)`
 
@@ -536,7 +688,31 @@ Returns the solver subdivision count, including odd-count adjustment for a
 center-fed edge. `maximum-length` is optional; its default is the explicit
 model value or one-twentieth wavelength.
 
-## 11. Export Functions
+## 12. Geometry Viewer
+
+### `(show-model [model] [#:vertices? vertices?] [#:wire-color color] [#:width width] [#:height height])`
+
+Opens the current model in a separate interactive Plot3D window. The optional
+`model` defaults to `(current-antenna-model)`. Drag the plot to rotate it.
+
+Conductors default to medium blue (`"steelblue"`) and feed locations are marked
+in red. `#:wire-color` accepts a Plot3D color such as `"navy"` or `"orange"`.
+With `#:vertices? #t`, every Antenna Turtle vertex is also marked. `width` and
+`height` are positive integer window dimensions and default to `900` and `700`.
+
+The viewer gives every coordinate axis the same metric range, avoiding the
+independent axis stretching common in general-purpose plots. It renders DSL
+edges before solver subdivision and uses a fixed visible line width rather
+than physical conductor diameter. An empty model or an unused pending feed is
+an error.
+
+The command-line equivalent is:
+
+```sh
+raco antenna-turtle build model.rkt --view
+```
+
+## 13. Export Functions
 
 Each exporter validates pending-feed state and returns its output path. NEC2C
 and MATLAB exports replace the requested file. MMANA has the update behavior
@@ -589,7 +765,7 @@ Current loft restrictions:
 - no 180-degree path reversal;
 - enough adjacent length to construct every bevel setback.
 
-## 12. Command-Line and Build API
+## 14. Command-Line and Build API
 
 ### Command line
 
@@ -605,6 +781,7 @@ Options:
 --matlab, --matlab-loft
 --matlab-ribbon
 --all
+--view
 -o directory, --output-dir directory
 ```
 
@@ -623,7 +800,8 @@ Signature:
 ```racket
 (build-model source-path
              #:output-directory [directory #f]
-             #:formats [formats default-build-formats])
+             #:formats [formats default-build-formats]
+             #:view? [view? #f])
 ```
 
 - Evaluates the model module, which constructs and validates the shared model.
@@ -632,6 +810,7 @@ Signature:
 - Supported symbols: `nec2c`, `mmana`, `matlab`, `matlab-ribbon`.
 - Returns generated paths in requested-format order.
 - Creates the output directory when necessary.
+- Opens the completed model in the Plot3D viewer when `view?` is true.
 
 Exported constants:
 
@@ -643,7 +822,7 @@ supported-build-formats
 When both MATLAB formats are requested, loft receives `<stem>.m` and ribbon
 receives `<stem>-ribbon.m`.
 
-## 13. Common Lisp LOOP
+## 15. Common Lisp LOOP
 
 The imported package supports clauses such as `repeat`, `for`, `in`, `from`,
 `while`, `until`, `collect`, `sum`, `initially`, and `finally`. Examples:
@@ -660,7 +839,7 @@ The imported package supports clauses such as `repeat`, `for`, `in`, `from`,
 Racket's native iteration forms remain available and are preferable when their
 semantics are clearer for a particular model.
 
-## 14. Geometry Semantics
+## 16. Geometry Semantics
 
 - Every wire-on nonzero movement creates one DSL edge.
 - Geometry survives `pop` and `from-here`.

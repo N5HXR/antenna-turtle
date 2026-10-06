@@ -43,7 +43,8 @@
   '("model-title" "maximum-segment-length" "snap-length" "model-frequency"
     "mmana-frequency" "wire-diameter"
     "frequency->wavelength" "wavelength->frequency" "model-wavelength"
-    "span" "frequency-retuning-scale"
+    "span" "frequency-retuning-scale" "paraboloid" "cylinder" "dome" "bowl"
+    "catenary"
     "wire-off" "wire-on" "here" "goto"
     "pen-up" "pen-down" "forward" "forwards"
     "back" "backward" "backwards" "move-nearest"
@@ -54,11 +55,13 @@
     "model-vertices" "model-edges" "wire-used" "edge-length"
     "edge-segment-count"
     "export-nec2c" "export-mmana" "export-matlab"
-    "export-matlab-loft" "build-model"))
+    "export-matlab-loft" "show-model" "build-model"))
 
 (defconst antenna-turtle--macros
   '("model" "move" "point" "spread" "turn" "reflect"
-    "with-wire" "with-points" "from-here" "with-scale" "with-pen" "with-push"
+    "radial-repeat"
+    "with-wire" "with-points" "from-here" "with-scale" "with-warp"
+    "with-surface" "with-pen" "with-push"
     "loop" "return" "return-from"))
 
 (defconst antenna-turtle--loop-clauses
@@ -76,13 +79,14 @@
     "roll-left" "roll-right"))
 
 (defconst antenna-turtle--contextual-keywords
-  '("title" "frequency" "max-length" "snaplen" "wire-diameter" "feed"))
+  '("title" "frequency" "max-length" "snaplen" "wire-diameter" "feed"
+    "steps"))
 
 (defconst antenna-turtle--feed-locations
   '("start" "center" "end"))
 
 (defconst antenna-turtle--units
-  '("wavelength" "half-wave" "quarter-wave"
+  '("wavelength" "half-wave" "quarter-wave" "radial-iterations"
     "meter" "meters" "centimeter" "centimeters"
     "millimeter" "millimeters" "inch" "inches" "foot" "feet"))
 
@@ -143,6 +147,9 @@
 ;; Teach scheme-mode which arguments precede each macro body. These symbol
 ;; properties are global, but the names are specific to Antenna Turtle.
 (put 'with-scale 'scheme-indent-function 1)
+(put 'with-warp 'scheme-indent-function 1)
+(put 'with-surface 'scheme-indent-function 1)
+(put 'radial-repeat 'scheme-indent-function 1)
 (put 'reflect 'scheme-indent-function 1)
 (put 'with-wire 'scheme-indent-function 0)
 (put 'with-points 'scheme-indent-function 0)

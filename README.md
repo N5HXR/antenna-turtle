@@ -2,7 +2,8 @@
 
 Antenna Turtle is a Racket DSL for constructing antenna wire geometry with a
 stateful 3D turtle. It exports NEC/`nec2c`, MMANA-GAL Basic, and approximate
-MATLAB Antenna Toolbox geometry.
+MATLAB Antenna Toolbox geometry, and can display the generated geometry in an
+interactive Plot3D preview.
 
 This is a proof of concept. It generates geometry and unit-voltage,
 zero-phase feed declarations. Ground and detailed simulation or measurement
@@ -28,6 +29,13 @@ creating output files:
 
 ```sh
 racket examples/dipole.rkt
+```
+
+Add `(show-model)` after the geometry to open a rotatable preview, or request
+one while building:
+
+```sh
+raco antenna-turtle build examples/dipole.rkt --view
 ```
 
 Build the standard NEC2C, MMANA, and loft-MATLAB outputs with:
@@ -181,12 +189,20 @@ For example:
 (with-points body ...)
 (with-scale factor body ...)
 (from-here body ...)
+(with-warp mapper body ...)
+(with-surface height-function body ...)
+(paraboloid focal-length)
+(cylinder radius)
+(dome radius)  (bowl radius)
+(catenary span sag)
+(radial-repeat count body ...)
+radial-iterations
 (here)
 (goto coordinates)
 (wire-used)
 (forward distance)  (forwards distance)
 (back distance)     (backward distance)  (backwards distance)
-(move direction distance ... [feed location])
+(move direction distance ... [feed location | steps count])
 (point direction distance ... [feed location])
 (spread direction distance [feed location])
 (move-nearest)
@@ -215,6 +231,32 @@ body across a plane through the entry position in the entry local frame. The
 direction selects the plane normal: up/down mirrors local Z, left/right mirrors
 local Y, and forward/back mirrors local X. Feeds are retained on the original
 geometry and suppressed on the reflected copy.
+
+`with-warp` maps geometry authored in a fixed local turtle frame through a
+three-coordinate procedure. The procedure receives local `x`, `y`, and `z`
+and returns `(list mapped-x mapped-y mapped-z)`. `with-surface` is convenient
+height-field shorthand:
+
+```racket
+(with-surface
+ (paraboloid focal-length)
+ (construct-flat-dish-grid))
+```
+
+Both forms restore the complete entry turtle state like `from-here`. They map
+emitted vertices, so curved paths must contain enough explicit points to
+approximate the desired surface.
+
+`paraboloid`, `dome`, `bowl`, and `catenary` construct common height fields.
+The catenary hangs along local X between supports separated by `span`, with its
+center lower by `sag`, and is extruded along local Y. `cylinder` constructs a
+full warp where local X is circumferential arc length and local Y is the
+cylinder axis.
+
+`radial-repeat` runs a body at evenly spaced absolute headings around local up,
+restoring the entry turtle state between copies. Feeds and side effects repeat.
+Inside its body, `radial-iterations` contains outermost-to-innermost zero-based
+`(index count)` pairs, including all nested radial repetitions.
 
 `turn` and `move` use contextual direction keywords:
 
@@ -247,6 +289,15 @@ All movement forms obey wire state. `forward`/`forwards` and
 `back`/`backward`/`backwards` are equivalent longitudinal operations; `move`
 accepts the same direction spellings and provides the complete directional
 form.
+
+The optional `steps` pair divides one combined move into equal explicit edges:
+
+```racket
+(move forward run up rise steps 12)
+```
+
+This supplies intermediate vertices for grids and warped curves. Segmented
+moves deliberately do not accept a feed marker.
 One `move` may combine several local-axis components:
 
 ```racket
@@ -284,10 +335,9 @@ path whose final anchor is discarded automatically:
   ...)
 ```
 
-`spread` draws or moves one full segment centered on the current position. It
-first repositions silently to the endpoint opposite its named direction, then
-traverses the full distance in that direction. The turtle finishes at that
-endpoint, and a pending `feed` applies to the resulting centered segment.
+`spread` draws one full segment centered on the current position without
+moving the turtle. Opposite direction words reverse the edge orientation but
+produce the same geometry. A pending `feed` applies to the centered segment.
 
 `with-wire` requires the wire to be off, turns it on for a lexical body, and
 restores it to wire-off on exit:
@@ -409,6 +459,21 @@ both preserves the maximum-length bound and provides a unique center segment.
 
 ## Exporters
 
+Before exporting, the current in-memory geometry can be inspected without
+opening a simulator:
+
+```racket
+(show-model)                 ; conductors and feedpoints
+(show-model #:vertices? #t) ; also mark every DSL vertex
+(show-model #:wire-color "navy") ; choose any Plot3D conductor color
+```
+
+The Plot3D window can be dragged to rotate the antenna. All coordinate axes use
+the same metric scale, so long or flat models are not stretched to fill the
+plotting cube. The viewer displays DSL geometry before solver subdivision;
+wire diameter is represented by a visible line width rather than a solid
+cylinder.
+
 The normal build interface derives output names from the model source:
 
 ```sh
@@ -418,6 +483,9 @@ raco antenna-turtle build dipole.rkt
 # Select only requested formats.
 raco antenna-turtle build dipole.rkt --mmana
 raco antenna-turtle build dipole.rkt --nec2c --matlab
+
+# Generate the normal outputs and open a geometry preview.
+raco antenna-turtle build dipole.rkt --view
 
 # Include both MATLAB representations and choose an output directory.
 raco antenna-turtle build dipole.rkt --all --output-dir build

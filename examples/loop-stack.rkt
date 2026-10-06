@@ -1,7 +1,5 @@
 #lang antenna-turtle
 
-(define wavelength (* 2 meter))
-
 (model title "Stacked full-wave polygon loops"
        frequency 150.0
        max-length (/ wavelength 120)
@@ -20,10 +18,10 @@
                (turn left exterior-angle))
       (move-nearest))))
 
-;; Each completed loop leaves the turtle where it started. Pen-up translations
-;; place subsequent loops one-quarter wavelength higher on local +Z.
+;; Each completed loop leaves the turtle where it started. Unwired moves place
+;; subsequent loops one-quarter wavelength higher on local +Z.
 (regular-loop 4 wavelength #t)
-(move up (* 1/4 wavelength))
+(move up quarter-wave)
 (regular-loop 8 wavelength #f)
-(move up (* 1/4 wavelength))
+(move up quarter-wave)
 (regular-loop 32 wavelength #f)

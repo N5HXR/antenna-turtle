@@ -7,7 +7,7 @@
 (define (show-top-level-help)
   (displayln "usage: raco antenna-turtle build [options] model.rkt")
   (displayln "")
-  (displayln "Build an antenna-turtle model into simulator input files."))
+  (displayln "Build and preview antenna-turtle models."))
 
 (define arguments (vector->list (current-command-line-arguments)))
 
@@ -19,7 +19,7 @@
   (define switches-with-values '("-o" "--output-dir"))
   (define switches-without-values
     '("--nec2c" "--mmana" "--matlab" "--matlab-loft"
-      "--matlab-ribbon" "--all" "-h" "--help"))
+      "--matlab-ribbon" "--all" "--view" "-h" "--help"))
   (let loop ([remaining arguments] [switches '()] [positionals '()])
     (cond
       [(null? remaining) (append (reverse switches) (reverse positionals))]
@@ -49,6 +49,7 @@
    (define matlab? #f)
    (define matlab-ribbon? #f)
    (define all? #f)
+   (define view? #f)
    (define output-directory #f)
    (define model-file
      (parameterize ([current-command-line-arguments
@@ -66,6 +67,8 @@
          "Generate the approximate ribbon MATLAB .m file"
          (set! matlab-ribbon? #t)]
         [("--all") "Generate every supported representation" (set! all? #t)]
+        [("--view") "Open an interactive 3-D geometry preview"
+         (set! view? #t)]
         [("-o" "--output-dir") directory
          "Write generated files to <directory>"
          (set! output-directory directory)]
@@ -85,5 +88,6 @@
           (in-list
            (build-model model-file
                         #:output-directory output-directory
-                        #:formats selected-formats))])
+                        #:formats selected-formats
+                        #:view? view?))])
      (printf "generated ~a\n" output-path))])

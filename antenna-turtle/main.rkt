@@ -5,6 +5,7 @@
          "private/export-mmana.rkt"
          "private/export-matlab.rkt"
          "private/export-matlab-loft.rkt"
+         "private/view.rkt"
          k-infix
          (planet jphelps/loop:1:25)
          (for-syntax racket/base
@@ -20,10 +21,13 @@
  wavelength
  half-wave
  quarter-wave
+ radial-iterations
  (except-out (all-from-out "private/core.rkt")
-             move-local move-vector-local point-vector-local spread-local
+             move-local move-vector-local move-vector-local-steps
+             point-vector-local spread-local
              call-with-wire call-with-points call-with-scale call-from-here
-             call-with-reflection
+             call-with-warp call-with-surface call-with-reflection
+             call-with-radial-repeat radial-iterations-value
              call-with-pen call-with-push)
  model
  turn
@@ -31,9 +35,12 @@
  point
  spread
  reflect
+ radial-repeat
  with-wire
  with-points
  from-here
+ with-warp
+ with-surface
  ;; Compatibility forms retained for existing models.
  with-pen
  with-scale
@@ -41,7 +48,8 @@
  export-nec2c
  export-mmana
  export-matlab
- export-matlab-loft)
+ export-matlab-loft
+ show-model)
 
 ;; The language reader tags {...} as (#%braces ...). Delegate those tokens to
 ;; k-infix while retaining the lexical context of identifiers inside the form.
@@ -62,6 +70,10 @@
 (define-syntax quarter-wave
   (syntax-id-rules ()
     [quarter-wave (/ (model-wavelength) 4)]))
+
+(define-syntax radial-iterations
+  (syntax-id-rules ()
+    [radial-iterations (radial-iterations-value)]))
 
 (define-syntax (antenna-module-begin stx)
   (syntax-case stx ()
@@ -165,14 +177,14 @@
     (syntax-pairs
      'move stx
      (string-append
-      "expected direction/distance pairs and an optional feed/location pair, "
-      "for example (move forward 10 up 1 feed 'center)")))
+      "expected direction/distance pairs and an optional feed/location or "
+      "steps/count pair, for example (move forward 10 up 1 steps 5)")))
   (define values (map cdr pairs))
   (define temporaries (generate-temporaries values))
   (define movement-pairs
     (for/list ([pair (in-list pairs)]
                [temporary (in-list temporaries)]
-               #:unless (eq? (syntax-e (car pair)) 'feed))
+               #:unless (memq (syntax-e (car pair)) '(feed steps)))
       (cons (move-direction-components (car pair) stx) temporary)))
   (when (null? movement-pairs)
     (raise-syntax-error 'move "expected at least one movement direction" stx))
@@ -183,6 +195,18 @@
       temporary))
   (when (> (length feed-temporaries) 1)
     (raise-syntax-error 'move "feed may be specified only once" stx))
+  (define step-temporaries
+    (for/list ([pair (in-list pairs)]
+               [temporary (in-list temporaries)]
+               #:when (eq? (syntax-e (car pair)) 'steps))
+      temporary))
+  (when (> (length step-temporaries) 1)
+    (raise-syntax-error 'move "steps may be specified only once" stx))
+  (when (and (pair? feed-temporaries) (pair? step-temporaries))
+    (raise-syntax-error
+     'move
+     "feed and steps may not be combined; mark the desired segment explicitly"
+     stx))
   (define components (map car movement-pairs))
   (define distance-temporaries (map cdr movement-pairs))
   (define bindings
@@ -199,7 +223,12 @@
       #,@(if (null? feed-temporaries)
              '()
              (list #`(feed #,(car feed-temporaries))))
-      (move-vector-local #,x-expression #,y-expression #,z-expression)))
+      #,(if (null? step-temporaries)
+            #`(move-vector-local
+               #,x-expression #,y-expression #,z-expression)
+            #`(move-vector-local-steps
+               #,x-expression #,y-expression #,z-expression
+               #,(car step-temporaries)))))
 
 ;; Place stationary geometry endpoints relative to the current turtle frame.
 ;; The first call establishes a trace anchor; later calls emit edges without
@@ -278,6 +307,9 @@
       "expected (reflect direction body ...+)"
       stx)]))
 
+(define-syntax-rule (radial-repeat count body ...)
+  (call-with-radial-repeat count (lambda () body ...)))
+
 (define-syntax (model stx)
   (define pairs
     (if (null? (cdr (syntax->list stx)))
@@ -327,6 +359,12 @@
 
 (define-syntax-rule (from-here body ...)
   (call-from-here (lambda () body ...)))
+
+(define-syntax-rule (with-warp mapper body ...)
+  (call-with-warp mapper (lambda () body ...)))
+
+(define-syntax-rule (with-surface height-function body ...)
+  (call-with-surface height-function (lambda () body ...)))
 
 (define-syntax-rule (with-pen body ...)
   (with-wire body ...))

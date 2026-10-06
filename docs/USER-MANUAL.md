@@ -10,6 +10,9 @@ wire-off movement only repositions the turtle. Models can be built into:
 - MMANA-GAL Basic input (`.maa`);
 - MATLAB Antenna Toolbox programs (`.m`).
 
+Generated geometry can also be inspected immediately in an interactive 3-D
+preview without loading an external simulator.
+
 The language describes geometry, conductor diameter, segmentation guidance,
 and feed locations. Ground, material choices other than PEC, source details
 beyond the default unit-voltage feed, and most measurement setup remain in the
@@ -211,11 +214,13 @@ raco antenna-turtle build model.rkt --mmana
 raco antenna-turtle build model.rkt --matlab
 raco antenna-turtle build model.rkt --matlab-ribbon
 raco antenna-turtle build model.rkt --all --output-dir build
+raco antenna-turtle build model.rkt --view
 ```
 
 `--matlab` and `--matlab-loft` are synonyms. When both MATLAB representations
 are requested, the preferred loft output is `<model>.m` and the ribbon output
-is `<model>-ribbon.m`.
+is `<model>-ribbon.m`. `--view` generates the selected outputs and opens the
+completed model in the interactive geometry viewer.
 
 Use quotes around Windows paths containing spaces:
 
@@ -268,6 +273,17 @@ Several local axes can be combined into one movement:
 
 With the wire on, that expression draws one diagonal wire—not two wires with
 a corner between them.
+
+Add `steps` to divide the combined displacement into explicit equal edges:
+
+```racket
+(move forward run up rise steps 12)
+```
+
+This is useful for grids and warped curves because each step supplies a vertex
+for transformation. The count must be an exact positive integer. A segmented
+move cannot carry or consume a feed marker; draw and mark the desired feed
+segment separately.
 
 For radial curves, `point` can instead emit endpoints relative to a stationary
 turtle. The first point establishes a trace anchor; later points connect to it
@@ -360,10 +376,9 @@ aliases, but new models should use wire terminology.
   (spread left (* 1/2 wavelength)))
 ```
 
-For `spread left`, the turtle silently repositions to the right endpoint and
-then traverses the full length toward the left. `spread right` creates the same
-geometry with reversed segment orientation. A center feed can be attached
-directly:
+The turtle remains at the center afterward. `spread left` and `spread right`
+create the same geometry with reversed segment orientation, which matters for
+`'start` and `'end` feeds. A center feed can be attached directly:
 
 ```racket
 (with-wire (spread left length feed 'center))
@@ -409,7 +424,91 @@ once. Wire diameter is retained, feeds are suppressed on the reflected copy,
 and geometry in the reflection plane is shared rather than duplicated. The
 turtle remains wherever the original body finished.
 
-### 5.6 Scaling and Frequency Retuning
+For rotational repetition around local up, use `radial-repeat`:
+
+```racket
+(radial-repeat 42
+  (rib))
+```
+
+The current heading is used first, every copy starts from the same captured
+turtle state, and that state is restored afterward. Feeds and ordinary side
+effects in the body are repeated normally. Inside the body,
+`radial-iterations` reports the nested repetition context as zero-based
+`(index count)` pairs. A nested 2-by-3 repetition therefore reaches values such
+as `'((1 2) (2 3))`.
+
+### 5.6 Warped Surfaces
+
+`with-surface` lets the turtle draw an ordinary flat parameter-space mesh and
+projects each emitted vertex straight up onto a height field. For a centered
+parabolic reflector:
+
+```racket
+(define focal-length (* 30 centimeters))
+
+(define (dish-height x y)
+  (/ (+ (* x x) (* y y)) (* 4 focal-length)))
+
+(with-surface dish-height
+  (flat-circular-dish-grid))
+```
+
+The standard paraboloid constructor removes the formula boilerplate:
+
+```racket
+(with-surface (paraboloid focal-length)
+  (flat-circular-dish-grid))
+```
+
+Other standard mappings are available:
+
+```racket
+;; X is circumferential arc length; Y is the cylinder axis.
+(with-warp (cylinder radius)
+  (cylindrical-grid))
+
+;; Both are vertex-anchored at the current turtle position.
+(with-surface (dome radius)
+  (flat-circular-grid))
+
+(with-surface (bowl radius)
+  (flat-circular-grid))
+
+;; X spans the supports; Y is the extrusion axis.
+(with-surface (catenary support-spacing center-sag)
+  (segmented-hanging-wire))
+```
+
+A dome falls toward local negative Z away from its crown. A bowl rises toward
+local positive Z away from its bottom. Hemisphere inputs must remain inside
+the radius. A cylinder wraps local X as arc length around an axis parallel to
+local Y; logical Z represents inward radial offset. A catenary places supports
+at local X `+/- span/2` at height zero and lowers its center by `sag`; local Y
+does not affect its height.
+
+Coordinates are local to the turtle pose enclosing the form: `x` is forward,
+`y` is left, and height is local up. Logical `z` from the body is added to the
+surface height. The complete turtle state is restored afterward, as though the
+form were wrapped in `from-here`.
+
+For transformations that also alter `x` or `y`, use `with-warp`. Its procedure
+receives three coordinates and returns a three-item list:
+
+```racket
+(with-warp
+ (lambda (x y z)
+   (list x (* y 0.8) (+ z (dish-height x y))))
+ (flat-circular-dish-grid))
+```
+
+These forms move vertices rather than bending continuous wires. Add explicit
+intermediate points wherever a curved surface needs a closer chord
+approximation. Warps cannot be nested, and `move-nearest`, model reset, and
+reflection initiated inside a warp are deliberately rejected. Wrapping a warp
+in `reflect` is supported.
+
+### 5.7 Scaling and Frequency Retuning
 
 `scale` multiplies movement distances but not conductor diameter. The scoped
 form makes frequency correction concise:
@@ -452,7 +551,7 @@ offset calculations. The read-only identifiers `wavelength`, `half-wave`, and
 therefore follow `reset-model!` and a subsequent frequency change in iterative
 generators. `(model-wavelength)` remains the equivalent procedural API.
 
-### 5.7 Measuring Wire Usage
+### 5.8 Measuring Wire Usage
 
 `wire-used` reports the total physical conductor length generated so far in
 metres. Record a reading before a helper call and subtract it afterward to
@@ -476,6 +575,36 @@ This is an odometer over actual model edges. It accounts for movement scale,
 diagonal point-to-point distances, snapped endpoints, and reflected geometry.
 It ignores wire-off positioning, an unpaired point anchor, and the solver's
 export-time segmentation because none of those adds physical conductor.
+
+### 5.9 Previewing Geometry
+
+Call `show-model` after constructing geometry to open a Plot3D window:
+
+```racket
+(with-wire
+  (spread forward half-wave feed 'center))
+
+(show-model)
+```
+
+Drag inside the window to rotate the view. Feedpoints are red and conductors
+default to medium blue. A different Plot3D color can be selected directly:
+
+```racket
+(show-model #:wire-color "navy")
+```
+
+To expose the endpoints created by turtle operations:
+
+```racket
+(show-model #:vertices? #t)
+```
+
+The viewer uses an equal numeric range for X, Y, and Z, preserving the model's
+physical proportions. It shows Antenna Turtle's edges before NEC/MMANA solver
+subdivision. Lines are intentionally screen-visible and do not depict the
+physical wire diameter; use the simulator or MATLAB solid export when surface
+geometry matters.
 
 ## 6. Repetition and Layout Tables
 

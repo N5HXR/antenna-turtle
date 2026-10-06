@@ -6,35 +6,36 @@
  wire-diameter (* 2 millimeters)
  max-length (half centimeter))
 
-;; cycloids want to be about half a wave long around the
-;; circumference
+;; A cycloid curl is roughly half a wavelength around its circumference.
 (define radius (/ quarter-wave pi))
 
-;; render a curl around the current vertical axis, holding the
-;; vertices out at 'radius' length.
+;; Trace one curl around the current vertical axis while rising slightly at
+;; each vertex. Optionally place a feed halfway around the curl.
 (define (curl fed?)
-  (loop for i from 1 to 36 do
+  (loop for segment from 1 to 36 do
 	(turn left 10)
-	(move up (/ wavelength 150)); (* 2.2 millimeter))
-	(if (and fed? (= i 18))
+	(move up (/ wavelength 150))
+	(if (and fed? (= segment 18))
 	    (point left radius feed 'center)
 	    (point left radius))))
 
-;; generate geometry for a collinear cycloid antenna array
+;; Generate geometry for a collinear cycloid antenna array.
 (define (cycloid)
   (with-scale 0.979
     (with-points
      (point left radius)
      (move up half-wave)
      (point left radius)
-     (loop for i from 1 to 3 do
-	   (curl (= i 2))
+     (loop for curl-index from 1 to 3 do
+	   (curl (= curl-index 2))
 	   (move up half-wave)
 	   (point left radius)))))
 
-;; in case we build it, we want to know how much wire there is
+;; Report the wire needed to build one complete array.
 (define mark (wire-used))
 (from-here (cycloid))
 (printf "Used ~a meters of wire.~n" (~r (- (wire-used) mark)))
 
 (export-mmana "mmana/cycloid.maa")
+
+(show-model)

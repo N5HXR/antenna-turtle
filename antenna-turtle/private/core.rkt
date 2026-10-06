@@ -10,6 +10,7 @@
 
  ;; Antenna arithmetic.
  frequency->wavelength wavelength->frequency model-wavelength
+ paraboloid cylinder dome bowl catenary
  span frequency-retuning-scale
 
  ;; Model data, useful to tooling and tests.
@@ -34,11 +35,13 @@
 
  ;; Turtle operations.
  wire-off wire-on call-with-wire call-with-points call-with-scale call-from-here
- call-with-reflection
+ call-with-warp call-with-surface call-with-reflection call-with-radial-repeat
+ radial-iterations-value
  ;; Compatibility names retained for existing models.
  pen-up pen-down call-with-pen call-with-push
  forward forwards back backward backwards
- move-local move-vector-local point-vector-local spread-local move-nearest
+ move-local move-vector-local move-vector-local-steps
+ point-vector-local spread-local move-nearest
  here goto
  turn-x turn-y turn-z turn-axis
  scale scale-all
@@ -85,6 +88,11 @@
             base-diameter previous-source point-anchor)
   #:transparent)
 
+;; A warp maps coordinates expressed in the fixed local frame captured when
+;; its scope begins. Turtle state remains in ordinary logical/global space;
+;; only points crossing the model-geometry boundary are mapped.
+(struct coordinate-warp (origin orientation mapper) #:transparent)
+
 (define identity-matrix
   '((1 0 0)
     (0 1 0)
@@ -105,6 +113,8 @@
 (define current-turtle-state (make-parameter (initial-state)))
 (define current-turtle-stack (make-parameter '()))
 (define pending-feed-location (make-parameter #f))
+(define current-coordinate-warp (make-parameter #f))
+(define current-radial-iterations (make-parameter '()))
 
 ;; Title and frequency are ordinary Racket parameters. Maximum segment length
 ;; has the same zero/one-argument interface, with #f stored internally to mean
@@ -131,6 +141,103 @@
 
 (define (model-wavelength)
   (frequency->wavelength (model-frequency)))
+
+;; Construct a centered paraboloid height field suitable for with-surface.
+;; Local X and Y lie in the aperture plane and local Z points toward the dish
+;; vertex-to-rim rise.
+(define (paraboloid focal-length)
+  (ensure-positive-real 'paraboloid focal-length "focal length")
+  (lambda (x y)
+    (for ([coordinate (in-list (list x y))])
+      (ensure-real 'paraboloid coordinate "surface coordinate"))
+    (/ (+ (* x x) (* y y)) (* 4 focal-length))))
+
+;; Wrap a flat X/Y parameter sheet around a cylinder whose axis is local Y.
+;; X is arc length, while Z is an inward radial offset: at X=0 logical +Z and
+;; physical +Z agree. The unoffset surface curves toward local +Z.
+(define (cylinder radius)
+  (ensure-positive-real 'cylinder radius "radius")
+  (lambda (x y z)
+    (for ([coordinate (in-list (list x y z))])
+      (ensure-real 'cylinder coordinate "warp coordinate"))
+    (define angle (/ x radius))
+    (define effective-radius (- radius z))
+    (list (* effective-radius (sin angle))
+          y
+          (- radius (* effective-radius (cos angle))))))
+
+(define (hemisphere-height who radius direction)
+  (ensure-positive-real who radius "radius")
+  (define radius-squared (* radius radius))
+  (define tolerance (* 1e-12 radius-squared))
+  (lambda (x y)
+    (for ([coordinate (in-list (list x y))])
+      (ensure-real who coordinate "surface coordinate"))
+    (define radicand (- radius-squared (+ (* x x) (* y y))))
+    (when (< radicand (- tolerance))
+      (error who
+             "surface coordinate (~e, ~e) lies outside radius ~e"
+             x y radius))
+    (define root (sqrt (max 0 radicand)))
+    (case direction
+      [(dome) (- root radius)]
+      [(bowl) (- radius root)])))
+
+;; Both hemisphere helpers place the vertex at local origin. A dome falls from
+;; its crown toward -Z; a bowl rises from its bottom toward +Z.
+(define (dome radius)
+  (hemisphere-height 'dome radius 'dome))
+
+(define (bowl radius)
+  (hemisphere-height 'bowl radius 'bowl))
+
+;; Construct a hanging catenary height field suitable for with-surface. The
+;; curve runs along local X and is extruded along local Y. Its supports at
+;; +/- span/2 have height zero, while its center has height -sag.
+(define (catenary span sag)
+  (ensure-positive-real 'catenary span "span")
+  (ensure-positive-real 'catenary sag "sag")
+  (define half-span (/ span 2))
+  ;; Solve sag = a * (cosh(half-span/a) - 1). Using the dimensionless
+  ;; parameter u = half-span/a makes the monotonic equation well behaved.
+  ;; The sinh identity avoids cancellation when the requested sag is shallow.
+  (define sag-ratio (exact->inexact (/ sag half-span)))
+  (ensure-positive-real 'catenary sag-ratio "sag-to-half-span ratio")
+  (define (normalized-sag u)
+    (/ (* 2 (sqr (sinh (/ u 2)))) u))
+  (define u
+    (cond
+      ;; For shallow curves, u = 2r + O(r^3). This is more accurate than
+      ;; bisecting near zero with fixed-width floating-point endpoints.
+      [(< sag-ratio 1e-6) (* 2 sag-ratio)]
+      [else
+       (define upper
+         (let find-upper ([candidate 1.0])
+           (if (>= (normalized-sag candidate) sag-ratio)
+               candidate
+               (find-upper (* 2 candidate)))))
+       (let bisect ([lower 0.0] [upper upper] [remaining 100])
+         (define midpoint (/ (+ lower upper) 2))
+         (cond
+           [(or (zero? remaining)
+                (= midpoint lower)
+                (= midpoint upper))
+            midpoint]
+           [(< (normalized-sag midpoint) sag-ratio)
+            (bisect midpoint upper (sub1 remaining))]
+           [else
+            (bisect lower midpoint (sub1 remaining))]))]))
+  (define parameter-a (/ (exact->inexact half-span) u))
+  (ensure-positive-real 'catenary parameter-a "solved catenary parameter")
+  (lambda (x y)
+    (for ([coordinate (in-list (list x y))])
+      (ensure-real 'catenary coordinate "surface coordinate"))
+    (define height
+      (- (* 2 parameter-a
+            (sqr (sinh (/ x (* 2 parameter-a)))))
+         sag))
+    (ensure-real 'catenary height "surface height")
+    height))
 
 (define maximum-segment-length
   (case-lambda
@@ -185,6 +292,11 @@
   (/ observed-frequency-megahertz target-frequency-megahertz))
 
 (define (reset-model!)
+  (when (current-coordinate-warp)
+    (error 'reset-model!
+           "cannot reset the model inside with-warp or with-surface"))
+  (when (pair? (current-radial-iterations))
+    (error 'reset-model! "cannot reset the model inside radial-repeat"))
   (current-antenna-model (antenna-model '() '()))
   (current-turtle-state (initial-state))
   (current-turtle-stack '())
@@ -378,6 +490,120 @@
 
 (define call-with-push call-from-here)
 
+(define (radial-iterations-value)
+  (define value (current-radial-iterations))
+  (if (pair? value)
+      value
+      (error 'radial-iterations "used outside radial-repeat")))
+
+(define (call-with-radial-repeat count thunk)
+  (unless (exact-positive-integer? count)
+    (raise-argument-error 'radial-repeat "exact-positive-integer?" count))
+  (validate-thunk 'radial-repeat thunk)
+  (when (pending-feed-location)
+    (error 'radial-repeat "cannot enter with a pending feed"))
+  (define entry-state (current-turtle-state))
+  (define entry-stack (current-turtle-stack))
+  (define entry-model (current-antenna-model))
+  (define outer-iterations (current-radial-iterations))
+  (dynamic-wind
+    void
+    (lambda ()
+      (for ([index (in-range count)])
+        (define angle (* index (/ 360 count)))
+        (define iteration-state
+          (struct-copy turtle-state entry-state
+            [orientation
+             (mat*mat
+              (turtle-state-orientation entry-state)
+              (axis-rotation-matrix angle 0 0 1))]))
+        (parameterize ([current-radial-iterations
+                        (append outer-iterations (list (list index count)))]
+                       [pending-feed-location #f])
+          (dynamic-wind
+            (lambda ()
+              (current-turtle-state iteration-state)
+              (current-turtle-stack entry-stack))
+            (lambda ()
+              (call-with-values thunk (lambda _ (void)))
+              (when (pending-feed-location)
+                (error 'radial-repeat
+                       "iteration ~a left a feed without a wire edge"
+                       index))
+              (unless (eq? (current-antenna-model) entry-model)
+                (error 'radial-repeat
+                       "the body may not replace the current model")))
+            (lambda ()
+              (current-turtle-state entry-state)
+              (current-turtle-stack entry-stack))))))
+    (lambda ()
+      (current-turtle-state entry-state)
+      (current-turtle-stack entry-stack)))
+  (void))
+
+(define (validate-thunk who thunk)
+  (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
+    (raise-argument-error who "(procedure-arity-includes/c 0)" thunk)))
+
+(define (validate-mapper who mapper arity)
+  (unless (and (procedure? mapper) (procedure-arity-includes? mapper arity))
+    (raise-argument-error
+     who (format "(procedure-arity-includes/c ~a)" arity) mapper)))
+
+(define (warp-result->point result)
+  (unless (and (list? result) (= (length result) 3))
+    (raise-arguments-error
+     'with-warp
+     "coordinate mapper must return a list of exactly three coordinates"
+     "result" result))
+  (for ([coordinate (in-list result)])
+    (ensure-real 'with-warp coordinate "mapped coordinate"))
+  (apply point3 result))
+
+(define (map-model-point point)
+  (define warp (current-coordinate-warp))
+  (cond
+    [(not warp) point]
+    [else
+     (define origin (coordinate-warp-origin warp))
+     (define orientation (coordinate-warp-orientation warp))
+     (define local
+       (mat*point (transpose orientation) (point- point origin)))
+     (define mapped-local
+       (warp-result->point
+        ((coordinate-warp-mapper warp)
+         (point3-x local) (point3-y local) (point3-z local))))
+     (point+ origin (mat*point orientation mapped-local))]))
+
+(define (call-with-warp mapper thunk)
+  (validate-mapper 'with-warp mapper 3)
+  (validate-thunk 'with-warp thunk)
+  (when (current-coordinate-warp)
+    (error 'with-warp "coordinate warps may not be nested"))
+  (define entry-state (current-turtle-state))
+  (define entry-model (current-antenna-model))
+  (define warp
+    (coordinate-warp (turtle-state-position entry-state)
+                     (turtle-state-orientation entry-state)
+                     mapper))
+  (parameterize ([current-coordinate-warp warp])
+    (call-from-here
+     (lambda ()
+       (define results (call-with-values thunk list))
+       (unless (eq? (current-antenna-model) entry-model)
+         (error 'with-warp "the body may not replace the current model"))
+       (apply values results)))))
+
+(define (call-with-surface height-function thunk)
+  (validate-mapper 'with-surface height-function 2)
+  (validate-thunk 'with-surface thunk)
+  (call-with-warp
+   (lambda (x y z)
+     (define height (height-function x y))
+     (ensure-real 'with-surface height "surface height")
+     (list x y (+ z height)))
+   thunk))
+
 (define (scale factor)
   (ensure-positive-real 'scale factor "scale factor")
   (define state (current-turtle-state))
@@ -488,16 +714,23 @@
         new-vertex)))
 
 (define (append-edge! start-point end-point)
+  (define physical-start-point (map-model-point start-point))
+  (define physical-end-point (map-model-point end-point))
+  (when (and (current-coordinate-warp)
+             (not (point=? start-point end-point))
+             (point=? physical-start-point physical-end-point))
+    (error 'with-warp
+           "coordinate mapper collapsed a nonzero wire edge to one point"))
   (define m (current-antenna-model))
   (define edges (antenna-model-edges m))
-  (define start (intern-vertex! start-point))
+  (define start (intern-vertex! physical-start-point))
   ;; Do not collapse an intentionally short new edge merely because its end is
   ;; within the snapping tolerance of its own source. Exact closure to that
   ;; source remains a zero-length movement, as it was before snapping existed.
   (define end
-    (if (point=? end-point (vertex-point start))
+    (if (point=? physical-end-point (vertex-point start))
         start
-        (intern-vertex! end-point start)))
+        (intern-vertex! physical-end-point start)))
   (cond
     [(eq? start end)
      (when (pending-feed-location)
@@ -544,6 +777,8 @@
   (point- point (point-scale normal projection-factor)))
 
 (define (call-with-reflection axis thunk)
+  (when (current-coordinate-warp)
+    (error 'reflect "reflect may not be used inside with-warp or with-surface"))
   (unless (memq axis '(x y z))
     (raise-argument-error 'call-with-reflection "(or/c 'x 'y 'z)" axis))
   (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
@@ -593,8 +828,12 @@
         (values source destination)))
   (current-turtle-state
    (struct-copy turtle-state state
-     [position canonical-destination]
-     [previous-source canonical-source]))
+     [position (if (current-coordinate-warp)
+                   destination
+                   canonical-destination)]
+     [previous-source (if (current-coordinate-warp)
+                          source
+                          canonical-source)]))
   (void))
 
 (define (goto destination)
@@ -617,6 +856,30 @@
                        (* y-distance movement-scale)
                        (* z-distance movement-scale))))
   (perform-movement (point+ (turtle-state-position state) displacement)))
+
+(define (move-vector-local-steps x-distance y-distance z-distance step-count)
+  (for ([component (in-list (list x-distance y-distance z-distance))])
+    (ensure-real 'move component "distance component"))
+  (unless (exact-positive-integer? step-count)
+    (raise-argument-error 'move "exact-positive-integer?" step-count))
+  (when (pending-feed-location)
+    (error 'move
+           "a segmented move cannot consume a pending feed; mark one segment explicitly"))
+  (define state (current-turtle-state))
+  (define origin (turtle-state-position state))
+  (define movement-scale (turtle-state-movement-scale state))
+  (define displacement
+    (mat*point (turtle-state-orientation state)
+               (point3 (* x-distance movement-scale)
+                       (* y-distance movement-scale)
+                       (* z-distance movement-scale))))
+  ;; Calculate every target from the original point rather than accumulating
+  ;; increments. This reaches the intended endpoint exactly when the input
+  ;; arithmetic is exact and minimizes floating-point drift otherwise.
+  (for ([index (in-range 1 (add1 step-count))])
+    (perform-movement
+     (point+ origin (point-scale displacement (/ index step-count)))))
+  (void))
 
 ;; Emit a stationary point-trace endpoint relative to the current turtle
 ;; frame. Unlike movement, this does not change the turtle position. The first
@@ -657,7 +920,9 @@
        (append-edge! anchor destination))
      (current-turtle-state
       (struct-copy turtle-state state
-        [point-anchor canonical-destination]))])
+        [point-anchor (if (current-coordinate-warp)
+                          destination
+                          canonical-destination)]))])
   (void))
 
 (define (move-local x y z distance)
@@ -683,9 +948,19 @@
   ;; movement below is the segment whose midpoint is the original center.
   (define start (point- (turtle-state-position center-state)
                         half-displacement))
-  (current-turtle-state
-   (struct-copy turtle-state center-state [position start]))
-  (perform-movement (point+ start (point-scale half-displacement 2))))
+  (dynamic-wind
+    (lambda ()
+      (current-turtle-state
+       (struct-copy turtle-state center-state [position start])))
+    (lambda ()
+      (perform-movement
+       (point+ start (point-scale half-displacement 2))))
+    (lambda ()
+      ;; Spread lays geometry around the turtle; it is not turtle movement.
+      ;; Restore the complete state so position, orientation, point tracing,
+      ;; scale, diameter, and movement history are unchanged even if drawing
+      ;; the centered edge raises an exception.
+      (current-turtle-state center-state))))
 
 (define (forward distance)
   (move-local 1 0 0 distance))
@@ -702,6 +977,9 @@
   (point-length-squared (point- a b)))
 
 (define (move-nearest)
+  (when (current-coordinate-warp)
+    (error 'move-nearest
+           "move-nearest is unavailable inside with-warp or with-surface"))
   (define state (current-turtle-state))
   (define here (turtle-state-position state))
   (define previous (turtle-state-previous-source state))

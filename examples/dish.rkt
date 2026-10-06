@@ -5,44 +5,42 @@
        max-length {wavelength / 20}
        wire-diameter {2 * millimeter})
 
+;; ------------------------------------------------------------------------
+;; Build a parabolic reflector
+;; ------------------------------------------------------------------------
+
 (define dish-radius {2 * wavelength})
 (define focal-length {2.4 * wavelength})
 
 (define rib-count 42)
 (define ring-count 7)
 (define azimuth-step {360 / rib-count})
-
-(define (dish-height radius)
-  {radius * radius / {4 * focal-length}})
+(define ring-step (/ dish-radius ring-count))
 
 ;; One radial wire, with vertices at every ring crossing.
-(define (rib azimuth)
+(define (rib)
   (from-here
-    (turn left azimuth)
-    (with-points
-      (loop for index from 0 to ring-count do
-	    (let ([radius {dish-radius * index / ring-count}])
-	      (point forward radius
-		     up (dish-height radius)))))))
+    (with-wire
+      (move forward dish-radius steps ring-count))))
 
-;; One polygonal approximation of a circular ring.
 (define (ring radius)
-  (define height (dish-height radius))
-  (from-here
+  ;; Each radial copy emits one complete chord. Adjacent endpoints snap to the
+  ;; same model vertex, including the final chord back to the first.
+  (radial-repeat rib-count
     (with-points
-      (point forward radius up height)
+      (point forward radius)
+      (turn left azimuth-step)
+      (point forward radius))))
 
-      (loop repeat rib-count do
-	    (turn left azimuth-step)
-	    (point forward radius up height)))))
+;; Project a circular mesh onto a parabolic surface
+(with-surface (paraboloid focal-length)
+  (radial-repeat rib-count (rib))
+  (loop for index from 1 to ring-count do
+	(ring {index * ring-step})))
 
-;; Radial ribs.
-(loop for index from 0 below rib-count do
-      (rib {index * azimuth-step}))
-
-;; Concentric rings. Skip radius zero.
-(loop for index from 1 to ring-count do
-      (ring {dish-radius * index / ring-count}))
+;; ------------------------------------------------------------------------
+;; Feedpoint Antenna -- a little yagi
+;; ------------------------------------------------------------------------
 
 (define element-layout
   (list (list 'reflector (* -0.6 quarter-wave) (* 1.05 half-wave))
@@ -62,4 +60,4 @@
 
 (export-mmana "mmana/dish.maa")
 
-;(show-model #:vertices? #t)
+(show-model #:vertices? #t)

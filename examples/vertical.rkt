@@ -1,8 +1,5 @@
 #lang antenna-turtle
 
-(define wavelength (* 20 meter))
-(define height (* 1/4 wavelength))
-
 (model title "Quarter-wave vertical geometry"
        frequency 14.2
        max-length (/ wavelength 100)
@@ -14,4 +11,4 @@
 ;; MATLAB export rejects them.
 (turn up 90)
 (with-wire
-  (move forward height feed 'start))
+  (move forward quarter-wave feed 'start))
