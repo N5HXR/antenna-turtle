@@ -20,16 +20,17 @@
    y))
 
 ;; empirically determined tuning factor for pretty VSWR
-(with-scale 0.96
+(move up half-wave)
+(with-scale 0.996
 
   ;; put a feedpoint at the center
   (with-surface three-mast-profile
-    (with-wire (spread forward foot feed 'center)))
+    (with-wire (spread forward inch feed 'center)))
 
   ;; drape wire in both directions for the dipole
   (reflect forward
     (with-surface three-mast-profile
-      (move forward (half foot))
+      (move forward (half inch))
       (with-wire
 	(move forward mast-spacing steps segments-per-span)))))
 
