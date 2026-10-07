@@ -982,6 +982,7 @@ These operations explicitly open Racket Plot windows:
 (show-vswr-sweep sweep [#:max-vswr #f])
 (show-return-loss-sweep sweep [#:floor-db #f])
 (show-impedance-sweep sweep)
+(show-smith-chart sweep [#:markers? #t] [#:theme 'light])
 (show-radiation-cut pattern
                     [#:component 'total]
                     [#:floor-db -40]
@@ -1025,6 +1026,7 @@ These operations explicitly open Racket Plot windows:
 Components are `'total`, `'vertical`, or `'horizontal`. The corresponding
 headless renderer constructors—`vswr-sweep-renderers`,
 `return-loss-sweep-renderers`, `impedance-sweep-renderers`,
+`smith-chart-renderers`,
 `radiation-cut-renderers`, and
 `radiation-grid-renderers`—return ordinary Racket Plot renderers for custom
 figures or bitmap generation.
@@ -1035,6 +1037,20 @@ sample in display coordinates and overlays its series name and precise values;
 right release leaves that label pinned. Sweep labels report frequency plus
 VSWR, S11, resistance, or reactance as appropriate. Radiation-cut labels
 report angle and raw component gain in dBi.
+
+`show-smith-chart` uses the sweep's reference impedance and plots
+`(Z - Z0) / (Z + Z0)` on a fixed, equal-scale unit circle. Its dense normalized
+impedance grid distinguishes major and minor divisions with different line
+weights and includes dashed 1.5:1 and 2.0:1 VSWR circles. Each feed is a
+separate solid-colored line. With `#:markers? #t`, a right-pointing triangle
+marks the first frequency, a filled circle marks the last, and an open circle
+marks the minimum-VSWR sample. Values outside the passive unit circle are
+clipped. `#:theme` accepts `'light` (the default) or `'dark`. Smith-chart data
+tips report frequency, complex impedance, S11, and VSWR without drawing the
+Cartesian viewer's vertical cursor rule. Its legend is anchored outside the
+chart at the upper-left, so a sufficiently wide window keeps it entirely in
+the chart's unused side margin. Smith-chart data tips use a compact two-line
+layout so Plot's square overlay boundary is unlikely to clip them.
 
 The two OpenGL operations return an opaque `visualization-handle`. Save it to
 replace a live view without closing its window:

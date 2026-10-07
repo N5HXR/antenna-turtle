@@ -551,6 +551,7 @@ returns transparent Racket values without printing or opening a window:
 ;; Visualization is always an explicit choice.
 (show-vswr-sweep sweep)
 (show-return-loss-sweep sweep)
+(show-smith-chart sweep #:markers? #t #:theme 'light)
 (show-radiation-cut azimuth)
 (show-radiation-pattern-3d sphere)
 (show-radiation-pattern-opengl sphere #:palette 'magma)
@@ -566,6 +567,12 @@ The ordinary 2-D graphs have a built-in data cursor. Left-drag retains Plot's
 normal zoom behavior and left-click unzooms once. Right-click or right-drag
 selects the nearest actual NEC2C sample; releasing the button leaves its
 frequency and value pinned on the graph.
+
+The Smith chart plots normalized impedance on a dense conventional grid, with
+dashed 1.5:1 and 2.0:1 VSWR circles. Each feed retains the same distinct trace
+color used by the other sweep plots. Optional markers identify the sweep start
+with a triangle, the end with a filled circle, and the best match with an open
+circle; `#:theme` accepts `'light` or `'dark`.
 
 The two OpenGL calls return reusable handles for live work:
 

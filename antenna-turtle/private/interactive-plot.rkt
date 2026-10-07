@@ -7,6 +7,7 @@
 (require racket/class
          racket/gui/base
          mrlib/snip-canvas
+         pict
          plot
          plot/snip
          "plot-cursor.rkt")
@@ -16,7 +17,8 @@
 (define data-cursor-canvas%
   (class snip-canvas%
     (init parent make-snip)
-    (init-field series label-proc)
+    (init-field series label-proc
+                cursor-rule? cursor-fill-color cursor-text-color)
 
     (define/private (update-data-cursor event)
       (define snip (send this get-snip))
@@ -43,18 +45,38 @@
             (define plot-point
               (vector (vector-ref selected-point 0)
                       (vector-ref selected-point 1)))
+            (define label (label-proc selected-series selected-point))
+            (define label-renderer
+              (if (and (list? label) (andmap string? label))
+                  (point-pict
+                   plot-point
+                   (colorize
+                    (apply vl-append
+                           2
+                           (for/list ([line (in-list label)])
+                             (text line null (plot-font-size))))
+                    cursor-text-color)
+                   #:anchor 'auto
+                   #:point-color (cursor-series-color selected-series)
+                   #:point-fill-color cursor-fill-color
+                   #:point-size 7)
+                  (point-label
+                   plot-point
+                   label
+                   #:anchor 'auto
+                   #:color cursor-text-color
+                   #:point-color (cursor-series-color selected-series)
+                   #:point-fill-color cursor-fill-color
+                   #:point-size 7)))
             (send snip set-overlay-renderers
-                  (list
-                   (vrule (vector-ref selected-point 0)
-                          #:color (cursor-series-color selected-series)
-                          #:style 'dot)
-                   (point-label
-                    plot-point
-                    (label-proc selected-series selected-point)
-                    #:anchor 'auto
-                    #:point-color (cursor-series-color selected-series)
-                    #:point-fill-color "white"
-                    #:point-size 7)))))))
+                  (append
+                   (if cursor-rule?
+                       (list
+                        (vrule (vector-ref selected-point 0)
+                               #:color (cursor-series-color selected-series)
+                               #:style 'dot))
+                       '())
+                   (list label-renderer)))))))
 
     (define/override (on-event event)
       (define event-type (send event get-event-type))
@@ -80,7 +102,22 @@
 (define (show-interactive-plot renderer-tree series label-proc
                                #:title [title #f]
                                #:x-label [x-label #f]
-                               #:y-label [y-label #f])
+                               #:y-label [y-label #f]
+                               #:x-min [x-min #f]
+                               #:x-max [x-max #f]
+                               #:y-min [y-min #f]
+                               #:y-max [y-max #f]
+                               #:aspect-ratio [aspect-ratio #f]
+                               #:legend-anchor [legend-anchor 'top-left]
+                               #:axes? [axes? #t]
+                               #:cursor-rule? [cursor-rule? #t]
+                               #:theme [theme 'light])
+  (unless (memq theme '(light dark))
+    (raise-argument-error
+     'show-interactive-plot "(or/c 'light 'dark)" theme))
+  (define dark? (eq? theme 'dark))
+  (define background (if dark? "black" "white"))
+  (define foreground (if dark? "white" "black"))
   (define width (plot-width))
   (define height (plot-height))
   (define frame
@@ -90,17 +127,32 @@
          [height (+ height 48)]))
   (define root (new vertical-panel% [parent frame] [spacing 0]))
   (define (make-snip requested-width requested-height)
-    (plot-snip renderer-tree
-               #:width requested-width
-               #:height requested-height
-               #:title title
-               #:x-label x-label
-               #:y-label y-label))
+    (parameterize ([plot-background background]
+                   [plot-foreground foreground]
+                   [plot-x-axis? axes?]
+                   [plot-y-axis? axes?]
+                   [plot-x-far-axis? axes?]
+                   [plot-y-far-axis? axes?])
+      (plot-snip renderer-tree
+                 #:width requested-width
+                 #:height requested-height
+                 #:title title
+                 #:x-label x-label
+                 #:y-label y-label
+                 #:x-min x-min
+                 #:x-max x-max
+                 #:y-min y-min
+                 #:y-max y-max
+                 #:aspect-ratio aspect-ratio
+                 #:legend-anchor legend-anchor)))
   (new data-cursor-canvas%
        [parent root]
        [make-snip make-snip]
        [series series]
-       [label-proc label-proc])
+       [label-proc label-proc]
+       [cursor-rule? cursor-rule?]
+       [cursor-fill-color background]
+       [cursor-text-color foreground])
   (new message%
        [parent root]
        [label "left drag: zoom  |  left click: unzoom  |  right drag: inspect values"]

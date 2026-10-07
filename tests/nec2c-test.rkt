@@ -3,7 +3,7 @@
 (require rackunit
          racket/file
          racket/path
-         (only-in plot/no-gui plot3d-bitmap)
+         (only-in plot/no-gui plot-bitmap plot3d-bitmap)
          (only-in plot/utils plot-element-bounds-rect ivl-min ivl-max)
          (only-in "../antenna-turtle/private/visualization-handle.rkt"
                   make-visualization-handle)
@@ -144,6 +144,45 @@ REPORT
    (ivl-min (vector-ref (plot-element-bounds-rect capped-line) 1))
    -12))
 
+(test-case "Smith chart renders dense light and dark normalized grids"
+  (define (smith-frequency frequency impedance)
+    (define gamma (/ (- impedance 50) (+ impedance 50)))
+    (define magnitude* (magnitude gamma))
+    (define return-loss
+      (if (zero? magnitude*) +inf.0 (* -20 (/ (log magnitude*) (log 10)))))
+    (define vswr
+      (if (= magnitude* 1) +inf.0 (/ (+ 1 magnitude*) (- 1 magnitude*))))
+    (define feedpoint
+      (nec2c-feedpoint-sample
+       "feed-1" frequency 1 1 1 1 impedance (/ impedance) 1/2))
+    (nec2c-sweep-frequency
+     frequency
+     (list (nec2c-sweep-sample feedpoint gamma return-loss vswr))))
+  (define sweep
+    (nec2c-sweep-result
+     #f 50
+     (list (smith-frequency 100 25-10i)
+           (smith-frequency 101 50+0i)
+           (smith-frequency 102 100+25i))))
+  (define light-renderers
+    (smith-chart-renderers sweep #:markers? #t #:theme 'light))
+  (define dark-renderers
+    (smith-chart-renderers sweep #:markers? #f #:theme 'dark))
+  (check-true (> (length light-renderers) 40))
+  (check-true (> (length light-renderers) (length dark-renderers)))
+  (define preview
+    (plot-bitmap light-renderers
+                 #:x-min -1.08 #:x-max 1.08
+                 #:y-min -1.08 #:y-max 1.08
+                 #:aspect-ratio 1
+                 #:width 400 #:height 400))
+  (check-equal? (send preview get-width) 400)
+  (check-equal? (send preview get-height) 400)
+  (check-exn #rx"light.*dark"
+             (lambda () (smith-chart-renderers sweep #:theme 'sepia)))
+  (check-exn #rx"boolean"
+             (lambda () (smith-chart-renderers sweep #:markers? 'yes))))
+
 (define integration-executable
   (or (getenv "NEC2C")
       (find-executable-path "nec2c")))
@@ -179,6 +218,7 @@ REPORT
     (check-not-false (pair? (vswr-sweep-renderers sweep)))
     (check-not-false (pair? (return-loss-sweep-renderers sweep)))
     (check-not-false (pair? (impedance-sweep-renderers sweep)))
+    (check-not-false (pair? (smith-chart-renderers sweep)))
 
     (define azimuth (nec2c-azimuth-pattern #:step 30))
     (check-equal? (length (nec2c-pattern-samples azimuth)) 13)

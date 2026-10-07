@@ -30,7 +30,7 @@
           (turn left 90)
           (move down (half centimeter)))))
 
-(qfhloop 0.528)
+(qfhloop 0.524)
 
 (export-mmana "../mmana/qfh.maa")
 

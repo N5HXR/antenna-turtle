@@ -8,10 +8,10 @@
 ;; -------------------------------------------------------------------------
 
 (define design-frequency 915)
-(define tuning-scale 0.605)
+(define tuning-scale 0.524)
 
 (define feed-phases '(0 270))
-(define twist-per-step 13)
+(define twist-per-step 14)
 (define axial-step inch)
 (define loop-separation (half centimeter))
 
@@ -100,7 +100,7 @@
 
 (build-qfh)
 
-(export-mmana "mmana/qfh2.maa")
+(export-mmana "../mmana/qfh2.maa")
 (show-model)
 
 (define pattern (measure-pattern))
@@ -110,5 +110,4 @@
 (show-return-loss-sweep sweep)
 
 ;; Other useful views while tuning:
-;; (show-vswr-sweep sweep)
-;; (show-impedance-sweep sweep)
+(show-smith-chart sweep)

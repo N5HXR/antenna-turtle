@@ -13,11 +13,13 @@
  vswr-sweep-renderers
  return-loss-sweep-renderers
  impedance-sweep-renderers
+ smith-chart-renderers
  radiation-cut-renderers
  radiation-grid-renderers
  show-vswr-sweep
  show-return-loss-sweep
  show-impedance-sweep
+ show-smith-chart
  show-radiation-cut
  show-radiation-pattern-3d
  show-radiation-pattern-opengl
@@ -162,6 +164,194 @@
              #:style (if (odd? index) 'short-dash 'solid)
              #:width 2
              #:label (cursor-series-label series))))))
+
+;; Smith charts use normalized impedance z = Z/Z0 and plot the reflection
+;; coefficient Gamma = (z - 1)/(z + 1). Passive impedances lie on or inside
+;; the unit circle; active or otherwise impossible values are deliberately
+;; broken out of the trace rather than changing the familiar chart geometry.
+(define smith-major-resistances '(0 0.2 0.5 1 2 5))
+(define smith-minor-resistances '(0.1 0.3 0.4 0.6 0.8 1.5 3 4 10))
+(define smith-major-reactances '(0.2 0.5 1 2 5))
+(define smith-minor-reactances '(0.1 0.3 0.4 0.6 0.8 1.5 3 4 10))
+
+(define (validate-smith-options who markers? theme)
+  (unless (boolean? markers?)
+    (raise-argument-error who "boolean?" markers?))
+  (unless (memq theme '(light dark))
+    (raise-argument-error who "(or/c 'light 'dark)" theme)))
+
+(define (smith-theme theme)
+  (if (eq? theme 'dark)
+      (hash 'background "black"
+            'foreground "white"
+            'boundary '(150 150 150)
+            'major '(92 92 92)
+            'minor '(48 48 48)
+            'vswr-15 '(190 190 190)
+            'vswr-20 '(130 130 130))
+      (hash 'background "white"
+            'foreground "black"
+            'boundary '(70 70 70)
+            'major '(150 150 150)
+            'minor '(215 215 215)
+            'vswr-15 '(85 85 85)
+            'vswr-20 '(130 130 130))))
+
+(define (normalized-impedance->gamma resistance reactance)
+  (/ (- (make-rectangular resistance reactance) 1)
+     (+ (make-rectangular resistance reactance) 1)))
+
+(define (complex->point value)
+  (vector (real-part value) (imag-part value)))
+
+(define (smith-circle-points center radius [samples 240])
+  (for/list ([index (in-range (add1 samples))])
+    (define angle (* 2 pi (/ index samples)))
+    (vector (+ center (* radius (cos angle)))
+            (* radius (sin angle)))))
+
+(define (smith-resistance-points resistance)
+  (define denominator (+ resistance 1))
+  (smith-circle-points (/ resistance denominator) (/ 1 denominator)))
+
+(define (smith-reactance-points reactance [samples 180])
+  (for/list ([index (in-range (add1 samples))])
+    (if (= index samples)
+        (vector 1 0)
+        (let* ([parameter (/ index samples)]
+               [resistance (/ parameter (- 1 parameter))])
+          (complex->point
+           (normalized-impedance->gamma resistance reactance))))))
+
+(define (smith-grid-renderers theme)
+  (define colors (smith-theme theme))
+  (define minor-color (hash-ref colors 'minor))
+  (define major-color (hash-ref colors 'major))
+  (define foreground (hash-ref colors 'foreground))
+  (define (resistance-lines values color width)
+    (for/list ([resistance (in-list values)])
+      (lines (smith-resistance-points resistance)
+             #:color color #:width width)))
+  (define (reactance-lines values color width)
+    (append*
+     (for/list ([reactance (in-list values)])
+       (list (lines (smith-reactance-points reactance)
+                    #:color color #:width width)
+             (lines (smith-reactance-points (- reactance))
+                    #:color color #:width width)))))
+  (define resistance-labels
+    (for/list ([resistance (in-list smith-major-resistances)])
+      (define gamma (normalized-impedance->gamma resistance 0))
+      (point-label (complex->point gamma)
+                   (format "~a" resistance)
+                   #:color foreground
+                   #:size 9
+                   #:anchor 'bottom
+                   #:point-size 0)))
+  (define reactance-labels
+    (append*
+     (for/list ([reactance (in-list smith-major-reactances)])
+       (define positive
+         (normalized-impedance->gamma 0 reactance))
+       (define negative
+         (normalized-impedance->gamma 0 (- reactance)))
+       (list
+        (point-label (complex->point positive)
+                     (format "+j~a" reactance)
+                     #:color foreground #:size 8 #:anchor 'auto #:point-size 0)
+        (point-label (complex->point negative)
+                     (format "-j~a" reactance)
+                     #:color foreground #:size 8 #:anchor 'auto #:point-size 0)))))
+  (append
+   (resistance-lines smith-minor-resistances minor-color 0.35)
+   (reactance-lines smith-minor-reactances minor-color 0.35)
+   (resistance-lines smith-major-resistances major-color 0.7)
+   (reactance-lines smith-major-reactances major-color 0.7)
+   (list
+    (lines (list (vector -1 0) (vector 1 0))
+           #:color major-color #:width 0.7)
+    (lines (smith-circle-points 0 1)
+           #:color (hash-ref colors 'boundary) #:width 1.2)
+    (lines (smith-circle-points 0 (/ (- 1.5 1) (+ 1.5 1)))
+           #:color (hash-ref colors 'vswr-15)
+           #:width 0.8 #:style 'short-dash #:label "1.5:1 VSWR")
+    (lines (smith-circle-points 0 (/ (- 2 1) (+ 2 1)))
+           #:color (hash-ref colors 'vswr-20)
+           #:width 0.8 #:style 'long-dash #:label "2.0:1 VSWR"))
+   resistance-labels
+   reactance-labels))
+
+(define (passive-gamma? gamma)
+  (and (number? gamma)
+       (rational? (real-part gamma))
+       (rational? (imag-part gamma))
+       (<= (magnitude gamma) (+ 1 1e-9))))
+
+(define (smith-sample-point sample)
+  (define feedpoint (nec2c-sweep-sample-feedpoint sample))
+  (define gamma (nec2c-sweep-sample-reflection-coefficient sample))
+  (if (passive-gamma? gamma)
+      (let ([impedance (nec2c-feedpoint-sample-impedance feedpoint)])
+        (vector (real-part gamma)
+                (imag-part gamma)
+                (nec2c-feedpoint-sample-frequency-mhz feedpoint)
+                (real-part impedance)
+                (imag-part impedance)
+                (- (nec2c-sweep-sample-return-loss-db sample))
+                (nec2c-sweep-sample-vswr sample)))
+      ;; NaN causes Plot to break the line and is ignored by the data cursor.
+      (vector +nan.0 +nan.0 0 0 0 0 0)))
+
+(define (smith-cursor-series result)
+  (for/list ([name (in-list (sweep-feed-names result))]
+             [index (in-naturals)])
+    (cursor-series
+     name
+     (for/list ([sample (in-list (samples-for-feed result name))])
+       (smith-sample-point sample))
+     (color-at index))))
+
+(define (finite-smith-point? point)
+  (and (rational? (vector-ref point 0))
+       (rational? (vector-ref point 1))))
+
+(define (smith-marker-renderers series theme)
+  (define points* (filter finite-smith-point? (cursor-series-points series)))
+  (if (null? points*)
+      '()
+      (let* ([color (cursor-series-color series)]
+             [background (hash-ref (smith-theme theme) 'background)]
+             [start (first points*)]
+             [end (last points*)]
+             [best (argmin (lambda (point) (vector-ref point 6)) points*)])
+        (list
+         (points (list start) #:sym 'fulltriangleright
+                 #:color color #:size 10 #:line-width 1.2)
+         (points (list end) #:sym 'fullcircle
+                 #:color color #:size 8 #:line-width 1.2)
+         (points (list best) #:sym 'circle5
+                 #:color color #:fill-color background
+                 #:size 10 #:line-width 1.8)))))
+
+(define (smith-chart-renderers result
+                               #:markers? [markers? #t]
+                               #:theme [theme 'light])
+  (unless (nec2c-sweep-result? result)
+    (raise-argument-error 'smith-chart-renderers "nec2c-sweep-result?" result))
+  (validate-smith-options 'smith-chart-renderers markers? theme)
+  (define series-list (smith-cursor-series result))
+  (append
+   (smith-grid-renderers theme)
+   (for/list ([series (in-list series-list)])
+     (lines (cursor-series-points series)
+            #:color (cursor-series-color series)
+            #:width 2
+            #:label (cursor-series-label series)))
+   (if markers?
+       (append*
+        (for/list ([series (in-list series-list)])
+          (smith-marker-renderers series theme)))
+       '())))
 
 (define (sample-gain sample component)
   (case component
@@ -384,13 +574,36 @@
     (dynamic-require interactive-plot-path 'show-interactive-plot)))
 
 (define (show-plot renderers series label-proc
-                   #:title title #:x-label x-label #:y-label y-label)
+                   #:title title #:x-label x-label #:y-label y-label
+                   #:x-min [x-min #f] #:x-max [x-max #f]
+                   #:y-min [y-min #f] #:y-max [y-max #f]
+                   #:aspect-ratio [aspect-ratio #f]
+                   #:legend-anchor [legend-anchor 'top-left]
+                   #:axes? [axes? #t]
+                   #:cursor-rule? [cursor-rule? #t]
+                   #:theme [theme 'light])
   ((interactive-plot-procedure)
    renderers series label-proc
-   #:title title #:x-label x-label #:y-label y-label))
+   #:title title #:x-label x-label #:y-label y-label
+   #:x-min x-min #:x-max x-max #:y-min y-min #:y-max y-max
+   #:aspect-ratio aspect-ratio
+   #:legend-anchor legend-anchor
+   #:axes? axes?
+   #:cursor-rule? cursor-rule?
+   #:theme theme))
 
 (define (cursor-number value)
-  (real->decimal-string (exact->inexact value) 4))
+  (cond
+    [(rational? value) (real->decimal-string (exact->inexact value) 4)]
+    [(equal? value +inf.0) "+inf"]
+    [(equal? value -inf.0) "-inf"]
+    [else (format "~a" value)]))
+
+(define (smith-impedance resistance reactance)
+  (format "~a~aj~a"
+          (cursor-number resistance)
+          (if (negative? reactance) "-" "+")
+          (cursor-number (abs reactance))))
 
 (define (sweep-label-proc value-name value-unit)
   (lambda (series point)
@@ -435,6 +648,37 @@
    #:title "NEC2C active impedance"
    #:x-label "frequency (MHz)"
    #:y-label "ohms"))
+
+(define (show-smith-chart result
+                          #:markers? [markers? #t]
+                          #:theme [theme 'light])
+  (unless (nec2c-sweep-result? result)
+    (raise-argument-error 'show-smith-chart "nec2c-sweep-result?" result))
+  (validate-smith-options 'show-smith-chart markers? theme)
+  (show-plot
+   (smith-chart-renderers result #:markers? markers? #:theme theme)
+   (smith-cursor-series result)
+   (lambda (series point)
+     (list
+      (format "~a @ ~a MHz | Z ~a ohms"
+              (cursor-series-label series)
+              (cursor-number (vector-ref point 2))
+              (smith-impedance (vector-ref point 3) (vector-ref point 4)))
+      (format "S11 ~a dB | VSWR ~a:1"
+              (cursor-number (vector-ref point 5))
+              (cursor-number (vector-ref point 6)))))
+   #:title
+   (format "NEC2C Smith chart (Z0 = ~a ohms)"
+           (nec2c-sweep-result-reference-impedance result))
+   #:x-label #f
+   #:y-label #f
+   #:x-min -1.08 #:x-max 1.08
+   #:y-min -1.08 #:y-max 1.08
+   #:aspect-ratio 1
+   #:legend-anchor 'outside-left-top
+   #:axes? #f
+   #:cursor-rule? #f
+   #:theme theme))
 
 (define (show-radiation-cut pattern
                             #:component [component 'total]

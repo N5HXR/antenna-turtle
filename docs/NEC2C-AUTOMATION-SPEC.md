@@ -358,6 +358,7 @@ colorized Pict3D/OpenGL presentation viewer.
 (show-vswr-sweep sweep [#:max-vswr #f] ...)
 (show-return-loss-sweep sweep [#:floor-db #f] ...)
 (show-impedance-sweep sweep ...)
+(show-smith-chart sweep [#:markers? #t] [#:theme 'light] ...)
 (show-radiation-cut pattern [#:floor-db -40] [#:normalize? #t] ...)
 (show-radiation-pattern-3d grid [#:floor-db -40] [#:normalize? #t] ...)
 (show-radiation-pattern-opengl grid [#:floor-db -40] [#:normalize? #t]
@@ -370,9 +371,11 @@ colorized Pict3D/OpenGL presentation viewer.
 - Return loss: frequency on X and analyzer-style negative S11 magnitude in dB
   on Y, with a -10 dB reference line and an optional finite display floor.
 - Impedance: frequency on X with resistance and reactance traces.
+- Smith chart: a dense normalized-impedance grid with separate feed traces,
+  1.5:1 and 2.0:1 VSWR circles, optional start/end/best-match markers, and
+  light and dark themes. Values outside the passive unit circle are clipped.
 - Interactive 2-D windows retain left-button zoom and use right-click/drag to
   label the nearest harvested sample without interpolating a measurement.
-- A Smith chart is a sensible later addition but is not required initially.
 
 ### 10.2 Polar cuts
 

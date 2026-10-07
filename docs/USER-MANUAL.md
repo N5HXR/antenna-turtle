@@ -767,6 +767,7 @@ window unless the program explicitly calls a `show-*` operation:
 
 (show-vswr-sweep sweep)
 (show-return-loss-sweep sweep)
+(show-smith-chart sweep)
 (show-radiation-cut horizontal-cut)
 (show-radiation-pattern-3d sphere)
 (show-radiation-pattern-opengl sphere #:palette 'magma)
@@ -831,6 +832,19 @@ plot. It includes a -10 dB reference line. The data object retains conventional
 positive return loss, and a mathematically exact match remains infinite there;
 the uncapped plot omits that point. Supply a floor such as `#:floor-db -40`
 when you want it drawn at a finite limit.
+
+For a normalized impedance view of the same sweep, use
+`(show-smith-chart sweep)`. The chart uses the sweep's reference impedance,
+draws fine minor grid divisions beneath stronger major divisions, and includes
+dashed 1.5:1 and 2.0:1 VSWR circles. Separate feeds retain separate line
+colors. By default a triangle marks the first frequency, a filled circle the
+last frequency, and an open circle the minimum-VSWR sample; pass
+`#:markers? #f` for an unmarked trace. The default `#:theme 'light` matches the
+other Plot windows, while `#:theme 'dark` provides a black presentation.
+Right-button inspection reports frequency, complex impedance, S11, and VSWR.
+The legend stays outside the upper-left of the circular plot; widening the
+window gives it a side margin without covering the Smith grid. Smith data tips
+are split over two compact lines to stay inside the square plot boundary.
 
 The Plot3D viewer locks all coordinate axes to the same scale and dynamically
 adjusts its orthographic viewport during rotation. Resizing or rotating the
