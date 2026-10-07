@@ -356,6 +356,7 @@ colorized Pict3D/OpenGL presentation viewer.
 
 ```racket
 (show-vswr-sweep sweep [#:max-vswr #f] ...)
+(show-return-loss-sweep sweep [#:floor-db #f] ...)
 (show-impedance-sweep sweep ...)
 (show-radiation-cut pattern [#:floor-db -40] [#:normalize? #t] ...)
 (show-radiation-pattern-3d grid [#:floor-db -40] [#:normalize? #t] ...)
@@ -363,10 +364,14 @@ colorized Pict3D/OpenGL presentation viewer.
                                   [#:scale 'arrl] [#:palette 'mmana] ...)
 ```
 
-### 10.1 VSWR and impedance
+### 10.1 Match and impedance
 
 - VSWR: frequency on X, VSWR on Y, with optional 2:1 and 3:1 reference lines.
+- Return loss: frequency on X and analyzer-style negative S11 magnitude in dB
+  on Y, with a -10 dB reference line and an optional finite display floor.
 - Impedance: frequency on X with resistance and reactance traces.
+- Interactive 2-D windows retain left-button zoom and use right-click/drag to
+  label the nearest harvested sample without interpolating a measurement.
 - A Smith chart is a sensible later addition but is not required initially.
 
 ### 10.2 Polar cuts

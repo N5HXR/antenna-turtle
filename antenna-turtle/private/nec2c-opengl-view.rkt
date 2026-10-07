@@ -71,6 +71,17 @@
     (-10 . (174 174 174))
     (0 . (255 255 255))))
 
+(define hot-eletric-stops
+  '((-30    . (0 0 4))
+    (-26.25 . (0 0 48))
+    (-22.5  . (0 0 105))
+    (-18.75 . (35 0 145))
+    (-15    . (85 0 175))
+    (-11.25 . (145 0 205))
+    (-7.5   . (215 0 235))
+    (-3.75  . (255 45 245))
+    (0      . (255 190 255))))
+
 (define (resolve-palette who palette)
   (case palette
     [(mmana) mmana-color-stops]
@@ -78,10 +89,11 @@
     [(inferno) inferno-color-stops]
     [(viridis) viridis-color-stops]
     [(grayscale) grayscale-color-stops]
+    [(electric) hot-eletric-stops]
     [else
      (raise-argument-error
       who
-      "(or/c 'mmana 'magma 'sdr 'inferno 'viridis 'grayscale)"
+      "(or/c 'mmana 'magma 'sdr 'inferno 'viridis 'grayscale 'electric)"
       palette)]))
 
 (define surface-material
@@ -705,7 +717,7 @@
       (send status-label set-label
             (format "drag to orbit  |  wheel to zoom  |  azimuth ~a°  elevation ~a°"
                     (exact-round azimuth) (exact-round altitude)))
-      (parameterize ([current-pict3d-background (rgba "white")]
+      (parameterize ([current-pict3d-background (rgba "black")]
                      [current-pict3d-ambient (emitted "white" 1.0)]
                      [current-pict3d-fov view-fov-degrees])
         (send this set-pict3d
@@ -840,7 +852,7 @@
       (set! view-center new-view-center)
       (set! radius new-radius))
     (define/public (set-shared-view azimuth altitude zoom)
-      (parameterize ([current-pict3d-background (rgba "white")]
+      (parameterize ([current-pict3d-background (rgba "black")]
                      [current-pict3d-ambient (emitted "white" 1.0)]
                      [current-pict3d-fov view-fov-degrees])
         (send this set-pict3d
@@ -903,7 +915,7 @@
     (define/override (on-paint)
       (define dc (send this get-dc))
       (define-values (width height) (send dc get-size))
-      (send dc set-background "white")
+      (send dc set-background "black")
       (send dc clear)
       (send dc set-smoothing 'smoothed)
       (send dc set-pen (make-object color% 35 110 220) 1 'solid)
@@ -1133,7 +1145,7 @@
          [label "drag to orbit  |  wheel to zoom"]
          [stretchable-width #t]))
   (define canvas
-    (parameterize ([current-pict3d-background (rgba "white")]
+    (parameterize ([current-pict3d-background (rgba "black")]
                    [current-pict3d-ambient (emitted "white" 1.0)]
                    [current-pict3d-fov view-fov-degrees])
       (new orbit-canvas%
@@ -1305,7 +1317,7 @@
   (define tiles '())
   (define canvases '())
   (define proxies '())
-  (parameterize ([current-pict3d-background (rgba "white")]
+  (parameterize ([current-pict3d-background (rgba "black")]
                  [current-pict3d-ambient (emitted "white" 1.0)]
                  [current-pict3d-fov view-fov-degrees])
     (for ([row-index (in-range rows)])

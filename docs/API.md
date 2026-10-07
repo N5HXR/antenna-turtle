@@ -771,7 +771,7 @@ model value or one-twentieth wavelength.
 
 ## 12. Geometry Viewer
 
-### `(show-model [model] [#:vertices? vertices?] [#:wire-color color] [#:width width] [#:height height])`
+### `(show-model [model] [#:vertices? vertices?] [#:wire-color color] [#:width width] [#:height height] [#:aspect-ratio ratio])`
 
 Opens the current model in a separate interactive Plot3D window. The optional
 `model` defaults to `(current-antenna-model)`. Drag the plot to rotate it.
@@ -780,12 +780,16 @@ Conductors default to medium blue (`"steelblue"`) and feed locations are marked
 in red. `#:wire-color` accepts a Plot3D color such as `"navy"` or `"orange"`.
 With `#:vertices? #t`, every Antenna Turtle vertex is also marked. `width` and
 `height` are positive integer window dimensions and default to `900` and `700`.
+`#:aspect-ratio` is an additional width-to-height projection multiplier and
+defaults to `1` for an undistorted view.
 
-The viewer gives every coordinate axis the same metric range, avoiding the
-independent axis stretching common in general-purpose plots. It renders DSL
-edges before solver subdivision and uses a fixed visible line width rather
-than physical conductor diameter. An empty model or an unused pending feed is
-an error.
+The viewer gives every coordinate axis the same metric range and dynamically
+adjusts the Plot3D viewport during rotation so horizontal and vertical screen
+units remain equal. This avoids both independent data-axis stretching and the
+angle-dependent distortion of Plot3D's normal fit-to-window behavior. It
+renders DSL edges before solver subdivision and uses a fixed visible line
+width rather than physical conductor diameter. An empty model or an unused
+pending feed is an error.
 
 The command-line equivalent is:
 
@@ -976,6 +980,7 @@ These operations explicitly open Racket Plot windows:
 
 ```racket
 (show-vswr-sweep sweep [#:max-vswr #f])
+(show-return-loss-sweep sweep [#:floor-db #f])
 (show-impedance-sweep sweep)
 (show-radiation-cut pattern
                     [#:component 'total]
@@ -1019,9 +1024,17 @@ These operations explicitly open Racket Plot windows:
 
 Components are `'total`, `'vertical`, or `'horizontal`. The corresponding
 headless renderer constructors—`vswr-sweep-renderers`,
-`impedance-sweep-renderers`, `radiation-cut-renderers`, and
+`return-loss-sweep-renderers`, `impedance-sweep-renderers`,
+`radiation-cut-renderers`, and
 `radiation-grid-renderers`—return ordinary Racket Plot renderers for custom
 figures or bitmap generation.
+
+The 2-D `show-*` windows preserve Racket Plot's left-drag zoom and left-click
+unzoom controls. Right-click or right-drag selects the nearest actual analysis
+sample in display coordinates and overlays its series name and precise values;
+right release leaves that label pinned. Sweep labels report frequency plus
+VSWR, S11, resistance, or reactance as appropriate. Radiation-cut labels
+report angle and raw component gain in dBi.
 
 The two OpenGL operations return an opaque `visualization-handle`. Save it to
 replace a live view without closing its window:
@@ -1151,6 +1164,13 @@ contains every finite sample. Pass a positive `#:max-vswr` greater than one
 when a manual ceiling is useful. Samples with mathematically infinite VSWR
 create a break in an uncapped curve; specifying a ceiling displays them at the
 ceiling instead.
+
+Return-loss plots use the analyzer-style negative
+`20 log10(|reflection coefficient|)` display, so a good match appears as a
+downward dip, and include a -10 dB reference line. The returned data object
+still retains conventional positive return loss. An exact match creates a
+break in an uncapped curve; pass a negative `#:floor-db` to draw it at a
+chosen finite floor instead.
 
 ### Run metadata, errors, and parsing
 

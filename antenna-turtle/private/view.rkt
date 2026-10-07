@@ -1,6 +1,7 @@
 #lang racket/base
 
 (require racket/list
+         racket/runtime-path
          plot/no-gui
          "core.rkt")
 
@@ -12,6 +13,8 @@
 (define default-wire-color "steelblue")
 (define vertex-color "dark slate gray")
 (define feed-color "firebrick")
+
+(define-runtime-path proportional-plot3d-path "proportional-plot3d.rkt")
 
 (define (point3->vector point)
   (vector (point3-x point) (point3-y point) (point3-z point)))
@@ -107,13 +110,16 @@
                     #:vertices? [vertices? #f]
                     #:wire-color [wire-color default-wire-color]
                     #:width [width 900]
-                    #:height [height 700])
+                    #:height [height 700]
+                    #:aspect-ratio [aspect-ratio 1])
   (unless (antenna-model? model)
     (raise-argument-error 'show-model "antenna-model?" model))
   (unless (exact-positive-integer? width)
     (raise-argument-error 'show-model "exact-positive-integer?" width))
   (unless (exact-positive-integer? height)
     (raise-argument-error 'show-model "exact-positive-integer?" height))
+  (unless (and (rational? aspect-ratio) (positive? aspect-ratio))
+    (raise-argument-error 'show-model "positive-real?" aspect-ratio))
   (validate-model!)
   (define renderers
     (model->plot-renderers model
@@ -123,27 +129,27 @@
     (model-cubic-bounds model))
   ;; Loading the GUI backend only here keeps ordinary builds and exports usable
   ;; on machines without a display server.
-  (define plot3d
+  (define show-proportional
     (with-handlers ([exn:fail?
                      (lambda (failure)
                        (raise-user-error
                         'show-model
-                        "could not start the Plot3D viewer: ~a"
+                        "could not start the proportional Plot3D viewer: ~a"
                         (exn-message failure)))])
-      (dynamic-require 'plot 'plot3d)))
-  (define plot-new-window?
-    (dynamic-require 'plot 'plot-new-window?))
-  (parameterize ([plot-new-window? #t])
-    (plot3d renderers
-            #:title (model-title)
-            #:x-label "x (m)"
-            #:y-label "y (m)"
-            #:z-label "z (m)"
-            #:x-min x-min
-            #:x-max x-max
-            #:y-min y-min
-            #:y-max y-max
-            #:z-min z-min
-            #:z-max z-max
-            #:width width
-            #:height height)))
+      (dynamic-require proportional-plot3d-path
+                       'show-proportional-plot3d)))
+  (show-proportional
+   renderers
+   #:title (model-title)
+   #:x-label "x (m)"
+   #:y-label "y (m)"
+   #:z-label "z (m)"
+   #:x-min x-min
+   #:x-max x-max
+   #:y-min y-min
+   #:y-max y-max
+   #:z-min z-min
+   #:z-max z-max
+   #:width width
+   #:height height
+   #:aspect-multiplier aspect-ratio))

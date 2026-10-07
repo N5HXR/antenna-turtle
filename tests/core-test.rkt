@@ -1302,6 +1302,8 @@
     (plot3d-bitmap detailed-renderers #:width 320 #:height 240))
   (check-equal? (send preview get-width) 320)
   (check-equal? (send preview get-height) 240)
+  (check-exn #rx"positive-real"
+             (lambda () (show-model #:aspect-ratio 0)))
   (reset-model!)
   (check-exn #rx"empty model" model->plot-renderers))
 

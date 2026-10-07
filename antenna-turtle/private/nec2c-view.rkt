@@ -4,16 +4,19 @@
          racket/math
          racket/runtime-path
          plot/no-gui
+         "plot-cursor.rkt"
          "radiation-case.rkt"
          "visualization-handle.rkt"
          "nec2c.rkt")
 
 (provide
  vswr-sweep-renderers
+ return-loss-sweep-renderers
  impedance-sweep-renderers
  radiation-cut-renderers
  radiation-grid-renderers
  show-vswr-sweep
+ show-return-loss-sweep
  show-impedance-sweep
  show-radiation-cut
  show-radiation-pattern-3d
@@ -31,6 +34,7 @@
 
 (define-runtime-path proportional-plot3d-path "proportional-plot3d.rkt")
 (define-runtime-path opengl-view-path "nec2c-opengl-view.rkt")
+(define-runtime-path interactive-plot-path "interactive-plot.rkt")
 
 (define (color-at index)
   (list-ref colors (modulo index (length colors))))
@@ -51,6 +55,25 @@
                        (nec2c-sweep-sample-feedpoint sample))))
     sample))
 
+(define (vswr-points result name max-vswr)
+  (for/list ([sample (in-list (samples-for-feed result name))])
+    (define feedpoint (nec2c-sweep-sample-feedpoint sample))
+    (define vswr (nec2c-sweep-sample-vswr sample))
+    (vector (nec2c-feedpoint-sample-frequency-mhz feedpoint)
+            (cond [max-vswr (min max-vswr vswr)]
+                  ;; Plot treats a NaN point as a break in the line. An
+                  ;; infinite VSWR therefore remains present in the data
+                  ;; result without forcing an impossible finite axis.
+                  [(rational? vswr) vswr]
+                  [else +nan.0]))))
+
+(define (vswr-cursor-series result max-vswr)
+  (for/list ([name (in-list (sweep-feed-names result))]
+             [index (in-naturals)])
+    (cursor-series name
+                   (vswr-points result name max-vswr)
+                   (color-at index))))
+
 (define (vswr-sweep-renderers result #:max-vswr [max-vswr #f])
   (unless (nec2c-sweep-result? result)
     (raise-argument-error 'vswr-sweep-renderers "nec2c-sweep-result?" result))
@@ -59,48 +82,86 @@
     (raise-argument-error
      'vswr-sweep-renderers "(or/c #f (and/c rational? (>/c 1)))" max-vswr))
   (append
-   (for/list ([name (in-list (sweep-feed-names result))]
-              [index (in-naturals)])
-     (lines
-      (for/list ([sample (in-list (samples-for-feed result name))])
-        (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-        (define vswr (nec2c-sweep-sample-vswr sample))
-        (vector (nec2c-feedpoint-sample-frequency-mhz feedpoint)
-                (cond [max-vswr (min max-vswr vswr)]
-                      ;; Plot treats a NaN point as a break in the line. An
-                      ;; infinite VSWR therefore remains present in the data
-                      ;; result without forcing an impossible finite axis.
-                      [(rational? vswr) vswr]
-                      [else +nan.0])))
-      #:color (color-at index)
+   (for/list ([series (in-list (vswr-cursor-series result max-vswr))])
+     (lines (cursor-series-points series)
+      #:color (cursor-series-color series)
       #:width 2
-      #:label name))
+      #:label (cursor-series-label series)))
    (list (hrule 2 #:style 'short-dash #:color "gray" #:label "2:1")
          (hrule 3 #:style 'dot #:color "darkgray" #:label "3:1"))))
+
+(define (return-loss-points result name floor-db)
+  (for/list ([sample (in-list (samples-for-feed result name))])
+    (define feedpoint (nec2c-sweep-sample-feedpoint sample))
+    (define return-loss (nec2c-sweep-sample-return-loss-db sample))
+    (vector
+     (nec2c-feedpoint-sample-frequency-mhz feedpoint)
+     (cond [floor-db (max floor-db (- return-loss))]
+           ;; The data object retains conventional positive return loss.
+           ;; Plot its negative, 20 log10 |Gamma|, so a good match is the
+           ;; familiar downward S11 dip. Break an exact-match infinity in
+           ;; an uncapped line so it cannot force a non-finite axis.
+           [(rational? return-loss) (- return-loss)]
+           [else +nan.0]))))
+
+(define (return-loss-cursor-series result floor-db)
+  (for/list ([name (in-list (sweep-feed-names result))]
+             [index (in-naturals)])
+    (cursor-series name
+                   (return-loss-points result name floor-db)
+                   (color-at index))))
+
+(define (return-loss-sweep-renderers
+         result
+         #:floor-db [floor-db #f])
+  (unless (nec2c-sweep-result? result)
+    (raise-argument-error
+     'return-loss-sweep-renderers "nec2c-sweep-result?" result))
+  (unless (or (not floor-db)
+              (and (rational? floor-db) (negative? floor-db)))
+    (raise-argument-error
+     'return-loss-sweep-renderers
+     "(or/c #f negative-rational?)"
+     floor-db))
+  (append
+   (for/list ([series (in-list
+                       (return-loss-cursor-series result floor-db))])
+     (lines (cursor-series-points series)
+      #:color (cursor-series-color series)
+      #:width 2
+      #:label (cursor-series-label series)))
+   (list (hrule -10
+                #:style 'short-dash
+                #:color "gray"
+                #:label "-10 dB"))))
+
+(define (impedance-cursor-series result)
+  (append*
+   (for/list ([name (in-list (sweep-feed-names result))]
+              [index (in-naturals)])
+     (define samples (samples-for-feed result name))
+     (define color (color-at index))
+     (define (points part)
+       (for/list ([sample (in-list samples)])
+         (define feedpoint (nec2c-sweep-sample-feedpoint sample))
+         (vector (nec2c-feedpoint-sample-frequency-mhz feedpoint)
+                 (part (nec2c-feedpoint-sample-impedance feedpoint)))))
+     (list (cursor-series (format "~a R" name) (points real-part) color)
+           (cursor-series (format "~a X" name) (points imag-part) color)))))
 
 (define (impedance-sweep-renderers result)
   (unless (nec2c-sweep-result? result)
     (raise-argument-error
      'impedance-sweep-renderers "nec2c-sweep-result?" result))
   (append*
-   (for/list ([name (in-list (sweep-feed-names result))]
+   (for/list ([series (in-list (impedance-cursor-series result))]
               [index (in-naturals)])
-     (define samples (samples-for-feed result name))
-     (define color (color-at index))
      (list
-      (lines
-       (for/list ([sample (in-list samples)])
-         (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-         (vector (nec2c-feedpoint-sample-frequency-mhz feedpoint)
-                 (real-part (nec2c-feedpoint-sample-impedance feedpoint))))
-       #:color color #:width 2 #:label (format "~a R" name))
-      (lines
-       (for/list ([sample (in-list samples)])
-         (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-         (vector (nec2c-feedpoint-sample-frequency-mhz feedpoint)
-                 (imag-part (nec2c-feedpoint-sample-impedance feedpoint))))
-       #:color color #:style 'short-dash #:width 2
-       #:label (format "~a X" name))))))
+      (lines (cursor-series-points series)
+             #:color (cursor-series-color series)
+             #:style (if (odd? index) 'short-dash 'solid)
+             #:width 2
+             #:label (cursor-series-label series))))))
 
 (define (sample-gain sample component)
   (case component
@@ -131,6 +192,24 @@
     (and (real? gain)
          (- (max floor-db (if normalize? (- gain peak) gain)) floor-db))))
 
+(define (radiation-cut-cursor-points pattern component floor-db normalize?)
+  (define samples (nec2c-pattern-samples pattern))
+  (define transform
+    (gain-transform (map (lambda (sample) (sample-gain sample component)) samples)
+                    floor-db normalize?))
+  (filter
+   values
+   (for/list ([sample (in-list samples)])
+     (define gain (sample-gain sample component))
+     (define radius (transform gain))
+     (and radius
+          (let* ([angle-degrees (pattern-angle pattern sample)]
+                 [angle (degrees->radians angle-degrees)])
+            ;; The extra elements are retained for precise data-tip labels;
+            ;; Plot renderers consume only the first two coordinates below.
+            (vector (* radius (cos angle)) (* radius (sin angle))
+                    angle-degrees gain))))))
+
 (define (radiation-cut-renderers pattern
                                  #:component [component 'total]
                                  #:floor-db [floor-db -40]
@@ -139,20 +218,12 @@
     (raise-argument-error 'radiation-cut-renderers "nec2c-pattern?" pattern))
   (unless (and (real? floor-db) (< floor-db 0))
     (raise-argument-error 'radiation-cut-renderers "negative-real?" floor-db))
-  (define samples (nec2c-pattern-samples pattern))
-  (define transform
-    (gain-transform (map (lambda (sample) (sample-gain sample component)) samples)
-                    floor-db normalize?))
   (define points
-    (filter
-     values
-     (for/list ([sample (in-list samples)])
-       (define radius (transform (sample-gain sample component)))
-       (and radius
-            (let ([angle (degrees->radians (pattern-angle pattern sample))])
-              (vector (* radius (cos angle)) (* radius (sin angle))))))))
+    (radiation-cut-cursor-points pattern component floor-db normalize?))
   (list (polar-axes)
-        (lines points #:color "steelblue" #:width 2
+        (lines (for/list ([point (in-list points)])
+                 (vector (vector-ref point 0) (vector-ref point 1)))
+               #:color "steelblue" #:width 2
                #:label (symbol->string component))))
 
 (define (angle-key theta phi)
@@ -304,57 +375,89 @@
                #:alpha 0.92
                #:label (symbol->string component))))
 
-(define (gui-procedure name)
+(define (interactive-plot-procedure)
   (with-handlers ([exn:fail?
                    (lambda (failure)
                      (raise-user-error
-                      name "could not start the Plot viewer: ~a"
+                      'show-plot "could not start the Plot viewer: ~a"
                       (exn-message failure)))])
-    (dynamic-require 'plot name)))
+    (dynamic-require interactive-plot-path 'show-interactive-plot)))
 
-(define (show-plot procedure-name renderers . keyword-arguments)
-  (define procedure (gui-procedure procedure-name))
-  (define plot-new-window? (dynamic-require 'plot 'plot-new-window?))
-  ;; keyword-apply requires its keywords to be sorted. Keeping this detail
-  ;; here lets individual viewers state their plotting options naturally.
-  (define sorted-arguments
-    (sort keyword-arguments keyword<? #:key car))
-  (parameterize ([plot-new-window? #t])
-    (keyword-apply procedure
-                   (for/list ([pair (in-list sorted-arguments)]) (car pair))
-                   (for/list ([pair (in-list sorted-arguments)]) (cdr pair))
-                   (list renderers))))
+(define (show-plot renderers series label-proc
+                   #:title title #:x-label x-label #:y-label y-label)
+  ((interactive-plot-procedure)
+   renderers series label-proc
+   #:title title #:x-label x-label #:y-label y-label))
+
+(define (cursor-number value)
+  (real->decimal-string (exact->inexact value) 4))
+
+(define (sweep-label-proc value-name value-unit)
+  (lambda (series point)
+    (format "~a | ~a MHz | ~a: ~a~a"
+            (cursor-series-label series)
+            (cursor-number (vector-ref point 0))
+            value-name
+            (cursor-number (vector-ref point 1))
+            value-unit)))
 
 (define (show-vswr-sweep result #:max-vswr [max-vswr #f])
   (show-plot
-   'plot
    (vswr-sweep-renderers result #:max-vswr max-vswr)
-   (cons '#:title "NEC2C VSWR sweep")
-   (cons '#:x-label "frequency (MHz)")
-   (cons '#:y-label
-         (format "VSWR (Z0 = ~a ohms)"
-                 (nec2c-sweep-result-reference-impedance result)))))
+   (vswr-cursor-series result max-vswr)
+   (sweep-label-proc "VSWR" ":1")
+   #:title "NEC2C VSWR sweep"
+   #:x-label "frequency (MHz)"
+   #:y-label
+   (format "VSWR (Z0 = ~a ohms)"
+           (nec2c-sweep-result-reference-impedance result))))
+
+(define (show-return-loss-sweep
+         result
+         #:floor-db [floor-db #f])
+  (show-plot
+   (return-loss-sweep-renderers
+    result
+    #:floor-db floor-db)
+   (return-loss-cursor-series result floor-db)
+   (sweep-label-proc "S11" " dB")
+   #:title "NEC2C return-loss sweep"
+   #:x-label "frequency (MHz)"
+   #:y-label
+   (format "return loss / S11 (dB, Z0 = ~a ohms)"
+           (nec2c-sweep-result-reference-impedance result))))
 
 (define (show-impedance-sweep result)
-  (show-plot 'plot
-             (impedance-sweep-renderers result)
-             (cons '#:title "NEC2C active impedance")
-             (cons '#:x-label "frequency (MHz)")
-             (cons '#:y-label "ohms")))
+  (show-plot
+   (impedance-sweep-renderers result)
+   (impedance-cursor-series result)
+   (sweep-label-proc "impedance" " ohms")
+   #:title "NEC2C active impedance"
+   #:x-label "frequency (MHz)"
+   #:y-label "ohms"))
 
 (define (show-radiation-cut pattern
                             #:component [component 'total]
                             #:floor-db [floor-db -40]
                             #:normalize? [normalize? #t])
   (show-plot
-   'plot
    (radiation-cut-renderers pattern
                             #:component component
                             #:floor-db floor-db
                             #:normalize? normalize?)
-   (cons '#:title (format "NEC2C ~a pattern" (nec2c-pattern-kind pattern)))
-   (cons '#:x-label #f)
-   (cons '#:y-label #f)))
+   (list
+    (cursor-series
+     (symbol->string component)
+     (radiation-cut-cursor-points pattern component floor-db normalize?)
+     "steelblue"))
+   (lambda (series point)
+     (format "~a | angle: ~a degrees | gain: ~a dBi"
+             (cursor-series-label series)
+             (cursor-number (vector-ref point 2))
+             (cursor-number (vector-ref point 3))))
+   #:title (format "NEC2C ~a pattern" (nec2c-pattern-kind pattern))
+   #:x-label #f
+   #:y-label #f))
 
 (define (show-radiation-pattern-3d grid
                                    #:component [component 'total]

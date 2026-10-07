@@ -601,11 +601,14 @@ To expose the endpoints created by turtle operations:
 (show-model #:vertices? #t)
 ```
 
-The viewer uses an equal numeric range for X, Y, and Z, preserving the model's
-physical proportions. It shows Antenna Turtle's edges before NEC/MMANA solver
-subdivision. Lines are intentionally screen-visible and do not depict the
-physical wire diameter; use the simulator or MATLAB solid export when surface
-geometry matters.
+The viewer uses an equal numeric range for X, Y, and Z and dynamically adjusts
+the Plot3D viewport while it rotates, preserving the model's physical
+proportions at every viewing angle. `#:aspect-ratio` defaults to `1`; another
+positive value deliberately multiplies the projected width-to-height ratio.
+The viewer shows Antenna Turtle's edges before NEC/MMANA solver subdivision.
+Lines are intentionally screen-visible and do not depict the physical wire
+diameter; use the simulator or MATLAB solid export when surface geometry
+matters.
 
 ## 6. Repetition and Layout Tables
 
@@ -763,6 +766,7 @@ window unless the program explicitly calls a `show-*` operation:
   (nec2c-radiation-grid #:theta-step 5 #:phi-step 5))
 
 (show-vswr-sweep sweep)
+(show-return-loss-sweep sweep)
 (show-radiation-cut horizontal-cut)
 (show-radiation-pattern-3d sphere)
 (show-radiation-pattern-opengl sphere #:palette 'magma)
@@ -813,6 +817,20 @@ orientation on mouse release.
 VSWR plots include every finite value by default and let Plot choose the
 vertical extent. For a deliberately clipped overview, supply a ceiling such
 as `(show-vswr-sweep sweep #:max-vswr 10)`.
+
+All 2-D analysis graphs include a data cursor. Left-drag zooms and left-click
+unzooms as usual. Right-click or hold the right button while dragging to select
+the nearest actual NEC2C sample; release the button to leave its label pinned.
+On sweep plots the label identifies the feed or impedance component, frequency,
+and value. On polar cuts it reports angle and raw gain in dBi.
+
+Return loss presents the same match data on the familiar analyzer-style
+`20 log10(|reflection coefficient|)` scale: a better match makes a deeper
+negative dip. Use `(show-return-loss-sweep sweep)` for the automatically scaled
+plot. It includes a -10 dB reference line. The data object retains conventional
+positive return loss, and a mathematically exact match remains infinite there;
+the uncapped plot omits that point. Supply a floor such as `#:floor-db -40`
+when you want it drawn at a finite limit.
 
 The Plot3D viewer locks all coordinate axes to the same scale and dynamically
 adjusts its orthographic viewport during rotation. Resizing or rotating the

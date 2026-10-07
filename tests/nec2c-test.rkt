@@ -4,9 +4,14 @@
          racket/file
          racket/path
          (only-in plot/no-gui plot3d-bitmap)
-         (only-in plot/utils plot-element-bounds-rect ivl-max)
+         (only-in plot/utils plot-element-bounds-rect ivl-min ivl-max)
          (only-in "../antenna-turtle/private/visualization-handle.rkt"
                   make-visualization-handle)
+         (only-in "../antenna-turtle/private/plot-cursor.rkt"
+                  cursor-series
+                  cursor-selection-series
+                  cursor-selection-point
+                  nearest-cursor-sample)
          "../antenna-turtle/main.rkt")
 
 (define parser-fixture
@@ -50,6 +55,24 @@ REPORT
   (check-false (visualization-open? handle))
   (visualization-show! handle)
   (check-true (visualization-open? handle)))
+
+(test-case "data cursor selects the nearest finite harvested sample"
+  (define first-series
+    (cursor-series "A"
+                   (list (vector 100 2)
+                         (vector 101 +nan.0)
+                         (vector 102 4))
+                   "steelblue"))
+  (define second-series
+    (cursor-series "B"
+                   (list (vector 100 8) (vector 102 10))
+                   "firebrick"))
+  (define selection
+    (nearest-cursor-sample
+     (list first-series second-series)
+     101.8 4.1 values))
+  (check-eq? (cursor-selection-series selection) first-series)
+  (check-equal? (cursor-selection-point selection) (vector 102 4)))
 
 (test-case "NEC2C report parser preserves multiple feeds and polarization"
   (define report (parse-nec2c-output parser-fixture))
@@ -96,6 +119,31 @@ REPORT
    (ivl-max (vector-ref (plot-element-bounds-rect capped-line) 1))
    10))
 
+(test-case "return-loss plots dip downward and ignore an exact-match infinity"
+  (define (frequency-sample frequency return-loss)
+    (define feedpoint
+      (nec2c-feedpoint-sample
+       "feed-1" frequency 1 1 1 1 50 1/50 1/2))
+    (nec2c-sweep-frequency
+     frequency
+     (list (nec2c-sweep-sample feedpoint 0 return-loss 1))))
+  (define sweep
+    (nec2c-sweep-result
+     #f 50
+     (list (frequency-sample 1 3)
+           (frequency-sample 2 20)
+           (frequency-sample 3 +inf.0))))
+  (define auto-line (first (return-loss-sweep-renderers sweep)))
+  (define capped-line
+    (first
+     (return-loss-sweep-renderers sweep #:floor-db -12)))
+  (check-equal?
+   (ivl-min (vector-ref (plot-element-bounds-rect auto-line) 1))
+   -20)
+  (check-equal?
+   (ivl-min (vector-ref (plot-element-bounds-rect capped-line) 1))
+   -12))
+
 (define integration-executable
   (or (getenv "NEC2C")
       (find-executable-path "nec2c")))
@@ -129,6 +177,7 @@ REPORT
              (nec2c-sweep-result-frequencies sweep)))
     (check-equal? (nec2c-sweep-result-reference-impedance sweep) 50)
     (check-not-false (pair? (vswr-sweep-renderers sweep)))
+    (check-not-false (pair? (return-loss-sweep-renderers sweep)))
     (check-not-false (pair? (impedance-sweep-renderers sweep)))
 
     (define azimuth (nec2c-azimuth-pattern #:step 30))
