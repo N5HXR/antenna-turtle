@@ -11,6 +11,8 @@ program. Named feeds support independent voltage amplitude and phase. NEC2C
 models may use free space, perfect ground, or configurable real ground;
 MATLAB exports include a directly runnable far-field directivity stub.
 
+![Rendered yagi signal pattern comparison window](docs/comparison-photo.png)
+
 Documentation:
 
 - [User Manual](docs/USER-MANUAL.md), including Windows 11 installation
@@ -484,10 +486,10 @@ opening a simulator:
 ```
 
 The Plot3D window can be dragged to rotate the antenna. All coordinate axes use
-the same metric scale, so long or flat models are not stretched to fill the
-plotting cube. The viewer displays DSL geometry before solver subdivision;
-wire diameter is represented by a visible line width rather than a solid
-cylinder.
+the same metric scale, and its viewport is adjusted during rotation so the
+model does not change apparent proportions with viewing angle. The viewer
+displays DSL geometry before solver subdivision; wire diameter is represented
+by a visible line width rather than a solid cylinder.
 
 The normal build interface derives output names from the model source:
 
@@ -548,6 +550,7 @@ returns transparent Racket values without printing or opening a window:
 
 ;; Visualization is always an explicit choice.
 (show-vswr-sweep sweep)
+(show-return-loss-sweep sweep)
 (show-radiation-cut azimuth)
 (show-radiation-pattern-3d sphere)
 (show-radiation-pattern-opengl sphere #:palette 'magma)
@@ -558,6 +561,11 @@ returns transparent Racket values without printing or opening a window:
        (radiation-case "revision" revised-sphere))
  #:aspect-ratio 16/9)
 ```
+
+The ordinary 2-D graphs have a built-in data cursor. Left-drag retains Plot's
+normal zoom behavior and left-click unzooms once. Right-click or right-drag
+selects the nearest actual NEC2C sample; releasing the button leaves its
+frequency and value pinned on the graph.
 
 The two OpenGL calls return reusable handles for live work:
 
