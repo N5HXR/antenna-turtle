@@ -41,4 +41,4 @@
 (show-radiation-pattern-opengl pattern #:palette 'electric)
 
 (show-return-loss-sweep
- (nec2c-vswr-sweep 850 980 #:steps 201))
+ (nec2c-vswr-sweep 500 1400 #:steps 201))
