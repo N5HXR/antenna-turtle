@@ -1,10 +1,12 @@
 #lang racket
 
-(require "private/core.rkt"
+(require (except-in "private/core.rkt" feed)
          "private/export-nec2c.rkt"
          "private/export-mmana.rkt"
          "private/export-matlab.rkt"
          "private/export-matlab-loft.rkt"
+         "private/nec2c.rkt"
+         "private/nec2c-view.rkt"
          "private/view.rkt"
          k-infix
          (planet jphelps/loop:1:25)
@@ -18,6 +20,8 @@
  (rename-out [antenna-module-begin #%module-begin])
  #%braces
  (all-from-out (planet jphelps/loop:1:25))
+ (all-from-out "private/nec2c.rkt")
+ (all-from-out "private/nec2c-view.rkt")
  wavelength
  half-wave
  quarter-wave
@@ -25,6 +29,7 @@
  (except-out (all-from-out "private/core.rkt")
              move-local move-vector-local move-vector-local-steps
              point-vector-local spread-local
+             mark-feed
              call-with-wire call-with-points call-with-scale call-from-here
              call-with-warp call-with-surface call-with-reflection
              call-with-radial-repeat radial-iterations-value
@@ -34,6 +39,7 @@
  move
  point
  spread
+ feed
  reflect
  radial-repeat
  with-wire
@@ -94,6 +100,28 @@
         (raise-syntax-error who "expected a contextual keyword" stx key))
       (cons key (list-ref items (add1 offset)))))
 
+  (define (ground-setting-form value whole-form)
+    (cond
+      [(identifier? value)
+       (case (syntax-e value)
+         [(none perfect real) #`(model-ground '#,(syntax-e value))]
+         [else
+          (raise-syntax-error
+           'model
+           "expected none, perfect, real, or (real permittivity conductivity)"
+           whole-form value)])]
+      [else
+       (define parts (syntax->list value))
+       (unless (and parts
+                    (= (length parts) 3)
+                    (identifier? (first parts))
+                    (eq? (syntax-e (first parts)) 'real))
+         (raise-syntax-error
+          'model
+          "expected none, perfect, real, or (real permittivity conductivity)"
+          whole-form value))
+       #`(model-ground (real-ground #,(second parts) #,(third parts)))]))
+
   (define (turn-direction-call direction degrees whole-form)
     (case (syntax-e direction)
       [(left)       #`(turn-z #,degrees)]
@@ -145,6 +173,26 @@
       [(null? (cdr terms)) (car terms)]
       [else #`(+ #,@terms)]))
 
+  ;; Feed locations are contextual DSL keywords. Bare start/center/end and
+  ;; the extended (LOCATION NAME AMPLITUDE PHASE) descriptor are converted to
+  ;; ordinary runtime values without requiring Scheme quotation syntax.
+  (define (feed-descriptor-expression descriptor whole-form)
+    (syntax-parse descriptor
+      [location:id
+       #:when (memq (syntax-e #'location) '(start center end))
+       #`'#,(syntax-e #'location)]
+      [(location:id name:expr amplitude:expr phase:expr)
+       #:when (memq (syntax-e #'location) '(start center end))
+       #`(make-feed-spec '#,(syntax-e #'location) name amplitude phase)]
+      [(location:id . _)
+       #:when (memq (syntax-e #'location) '(start center end))
+       (raise-syntax-error
+        'feed
+        "expected (LOCATION NAME AMPLITUDE PHASE)"
+        whole-form
+        descriptor)]
+      [_ descriptor]))
+
   (define (reflection-axis direction whole-form)
     (case (syntax-e direction)
       [(forward forwards back backward backwards) 'x]
@@ -179,7 +227,11 @@
      (string-append
       "expected direction/distance pairs and an optional feed/location or "
       "steps/count pair, for example (move forward 10 up 1 steps 5)")))
-  (define values (map cdr pairs))
+  (define values
+    (for/list ([pair (in-list pairs)])
+      (if (eq? (syntax-e (car pair)) 'feed)
+          (feed-descriptor-expression (cdr pair) stx)
+          (cdr pair))))
   (define temporaries (generate-temporaries values))
   (define movement-pairs
     (for/list ([pair (in-list pairs)]
@@ -222,7 +274,7 @@
   #`(let* (#,@bindings)
       #,@(if (null? feed-temporaries)
              '()
-             (list #`(feed #,(car feed-temporaries))))
+             (list #`(mark-feed #,(car feed-temporaries))))
       #,(if (null? step-temporaries)
             #`(move-vector-local
                #,x-expression #,y-expression #,z-expression)
@@ -240,7 +292,11 @@
      (string-append
       "expected direction/distance pairs and an optional feed/location pair, "
       "for example (point right radius up height feed 'center)")))
-  (define values (map cdr pairs))
+  (define values
+    (for/list ([pair (in-list pairs)])
+      (if (eq? (syntax-e (car pair)) 'feed)
+          (feed-descriptor-expression (cdr pair) stx)
+          (cdr pair))))
   (define temporaries (generate-temporaries values))
   (define direction-pairs
     (for/list ([pair (in-list pairs)]
@@ -279,18 +335,32 @@
     [(_ direction:id distance:expr)
      (define component (move-direction-components #'direction stx))
      #`(spread-local #,@component distance)]
-    [(_ direction:id distance:expr (~datum feed) location:expr)
+    [(_ direction:id distance:expr (~datum feed) descriptor:expr)
      (define component (move-direction-components #'direction stx))
+     (define feed-expression
+       (feed-descriptor-expression #'descriptor stx))
      #`(let* ([saved-distance distance]
-              [saved-location location])
-         (feed saved-location)
+              [saved-feed #,feed-expression])
+         (mark-feed saved-feed)
          (spread-local #,@component saved-distance))]
     [(_ . _)
      (raise-syntax-error
       'spread
       (string-append
        "expected (spread direction distance) or "
-       "(spread direction distance feed location)")
+       "(spread direction distance feed descriptor)")
+      stx)]))
+
+(define-syntax (feed stx)
+  (syntax-parse stx
+    [(_ descriptor)
+     (define expression
+       (feed-descriptor-expression #'descriptor stx))
+     #`(mark-feed #,expression)]
+    [(_ . _)
+     (raise-syntax-error
+      'feed
+      "expected (feed LOCATION) or (feed (LOCATION NAME AMPLITUDE PHASE))"
       stx)]))
 
 ;; The direction names select the normal of a reflection plane in the local
@@ -318,15 +388,18 @@
          'model stx
          (string-append
           "expected setting/value pairs using title, frequency, max-length, "
-          "snaplen, or wire-diameter"))))
+          "snaplen, wire-diameter, impedance, ground, or height"))))
   (define seen (make-hasheq))
   (define settings (make-hasheq))
   (for ([pair (in-list pairs)])
     (define key (syntax-e (car pair)))
-    (unless (memq key '(title frequency max-length snaplen wire-diameter))
+    (unless (memq key '(title frequency max-length snaplen wire-diameter
+                              impedance ground height))
       (raise-syntax-error
        'model
-       "expected title, frequency, max-length, snaplen, or wire-diameter"
+       (string-append
+        "expected title, frequency, max-length, snaplen, wire-diameter, "
+        "impedance, ground, or height")
        stx
        (car pair)))
     (when (hash-ref seen key #f)
@@ -335,20 +408,24 @@
     (hash-set! seen key #t)
     (hash-set! settings key (cdr pair)))
   ;; A model form is declarative rather than order-sensitive. Apply frequency
-  ;; before max-length so the latter may use model-wavelength regardless of
-  ;; the pair order written by the programmer.
+  ;; before wavelength-derived height, segmentation, and snapping expressions
+  ;; regardless of the pair order written by the programmer.
   (define forms
     (filter
      values
-     (for/list ([key '(title frequency max-length snaplen wire-diameter)])
+     (for/list ([key '(title frequency ground height max-length snaplen
+                            wire-diameter impedance)])
        (define value (hash-ref settings key #f))
        (and value
             (case key
               [(title)         #`(model-title #,value)]
               [(frequency)     #`(model-frequency #,value)]
+              [(ground)        (ground-setting-form value stx)]
+              [(height)        #`(model-height #,value)]
               [(max-length)    #`(maximum-segment-length #,value)]
               [(snaplen)       #`(snap-length #,value)]
-              [(wire-diameter) #`(wire-diameter #,value)])))))
+              [(wire-diameter) #`(wire-diameter #,value)]
+              [(impedance)     #`(model-impedance #,value)])))))
   #`(begin #,@forms))
 
 (define-syntax-rule (with-wire body ...)

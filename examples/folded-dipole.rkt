@@ -7,7 +7,7 @@
 
 (with-scale 0.938
   (with-wire
-    (move right half-wave feed 'center)
+    (move right half-wave feed center)
     (move up (* 2 centimeters))
     (move left half-wave)
     (move down (* 2 centimeters))))

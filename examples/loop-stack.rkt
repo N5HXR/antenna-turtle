@@ -10,7 +10,7 @@
   (define exterior-angle (/ 360 sides))
   (from-here
     (with-wire
-      (when fed? (feed 'center))
+      (when fed? (feed center))
       ;; Draw all but the closing side. `move-nearest` then clones the exact
       ;; starting coordinate, avoiding a nearly-closed floating-point loop.
       (loop repeat (sub1 sides)

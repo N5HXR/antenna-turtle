@@ -76,7 +76,12 @@
         [(start) "b"]
         [(center) "c"]
         [(end) "e"]))
-    (fprintf out "w~a~a,\t0.0,\t1.0\n" (wire-edge-id edge) suffix))
+    ;; MMANA source fields are phase in degrees followed by voltage magnitude.
+    (fprintf out "w~a~a,\t~a,\t~a\n"
+             (wire-edge-id edge)
+             suffix
+             (coordinate-string who (wire-edge-feed-phase edge))
+             (coordinate-string who (wire-edge-feed-amplitude edge))))
   ;; Loads are intentionally Antenna Turtle-owned for now. This clears manual
   ;; MMANA loads rather than risking stale wire references after regeneration.
   (fprintf out "*** Loads ***\n")

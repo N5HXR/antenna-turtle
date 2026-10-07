@@ -8,4 +8,4 @@
 ;; `spread` creates one segment centered on the stationary turtle, so the feed
 ;; is exactly at the origin and the turtle remains there afterward.
 (with-wire
-  (spread forward half-wave feed 'center))
+  (spread forward half-wave feed center))

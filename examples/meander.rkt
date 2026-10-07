@@ -5,7 +5,7 @@
  frequency 915)
 
 (with-wire
-  (spread up half-wave feed 'center))
+  (spread up half-wave feed center))
 (reflect up
   (move up quarter-wave)
   (with-wire

@@ -5,10 +5,11 @@ stateful 3D turtle. It exports NEC/`nec2c`, MMANA-GAL Basic, and approximate
 MATLAB Antenna Toolbox geometry, and can display the generated geometry in an
 interactive Plot3D preview.
 
-This is a proof of concept. It generates geometry and unit-voltage,
-zero-phase feed declarations. Ground and detailed simulation or measurement
-setup remain the responsibility of the target application; MATLAB exports
-include a directly runnable far-field directivity stub.
+In addition to geometry export, Antenna Turtle can drive `nec2c` directly and
+return feedpoint, VSWR-sweep, radiation-cut, and spherical-pattern data to the
+program. Named feeds support independent voltage amplitude and phase. NEC2C
+models may use free space, perfect ground, or configurable real ground;
+MATLAB exports include a directly runnable far-field directivity stub.
 
 Documentation:
 
@@ -62,9 +63,10 @@ raco pkg remove antenna-turtle
 #lang antenna-turtle
 
 ;; Defaults: 14.1 MHz, wavelength/20 segmentation, wavelength/1e6 vertex
-;; snapping, 1 mm wire, and the title "Turtle Antenna".
+;; snapping, 1 mm wire, 50-ohm reference impedance, and the title
+;; "Turtle Antenna".
 (with-wire
-  (spread forward half-wave feed 'center))
+  (spread forward half-wave feed center))
 ```
 
 Override any subset declaratively when needed:
@@ -74,7 +76,8 @@ Override any subset declaratively when needed:
        frequency 14.2
        max-length {wavelength / 100}
        snaplen {wavelength / 1000000}
-       wire-diameter {2 * millimeter})
+       wire-diameter {2 * millimeter}
+       impedance 50)
 ```
 
 `#lang antenna-turtle` otherwise behaves like `#lang racket`: normal
@@ -89,6 +92,8 @@ The same API can be used from `#lang racket` with:
 ```
 
 Call `(reset-model!)` before starting a new model in the same Racket process.
+Use `(clear-wires)` to rebuild only its geometry while preserving the current
+model settings.
 
 ## Coordinates and units
 
@@ -217,6 +222,8 @@ radial-iterations
 (scale factor)
 (scale-all factor)
 (wire-diameter length)
+(model-ground [ground])
+(model-height [height])
 
 (push)
 (pop)
@@ -347,7 +354,7 @@ restores it to wire-off on exit:
   (with-wire
     (move forward short)
     (if driven?
-        (move left long feed 'center)
+        (move left long feed center)
         (move left long))
     (move back short)))
 ```
@@ -435,12 +442,20 @@ movement draws.
 
 ## Feed behavior
 
-`feed` requires `'start`, `'center`, or `'end` and marks the next nonzero wire
-edge. Turns and other non-movement operations may occur before that edge.
+`feed` accepts bare `start`, `center`, or `end` and marks the next nonzero wire
+edge. The older quoted symbols remain valid. Turns and other non-movement
+operations may occur before that edge.
 Wire-off movement, zero movement, a second pending feed, or program termination
 with an unused feed is an error. A completed `point` edge may consume the feed
 while ordinary turtle movement remains wire-off; the first point of a trace
 cannot carry a feed because it establishes only an anchor.
+
+Named feeds add voltage magnitude and phase in degrees:
+
+```racket
+(feed (center "A" 1.0 0))
+(move forward half-wave feed (start "B" 1.0 90))
+```
 
 Feed lowering is target-specific:
 
@@ -501,8 +516,86 @@ many models can call them directly instead of invoking the command-line build.
 
 ### NEC/nec2c
 
-`export-nec2c` writes `GW`, `GE 0`, unit-voltage `EX`, and `EN` cards. It omits
-frequency, ground, execution, pattern, and measurement cards.
+`export-nec2c` writes `GW`, ground geometry and material cards, complex-voltage
+`EX`, and `EN` cards. It omits frequency, execution, pattern, and measurement
+cards. Ground and antenna height are declared with the model:
+
+```racket
+(model frequency 14.1
+       ground real
+       height half-wave)
+
+;; Explicit relative permittivity and conductivity in S/m:
+(model ground (real 5 0.001))
+```
+
+`ground none` is the default. `ground perfect` selects an infinite perfect
+conductor. Bare `real` is average ground (relative permittivity 13,
+conductivity 0.005 S/m); the parenthesized form supplies both values. Grounded
+models connect wire endpoints at Z=0 to the ground plane and reject wires below
+or lying along it.
+
+The measurement API adds those cards to a temporary copy, runs `nec2c`, and
+returns transparent Racket values without printing or opening a window:
+
+```racket
+(nec2c-executable "/path/to/nec2c") ; optional when nec2c is on PATH
+
+(define impedance (nec2c-measure-impedance))
+(define sweep (nec2c-vswr-sweep 13.5 14.5 #:steps 101))
+(define azimuth (nec2c-azimuth-pattern #:elevation 0 #:step 2))
+(define sphere (nec2c-radiation-grid #:theta-step 5 #:phi-step 5))
+
+;; Visualization is always an explicit choice.
+(show-vswr-sweep sweep)
+(show-radiation-cut azimuth)
+(show-radiation-pattern-3d sphere)
+(show-radiation-pattern-opengl sphere #:palette 'magma)
+(show-radiation-pattern-opengl sphere #:color-step 3)
+
+(show-radiation-comparison
+ (list (radiation-case "baseline" sphere)
+       (radiation-case "revision" revised-sphere))
+ #:aspect-ratio 16/9)
+```
+
+The two OpenGL calls return reusable handles for live work:
+
+```racket
+(define view (show-radiation-pattern-opengl sphere))
+(visualization-update! view revised-sphere)
+```
+
+An update retains the window, camera, zoom, and presentation settings while
+replacing the surface and gain legend. Comparison handles accept a new list
+with the original number of cases; changing the tile count requires opening a
+new window. `visualization-close!`, `visualization-show!`, and
+`visualization-open?` manage the retained window. Plot and Plot3D graph
+windows are not yet dynamically replaceable.
+
+The portable Plot3D viewer uses a precomputed single-color surface, equal
+coordinate scales, and a dynamically corrected orthographic viewport. The
+separate OpenGL viewer uses a frozen Pict3D mesh, smooth selectable gain
+colors, an ARRL modified-log radial scale, a perspective camera, orbit/zoom
+controls, and red/blue/green X/Y/Z
+orientation arrows plus a synchronized antenna wireframe in separate
+lower-left insets. Both retain every analysis sample in the returned data; use
+`#:mesh-step` to change only the display resolution. The available palettes
+are `'mmana` (the default), `'magma`/`'sdr`, `'inferno`, `'viridis`, and
+`'grayscale`. Grounded hemisphere patterns are closed with a bottom cap. The
+color legend labels relative attenuation on its right and the corresponding
+absolute dBi values on its left.
+The comparison viewer accepts one to nine named grids and tiles them with a
+shared absolute gain/color scale, world-space size, orbit, zoom, compact
+legend, and orientation inset. Its explicit `#:aspect-ratio` and `#:width`
+determine the initial window and fixed row/column arrangement. Comparisons use
+2-D projected wireframes while dragging and restore the colored OpenGL meshes
+on release.
+
+With multiple feeds, NEC2C reports each feed's active impedance under the
+declared simultaneous excitations; the radiation pattern is their combined
+field. See the API Guide for structures, common runner keywords, and headless
+Plot renderer functions.
 
 ### MMANA-GAL Basic
 
@@ -567,8 +660,9 @@ The `examples` directory includes:
 - 45-degree end-fed half-wave with counterpoise
 - stacked square, octagonal, and 32-sided loops
 
-Ground and height configuration are deliberately omitted from the DSL and must
-be added in the target application.
+NEC2C ground and height are model-level DSL settings. MMANA ground remains a
+saved target-application setting and is preserved when Turtle regenerates an
+existing `.maa` file.
 
 ## Tests
 

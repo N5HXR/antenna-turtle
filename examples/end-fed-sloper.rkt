@@ -13,7 +13,7 @@
 (from-here
   (turn up 45)
   (with-wire
-    (move forward half-wave feed 'start)))
+    (move forward half-wave feed start)))
 
 ;; Counterpoise in the opposite horizontal direction from the feed vertex.
 (turn left 180)

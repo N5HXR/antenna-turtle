@@ -2,13 +2,24 @@
 
 (model title "Quarter-wave vertical geometry"
        frequency 14.2
+       ground perfect
        max-length (/ wavelength 100)
        wire-diameter (* 2 millimeter))
 
 ;; Pitch local forward from +X to +Z. The start feed puts the source at the
-;; intended ground-plane attachment point. Ground itself is added in the
-;; target simulator, not in the geometry DSL. Start feeds target NEC2C/MMANA;
-;; MATLAB export rejects them.
+;; ground-plane attachment point. With grounded NEC2C models, GE 1 connects
+;; that endpoint to its image. Start feeds target NEC2C/MMANA; MATLAB export
+;; rejects them.
 (turn up 90)
 (with-wire
-  (move forward quarter-wave feed 'start))
+  (move forward quarter-wave feed start))
+(move left quarter-wave)
+(with-wire
+  (move back quarter-wave feed end))
+
+(export-mmana "mmana/vertical.maa")
+
+(define sphere
+  (nec2c-radiation-grid #:theta-step 0.5 #:phi-step 0.5))
+
+(show-radiation-pattern-opengl sphere #:scale 'db #:palette 'inferno)

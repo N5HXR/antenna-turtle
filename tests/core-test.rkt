@@ -55,6 +55,9 @@
   (reset-model!)
   (check-equal? (model-title) "Turtle Antenna")
   (check-equal? (model-frequency) 141/10)
+  (check-equal? (model-impedance) 50)
+  (check-equal? (ground-spec-kind (model-ground)) 'none)
+  (check-equal? (model-height) 0)
   (check-equal? (maximum-segment-length) (/ (model-wavelength) 20))
   (check-equal? (snap-length) (/ (model-wavelength) 1000000))
   (define twenty-metre-default (maximum-segment-length))
@@ -78,10 +81,12 @@
   (model title "Pair-configured model"
          max-length (/ wavelength 100)
          frequency 7
+         impedance 200
          snaplen (/ wavelength 2000000)
          wire-diameter (* 2 millimeter))
   (check-equal? (model-title) "Pair-configured model")
   (check-equal? (model-frequency) 7)
+  (check-equal? (model-impedance) 200)
   (check-equal? (maximum-segment-length) (/ (model-wavelength) 100))
   (check-equal? (snap-length) (/ (model-wavelength) 2000000))
   (wire-on)
@@ -89,6 +94,110 @@
   (check-equal? (wire-edge-diameter (only-edge)) (* 2 millimeter))
   (check-exn exn:fail:syntax?
              (lambda () (expand #'(model frequency 7 frequency 14)))))
+
+(test-case "model ground syntax provides presets, material values, and height"
+  (reset-model!)
+  ;; Declarative ordering applies frequency before a wavelength-based height.
+  (model ground real height half-wave frequency 10)
+  (check-equal? (ground-spec-kind (model-ground)) 'real)
+  (check-equal? (ground-spec-relative-permittivity (model-ground)) 13)
+  (check-equal? (ground-spec-conductivity (model-ground)) 1/200)
+  (check-equal? (model-height) (/ (model-wavelength) 2))
+
+  (model ground (real 5 1/1000))
+  (check-equal? (ground-spec-relative-permittivity (model-ground)) 5)
+  (check-equal? (ground-spec-conductivity (model-ground)) 1/1000)
+  (model ground perfect)
+  (check-equal? (ground-spec-kind (model-ground)) 'perfect)
+  (model ground none)
+  (check-equal? (ground-spec-kind (model-ground)) 'none)
+  (check-exn exn:fail:syntax?
+             (lambda () (expand #'(model ground (real 13)))))
+  (check-exn exn:fail:contract?
+             (lambda () (real-ground 13 -1/1000)))
+  (check-exn exn:fail:contract?
+             (lambda () (model-height -1))))
+
+(test-case "clear-wires preserves model settings and resets construction state"
+  (reset-model!)
+  (model title "Reusable model"
+         frequency 10
+         impedance 75
+         ground real
+         height half-wave
+         max-length 1/20
+         snaplen 1/100000
+         wire-diameter (* 2 millimeter))
+  (with-wire
+    (move forward 1 feed center))
+  (turn left 45)
+  (push)
+  (scale-all 3)
+  (check-equal? (length (model-edges)) 1)
+
+  (clear-wires)
+
+  (check-equal? (model-vertices) '())
+  (check-equal? (model-edges) '())
+  (check-equal? (current-position) (point3 0 0 0))
+  (check-equal? (current-wire-diameter) (* 2 millimeter))
+  (check-equal? (model-title) "Reusable model")
+  (check-equal? (model-frequency) 10)
+  (check-equal? (model-impedance) 75)
+  (check-equal? (ground-spec-kind (model-ground)) 'real)
+  (check-equal? (model-height) (/ (model-wavelength) 2))
+  (check-equal? (maximum-segment-length) 1/20)
+  (check-equal? (snap-length) 1/100000)
+  (check-exn #rx"stack is empty" pop)
+
+  ;; The fresh turtle starts at the origin with its initial orientation.
+  (with-wire (move forward 1))
+  (define-values (start finish) (edge-points (only-edge)))
+  (check-equal? start (point3 0 0 0))
+  (check-equal? finish (point3 1 0 0)))
+
+(test-case "NEC2C export translates height and emits ground semantics"
+  (define (vertical-deck ground height)
+    (reset-model!)
+    (model-ground ground)
+    (model-height height)
+    (maximum-segment-length 1/10)
+    (wire-on)
+    (goto (point3 0 0 1))
+    (define path
+      (make-temporary-file "antenna-turtle-ground~a.nec" #f
+                           (current-directory)))
+    (export-nec2c path)
+    (define deck (file->string path))
+    (delete-file path)
+    deck)
+
+  (define free-space (vertical-deck 'none 2))
+  (check-regexp-match #rx"GE 0" free-space)
+  (check-false (regexp-match? #rx"(?m:^GN )" free-space))
+  (check-regexp-match
+   #rx"GW 1 10 0[.]0+ 0[.]0+ 2[.]0+ 0[.]0+ 0[.]0+ 3[.]0+"
+   free-space)
+
+  (define perfect (vertical-deck 'perfect 0))
+  (check-regexp-match #rx"GE 1\nGN 1" perfect)
+
+  (define finite (vertical-deck (real-ground 5 1/1000) 1))
+  (check-regexp-match
+   #rx"GE 1\nGN 2 0 0 0 5[.]0+ 0[.]0010+"
+   finite)
+
+  (reset-model!)
+  (model ground perfect)
+  (maximum-segment-length 1/10)
+  (wire-on)
+  (goto (point3 1 0 0))
+  (define planar-path
+    (make-temporary-file "antenna-turtle-planar~a.nec" #f
+                         (current-directory)))
+  (check-exn #rx"may not lie in the ground plane"
+             (lambda () (export-nec2c planar-path)))
+  (delete-file planar-path))
 
 (test-case "proximity snapping repairs drift and zero disables it"
   (reset-model!)
@@ -314,6 +423,49 @@
   (define edge (only-edge))
   (check-true (wire-edge-feed? edge))
   (check-equal? (edge-segment-count edge) 5))
+
+(test-case "feed syntax accepts bare locations and named phased descriptors"
+  (reset-model!)
+  (maximum-segment-length 1/10)
+  (wire-on)
+  (feed center)
+  (forward 1)
+  (move forward 1 feed (start "quadrature" 2 90))
+  (define first-feed (first (model-edges)))
+  (define second-feed (second (model-edges)))
+  (check-equal? (wire-edge-feed-location first-feed) 'center)
+  (check-equal? (wire-edge-feed-name first-feed) "feed-1")
+  (check-equal? (wire-edge-feed-amplitude first-feed) 1.0)
+  (check-equal? (wire-edge-feed-phase first-feed) 0.0)
+  (check-equal? (wire-edge-feed-location second-feed) 'start)
+  (check-equal? (wire-edge-feed-name second-feed) "quadrature")
+  (check-equal? (wire-edge-feed-amplitude second-feed) 2)
+  (check-equal? (wire-edge-feed-phase second-feed) 90)
+
+  (check-exn #rx"finite"
+             (lambda () (make-feed-spec 'center "bad" +inf.0 0)))
+  (check-exn #rx"finite"
+             (lambda () (make-feed-spec 'center "bad" 1 +nan.0)))
+
+  ;; Expressions that evaluate to legacy location symbols remain valid.
+  (define dynamic-location 'end)
+  (move forward 1 feed dynamic-location)
+  (check-equal? (wire-edge-feed-location (third (model-edges))) 'end)
+
+  (define temp-nec
+    (make-temporary-file "antenna-turtle-phased-feed~a.nec" #f
+                         (current-directory)))
+  (export-nec2c temp-nec)
+  (define deck (file->string temp-nec))
+  (check-regexp-match #rx"EX 0 2 1 0 0[.]0+ 2[.]0+" deck)
+  (delete-file temp-nec)
+
+  (reset-model!)
+  (wire-on)
+  (feed (center "same" 1 0))
+  (forward 1)
+  (feed (center "same" 1 90))
+  (check-exn #rx"feed names must be unique" (lambda () (forward 1))))
 
 (test-case "arbitrary local axis rotation is supported"
   (reset-model!)
@@ -935,8 +1087,8 @@
   (define maa (file->string maa-path))
   (define matlab (file->string matlab-path))
   (check-regexp-match #rx"GW 1 5 " nec)
-  (check-regexp-match #rx"EX 0 1 3 0 1[.]0 0[.]0" nec)
-  (check-regexp-match #rx"w1c,.*0[.]0,.*1[.]0" maa)
+  (check-regexp-match #rx"EX 0 1 3 0 1[.]0+ 0[.]0+" nec)
+  (check-regexp-match #rx"w1c,.*0[.]0+,.*1[.]0+" maa)
   (check-regexp-match #rx"14[.]200000000000" maa)
   (check-regexp-match #rx"shape[.]Custom3D" matlab)
   (check-regexp-match #rx"createFeed" matlab)
@@ -1004,7 +1156,8 @@
   (check-true (regexp-match? #px#"(?m:^Regenerated model\r$)" updated))
   (check-true (regexp-match? #px#"(?m:^28[.]500000000000\r$)" updated))
   (check-true (regexp-match? #px#"(?m:^2\r$)" updated))
-  (check-true (regexp-match? #px#"(?m:^w2c,\t0[.]0,\t1[.]0\r$)" updated))
+  (check-true
+   (regexp-match? #px#"(?m:^w2c,\t0[.]0+,\t1[.]0+\r$)" updated))
   (check-true (regexp-match? #rx#"[*][*][*] Loads [*][*][*]\r\n0,\t0\r\n" updated))
   (check-false (regexp-match? #rx#"45[.]0,\t0[.]25" updated))
   (check-false (regexp-match? #rx#"w1c,\t0,\t50[.]0" updated))

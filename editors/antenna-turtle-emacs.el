@@ -4,8 +4,8 @@
 ;;
 ;;   (load "C:/path/to/antenna-turtle/editors/antenna-turtle-emacs.el")
 ;;
-;; It augments scheme-mode only in buffers whose first form is
-;; `#lang antenna-turtle`.
+;; It augments scheme-mode and racket-mode only in buffers whose first form is
+;; `#lang antenna-turtle`.  Racket Mode remains an optional dependency.
 
 (require 'scheme)
 
@@ -40,7 +40,8 @@
   :group 'scheme)
 
 (defconst antenna-turtle--procedures
-  '("model-title" "maximum-segment-length" "snap-length" "model-frequency"
+  '("model-title" "model-impedance" "model-ground" "model-height"
+    "real-ground" "maximum-segment-length" "snap-length" "model-frequency"
     "mmana-frequency" "wire-diameter"
     "frequency->wavelength" "wavelength->frequency" "model-wavelength"
     "span" "frequency-retuning-scale" "paraboloid" "cylinder" "dome" "bowl"
@@ -49,16 +50,44 @@
     "pen-up" "pen-down" "forward" "forwards"
     "back" "backward" "backwards" "move-nearest"
     "turn-x" "turn-y" "turn-z" "turn-axis"
-    "scale" "scale-all" "push" "pop" "feed"
-    "reset-model!" "validate-model!" "current-position"
+    "scale" "scale-all" "push" "pop"
+    "clear-wires" "reset-model!" "validate-model!" "current-position"
     "current-wire-diameter" "current-antenna-model"
     "model-vertices" "model-edges" "wire-used" "edge-length"
     "edge-segment-count"
     "export-nec2c" "export-mmana" "export-matlab"
-    "export-matlab-loft" "show-model" "build-model"))
+    "export-matlab-loft" "show-model" "build-model"
+    "nec2c-executable" "nec2c-measure-impedance" "nec2c-vswr-sweep"
+    "nec2c-azimuth-pattern" "nec2c-elevation-pattern"
+    "nec2c-radiation-grid" "parse-nec2c-output"
+    "show-vswr-sweep" "show-impedance-sweep" "show-radiation-cut"
+    "show-radiation-pattern-3d" "show-radiation-pattern-opengl"
+    "show-radiation-comparison" "radiation-case" "radiation-case?"
+    "radiation-case-title" "radiation-case-grid"
+    "visualization-handle?" "visualization-update!" "visualization-show!"
+    "visualization-close!" "visualization-open?"
+    "vswr-sweep-renderers"
+    "impedance-sweep-renderers" "radiation-cut-renderers"
+    "radiation-grid-renderers"
+    "nec2c-impedance-result-samples" "nec2c-impedance-result-run"
+    "nec2c-sweep-result-frequencies" "nec2c-sweep-result-run"
+    "nec2c-sweep-result-reference-impedance"
+    "nec2c-sweep-frequency-frequency-mhz"
+    "nec2c-sweep-frequency-feed-samples"
+    "nec2c-sweep-sample-feedpoint" "nec2c-sweep-sample-vswr"
+    "nec2c-sweep-sample-return-loss-db"
+    "nec2c-sweep-sample-reflection-coefficient"
+    "nec2c-feedpoint-sample-feed-name"
+    "nec2c-feedpoint-sample-frequency-mhz"
+    "nec2c-feedpoint-sample-voltage" "nec2c-feedpoint-sample-current"
+    "nec2c-feedpoint-sample-impedance" "nec2c-feedpoint-sample-admittance"
+    "nec2c-feedpoint-sample-input-power"
+    "nec2c-pattern-samples" "nec2c-pattern-kind" "nec2c-pattern-fixed-angle"
+    "nec2c-pattern-grid-samples" "nec2c-pattern-grid-theta-values"
+    "nec2c-pattern-grid-phi-values"))
 
 (defconst antenna-turtle--macros
-  '("model" "move" "point" "spread" "turn" "reflect"
+  '("model" "move" "point" "spread" "feed" "turn" "reflect"
     "radial-repeat"
     "with-wire" "with-points" "from-here" "with-scale" "with-warp"
     "with-surface" "with-pen" "with-push"
@@ -79,11 +108,14 @@
     "roll-left" "roll-right"))
 
 (defconst antenna-turtle--contextual-keywords
-  '("title" "frequency" "max-length" "snaplen" "wire-diameter" "feed"
-    "steps"))
+  '("title" "frequency" "impedance" "ground" "height" "max-length"
+    "snaplen" "wire-diameter" "feed" "steps"))
 
 (defconst antenna-turtle--feed-locations
   '("start" "center" "end"))
+
+(defconst antenna-turtle--ground-kinds
+  '("none" "perfect" "real"))
 
 (defconst antenna-turtle--units
   '("wavelength" "half-wave" "quarter-wave" "radial-iterations"
@@ -118,6 +150,8 @@
      0 'antenna-turtle-loop-clause-face)
     (,(regexp-opt antenna-turtle--feed-locations 'symbols)
      0 'font-lock-constant-face)
+    (,(regexp-opt antenna-turtle--ground-kinds 'symbols)
+     0 'font-lock-constant-face)
     (,(regexp-opt antenna-turtle--units 'symbols)
      0 'font-lock-constant-face)
     (,(regexp-opt antenna-turtle--infix-word-operators 'symbols)
@@ -133,10 +167,38 @@
     (goto-char (point-min))
     (looking-at-p "[[:space:]]*#lang[ \t]+antenna-turtle\\_>")))
 
-(defun antenna-turtle-scheme-setup ()
-  "Add Antenna Turtle highlighting to the current Scheme buffer."
+(defconst antenna-turtle--indentation-rules
+  '((with-scale . 1)
+    (with-warp . 1)
+    (with-surface . 1)
+    (radial-repeat . 1)
+    (reflect . 1)
+    (with-wire . 0)
+    (with-points . 0)
+    (from-here . 0)
+    (with-pen . 0)
+    (with-push . 0))
+  "Body indentation rules shared by Scheme Mode and Racket Mode.")
+
+(defun antenna-turtle--install-indentation-rules ()
+  "Teach the active Lisp modes how Antenna Turtle bodies are shaped.
+
+Emacs stores these rules on symbols rather than in buffers.  Installation is
+therefore delayed until an Antenna Turtle buffer is seen.  The affected form
+names are all specific to the Antenna Turtle DSL."
+  (dolist (rule antenna-turtle--indentation-rules)
+    (put (car rule) 'scheme-indent-function (cdr rule))
+    ;; This property is harmless when the optional Racket Mode package is not
+    ;; installed, and is its documented indentation extension point when it is.
+    (put (car rule) 'racket-indent-function (cdr rule))))
+
+(defun antenna-turtle-setup ()
+  "Add Antenna Turtle editing support to the current source buffer.
+
+Do nothing unless the buffer begins with `#lang antenna-turtle`."
   (interactive)
   (when (antenna-turtle--buffer-p)
+    (antenna-turtle--install-indentation-rules)
     ;; Removing first makes the command safe to rerun interactively.
     (font-lock-remove-keywords nil antenna-turtle-font-lock-keywords)
     (font-lock-add-keywords nil antenna-turtle-font-lock-keywords 'prepend)
@@ -144,27 +206,18 @@
       (font-lock-flush)
       (font-lock-ensure))))
 
-;; Teach scheme-mode which arguments precede each macro body. These symbol
-;; properties are global, but the names are specific to Antenna Turtle.
-(put 'with-scale 'scheme-indent-function 1)
-(put 'with-warp 'scheme-indent-function 1)
-(put 'with-surface 'scheme-indent-function 1)
-(put 'radial-repeat 'scheme-indent-function 1)
-(put 'reflect 'scheme-indent-function 1)
-(put 'with-wire 'scheme-indent-function 0)
-(put 'with-points 'scheme-indent-function 0)
-(put 'from-here 'scheme-indent-function 0)
-(put 'with-pen 'scheme-indent-function 0)
-(put 'with-push 'scheme-indent-function 0)
+(defalias 'antenna-turtle-scheme-setup #'antenna-turtle-setup)
 
-(add-hook 'scheme-mode-hook #'antenna-turtle-scheme-setup)
+(add-hook 'scheme-mode-hook #'antenna-turtle-setup)
+(add-hook 'racket-mode-hook #'antenna-turtle-setup)
 
 ;; Loading this helper after visiting a source file should not require the user
-;; to re-enter scheme-mode merely to install and refresh its font lock.
+;; to re-enter either major mode merely to install and refresh its font lock.
 (dolist (buffer (buffer-list))
   (with-current-buffer buffer
-    (when (derived-mode-p 'scheme-mode)
-      (antenna-turtle-scheme-setup))))
+    (when (or (derived-mode-p 'scheme-mode)
+              (derived-mode-p 'racket-mode))
+      (antenna-turtle-setup))))
 
 (provide 'antenna-turtle-emacs)
 

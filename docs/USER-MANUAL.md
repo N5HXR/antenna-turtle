@@ -128,13 +128,14 @@ Create `dipole.rkt`:
 
 ;; One wire centered at the origin and directed along local +X.
 (with-wire
-  (spread forward total-length feed 'center))
+  (spread forward total-length feed center))
 ```
 
 The entire `model` form is optional. With no declaration, the title is
 `"Turtle Antenna"`, frequency is 14.1 MHz, wire diameter is 1 mm, maximum
 segment length is one-twentieth wavelength, and vertex snap length is
-one-millionth wavelength. Therefore this is also complete:
+one-millionth wavelength. The NEC2C environment defaults to free space with no
+height offset. Therefore this is also complete:
 
 ```racket
 #lang antenna-turtle
@@ -381,7 +382,7 @@ create the same geometry with reversed segment orientation, which matters for
 `'start` and `'end` feeds. A center feed can be attached directly:
 
 ```racket
-(with-wire (spread left length feed 'center))
+(with-wire (spread left length feed center))
 ```
 
 ### 5.4 Temporary Coordinate Contexts
@@ -395,7 +396,7 @@ geometry produced inside it:
     (move forward boom-position)
     (with-wire
       (if driven?
-          (spread left length feed 'center)
+          (spread left length feed center)
           (spread left length)))))
 ```
 
@@ -582,7 +583,7 @@ Call `show-model` after constructing geometry to open a Plot3D window:
 
 ```racket
 (with-wire
-  (spread forward half-wave feed 'center))
+  (spread forward half-wave feed center))
 
 (show-model)
 ```
@@ -624,7 +625,7 @@ role, boom position, and length together:
     (move forward position)
     (with-wire
       (if (eq? role 'driven)
-          (spread left length feed 'center)
+          (spread left length feed center)
           (spread left length)))))
 
 ;; The table contains millimetres; scale only the movements in this scope.
@@ -656,14 +657,22 @@ excludes the current point and the source of the immediately preceding move.
 
 ## 8. Feeds and Segmentation
 
-`feed` requires one of `'start`, `'center`, or `'end` and marks the next
+`feed` requires one of `start`, `center`, or `end` and marks the next
 nonzero wire-on segment. Turns and non-movement settings may occur between
 `feed` and that segment, but a wire-off move is an error. Usually the inline
 form is clearer:
 
 ```racket
-(move forward radiator feed 'start)
-(spread left driven-length feed 'center)
+(move forward radiator feed start)
+(spread left driven-length feed center)
+```
+
+The older quoted forms remain valid. For simultaneous sources, add a unique
+name, voltage magnitude, and phase in degrees:
+
+```racket
+(move forward radiator feed (center "horizontal" 1.0 0))
+(move left radiator feed (center "vertical" 1.0 90))
 ```
 
 NEC2C and MMANA subdivide every DSL edge according to
@@ -725,9 +734,170 @@ The individual exporters remain callable from Racket:
 (export-matlab-loft "candidate.m")
 ```
 
-This supports optimization harnesses that generate a candidate, export it,
-invoke a simulator, score the result, and repeat. The command-line build also
-has a programmatic layer:
+For interactive regeneration under the current model settings, use
+`clear-wires` instead of `reset-model!`. It removes the generated geometry and
+returns the turtle to its initial construction state while retaining settings
+such as frequency, ground, height, impedance, segmentation, and wire diameter:
+
+```racket
+(define (build scale)
+  (clear-wires)
+  (with-scale scale
+    (with-wire
+      (spread left half-wave feed center))))
+```
+
+NEC2C can also be invoked directly. Measurements return data and never open a
+window unless the program explicitly calls a `show-*` operation:
+
+```racket
+(nec2c-executable "/path/to/nec2c") ; omit when it is on PATH
+
+(define feedpoint (nec2c-measure-impedance))
+(define sweep (nec2c-vswr-sweep 440 450 #:steps 51))
+(define horizontal-cut
+  (nec2c-azimuth-pattern #:elevation 0 #:step 2))
+(define vertical-cut
+  (nec2c-elevation-pattern #:azimuth 0 #:step 2))
+(define sphere
+  (nec2c-radiation-grid #:theta-step 5 #:phi-step 5))
+
+(show-vswr-sweep sweep)
+(show-radiation-cut horizontal-cut)
+(show-radiation-pattern-3d sphere)
+(show-radiation-pattern-opengl sphere #:palette 'magma)
+```
+
+To compare previously calculated designs in one synchronized view, name each
+grid and pass up to nine of them to the comparison viewer:
+
+```racket
+(show-radiation-comparison
+ (list (radiation-case "reference" reference-grid)
+       (radiation-case "longer directors" longer-grid)
+       (radiation-case "wider spacing" wider-grid))
+ #:aspect-ratio 16/9
+ #:palette 'inferno)
+```
+
+Both OpenGL viewers return a reusable visualization handle. This is useful at
+a REPL when geometry and analysis are being regenerated repeatedly:
+
+```racket
+(define view
+  (show-radiation-pattern-opengl reference-grid #:palette 'inferno))
+
+;; Rebuild the model and calculate another NEC2C grid, then:
+(visualization-update! view revised-grid)
+```
+
+The same window, camera orientation, zoom, dimensions, palette, and other
+presentation choices remain in use. The surface, gain legend, centroid and
+radius are replaced, and the single-view antenna inset snapshots the current
+model geometry. A comparison handle accepts a revised list with the same
+number of `radiation-case` values; changing the tile count still requires a
+new window. Use `visualization-close!`, `visualization-show!`, and
+`visualization-open?` to manage the retained window. The ordinary Plot and
+Plot3D graph windows are not yet dynamically replaceable.
+
+Every tile rotates and zooms together. The brightest and largest case sets the
+single absolute gain reference, so weaker antennas are not independently
+normalized to look equally strong. Tile headings retain their individual peak
+gain in dBi. The window aspect ratio is explicit, and the initial tiling is
+kept when the window is resized. The comparison view has one shared axis inset
+and legend and omits antenna thumbnails to preserve tile area. During a drag,
+the viewer temporarily substitutes inexpensive 2-D projected wireframes for
+the colored OpenGL surfaces; the full meshes return at the requested
+orientation on mouse release.
+
+VSWR plots include every finite value by default and let Plot choose the
+vertical extent. For a deliberately clipped overview, supply a ceiling such
+as `(show-vswr-sweep sweep #:max-vswr 10)`.
+
+The Plot3D viewer locks all coordinate axes to the same scale and dynamically
+adjusts its orthographic viewport during rotation. Resizing or rotating the
+window therefore does not stretch the radiation pattern. `#:aspect-ratio` is
+an optional additional width-to-height multiplier; `1` is the
+distortion-free default.
+
+`show-radiation-pattern-3d` is the conservative, single-color Plot3D view.
+Its polygons are prepared once, and it renders at a 5-degree mesh step by
+default even when NEC2C was asked for a finer analysis grid.
+
+`show-radiation-pattern-opengl` is the accelerated presentation view. It uses
+a frozen Pict3D mesh with smoothly interpolated gain colors, a perspective
+camera, drag-to-orbit navigation, and wheel zoom. Its display mesh defaults to
+2 degrees. The camera targets the center of the pattern's 3-D bounds, so an
+asymmetric main lobe does not waste zoom room on the opposite side of the RF
+origin.
+
+Select the color ramp with `#:palette`. The choices are `'mmana` (the bright
+antenna-plot default), `'magma` (also named `'sdr`) for a dark-purple through
+orange SDR-waterfall style, `'inferno`, `'viridis`, and `'grayscale`. The
+legend names the active palette and radial scale. Relative attenuation appears
+to the right of its color strip; matching absolute gain in dBi appears to the
+left, calculated from the selected component's peak.
+
+Add `#:color-step 3` to either OpenGL viewer for hard 3 dB color bands instead
+of a continuous gradient. A triangle is colored from its average gain, so the
+contour precision follows the theta/phi resolution requested from NEC2C. The
+legend switches to the same stepped ramp automatically.
+
+The default ARRL radial scale emphasizes the main pattern without making weak
+lobes disappear: a point `A` dB below peak is drawn at radius `0.89^(A/2)`.
+Use `#:scale 'db` to recover the linear-in-decibels geometry controlled by
+`#:floor-db`.
+
+Grounded radiation grids contain an upper hemisphere only. The viewers add a
+downward-facing cap across its horizon ring so the display remains a solid
+model when viewed from below; the cap is not additional simulated radiation.
+
+A separate lower-left inset displays red X, blue Y, and green Z
+orientation arrows without subjecting them to surface occlusion or 3-D depth
+clipping. An axis aimed into the camera becomes a labeled bullseye instead of
+vanishing. The inset can be hidden with `#:axes? #f`. Beside it, a synchronized
+wireframe inset shows the current antenna in the same orientation, always
+scaled to contain its complete geometry and with feedpoints marked in red.
+Hide that inset with `#:antenna? #f`. Both viewers preserve the full-resolution
+result returned to the program; `#:mesh-step` changes only what is displayed.
+
+The model's `impedance` setting controls the reference used for VSWR and
+return loss and defaults to 50 ohms:
+
+```racket
+(model frequency 446 impedance 200)
+```
+
+Every feed retains complex voltage, current, active impedance, admittance, and
+power in the returned structures. With multiple feeds, those are active
+impedances under simultaneous excitation rather than S-parameters. The
+pattern is the combined field.
+
+NEC2C ground and antenna height belong in the same declarative model block:
+
+```racket
+(model title "20 m dipole"
+       frequency 14.1
+       ground real
+       height half-wave)
+```
+
+`ground none` is free space and remains the default. `ground perfect` is an
+infinite perfect conductor. `ground real` selects average earth with relative
+permittivity 13 and conductivity 0.005 S/m. Use
+`ground (real permittivity conductivity)` for measured or chosen soil values.
+Conductivity is in siemens per metre.
+
+Grounded decks use NEC's ground-contact geometry mode: a wire endpoint at the
+translated Z=0 plane is grounded. Put an endpoint distinctly above zero when
+it should remain insulated. Wires below the plane or lying along it are model
+errors. Pattern requests become hemisphere-aware automatically: azimuth cuts
+cannot be below the horizon, default elevation cuts traverse horizon–zenith–
+opposite horizon, and 3-D grids stop at the ground plane.
+
+This supports optimization harnesses that generate a candidate, measure it,
+score the returned values, and repeat. The command-line build also has a
+programmatic layer:
 
 ```racket
 (require antenna-turtle/build)
@@ -788,11 +958,11 @@ width. Use NEC2C/MMANA, simplify the junction, or use the ribbon MATLAB output.
 See [API.md](API.md) for signatures, defaults, detailed semantics, model data
 structures, and programmatic exporter interfaces.
 
-## 13. Emacs `scheme-mode` Support
+## 13. Emacs Scheme Mode and Racket Mode Support
 
 The project includes `editors/antenna-turtle-emacs.el`. It teaches
-`scheme-mode` how to indent the scoped macros and adds theme-aware font-lock
-faces for:
+both Emacs Scheme Mode and the optional Racket Mode package how to indent the
+scoped macros, and adds theme-aware font-lock faces for:
 
 - Antenna Turtle procedures and exporters;
 - DSL macros such as `move`, `point`, `turn`, `spread`, and the `with-*` forms;
@@ -808,7 +978,10 @@ Load it from `init.el`, using the actual project location. On Windows:
 
 After adding the line, restart Emacs. Loading or reloading the helper refreshes
 already-open Antenna Turtle buffers. Its setup command is also available as
-`M-x antenna-turtle-scheme-setup`; re-entering `scheme-mode` is unnecessary.
+`M-x antenna-turtle-setup` (with `antenna-turtle-scheme-setup` retained as a
+compatibility alias); re-entering the major mode is unnecessary.
 
 The extension activates font-lock additions only when the buffer starts with
-`#lang antenna-turtle`; ordinary Scheme buffers retain their normal coloring.
+`#lang antenna-turtle`; ordinary Scheme and Racket buffers retain their normal
+coloring. Racket Mode is not required merely to load the helper; when installed,
+its normal `racket-mode-hook` activates the same Antenna Turtle support.

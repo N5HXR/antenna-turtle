@@ -17,7 +17,7 @@
       (turn right inward-turn)
       (forward bend)
       (turn left inward-turn)
-      (when driven? (feed 'center))
+      (when driven? (feed center))
       (forward length)
       (turn left inward-turn)
       (forward bend))))

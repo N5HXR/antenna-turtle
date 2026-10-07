@@ -25,7 +25,7 @@
 
   ;; put a feedpoint at the center
   (with-surface three-mast-profile
-    (with-wire (spread forward inch feed 'center)))
+    (with-wire (spread forward inch feed center)))
 
   ;; drape wire in both directions for the dipole
   (reflect forward

@@ -131,24 +131,29 @@ is equivalent to `(...)`.
 Every setting has a useful default, so a module may begin tracing wire without
 any model declaration. The defaults are title `"Turtle Antenna"`, frequency
 `14.1` MHz, maximum segment length of one-twentieth wavelength, snap length of
-one-millionth wavelength, and wire diameter of one millimetre.
+one-millionth wavelength, wire diameter of one millimetre, reference impedance
+of 50 ohms, no ground, and zero height offset.
 
 ### `(model [setting value] ...)`
 
 Sets any desired subset using contextual `title`, `frequency`, `max-length`,
-`snaplen`, and `wire-diameter` pairs. Each setting may appear at most once:
+`snaplen`, `wire-diameter`, `impedance`, `ground`, and `height` pairs. Each
+setting may appear at most once:
 
 ```racket
 (model title "Three-element Yagi"
        frequency 14.1
        max-length {wavelength / 40}
        snaplen {wavelength / 1000000}
-       wire-diameter {2 * millimeter})
+       wire-diameter {2 * millimeter}
+       impedance 50
+       ground real
+       height half-wave)
 ```
 
 Pair order is not significant. Frequency is applied before derived lengths, so
-`max-length` and `snaplen` expressions may safely call `model-wavelength` in
-any order.
+`max-length`, `snaplen`, and `height` expressions may safely use wavelength
+values in any source order.
 
 The individual setting operations below remain available for calculated or
 dynamically scoped programs.
@@ -165,6 +170,44 @@ dynamically scoped programs.
 - Written into MMANA output and used to initialize MATLAB analysis and its
   wavelength-based mesh bound.
 - `mmana-frequency` is a compatibility alias to the same parameter.
+
+### `(model-impedance [ohms])`
+
+- Default: `50` ohms.
+- Requires a positive real number.
+- Supplies the common reference impedance used to derive reflection
+  coefficient, return loss, and VSWR from every NEC2C feed's active impedance.
+- It does not alter geometry or the raw complex impedance returned by NEC2C.
+
+### `(model-ground [ground])`
+
+- Default: `'none` (free space).
+- The direct setter accepts `'none`, `'perfect`, `'real`, or a value produced
+  by `(real-ground relative-permittivity conductivity)`.
+- The getter returns a transparent `ground-spec` value.
+- `'real` is the average-ground preset: relative permittivity 13 and
+  conductivity 0.005 S/m.
+
+The contextual model syntax does not require quotes and additionally accepts
+an explicit real-ground descriptor:
+
+```racket
+(model ground none)
+(model ground perfect)
+(model ground real)
+(model ground (real 5 0.001))
+```
+
+Real ground uses NEC2C's Sommerfeld/Norton solution. Relative permittivity must
+be positive; conductivity is expressed in siemens per metre and may be zero.
+
+### `(model-height [metres])`
+
+- Default: `0`.
+- Requires a nonnegative real number.
+- Adds a global Z offset to every NEC2C-exported coordinate. Intrinsic turtle
+  geometry remains centered where the program generated it.
+- In a grounded model, the resulting ground plane is Z=0.
 
 ### `(maximum-segment-length [length])`
 
@@ -239,7 +282,7 @@ Moves along local `+X`.
 
 Moves along local `-X`.
 
-### `(move direction distance ... [feed location | steps count])`
+### `(move direction distance ... [feed descriptor | steps count])`
 
 `direction` is a contextual keyword and does not require quoting:
 
@@ -264,12 +307,16 @@ frame:
 (move forward 10 up 1)
 ```
 
-The optional contextual `feed` pair marks the resulting edge at `'start`,
-`'center`, or `'end`:
+The optional contextual `feed` pair marks the resulting edge. Bare `start`,
+`center`, and `end` are contextual DSL keywords and need no quotation:
 
 ```racket
-(move forward length feed 'start)
+(move forward length feed start)
+(move forward length feed (center "driven" 1.0 90))
 ```
+
+The legacy quoted symbols and expressions evaluating to one of those symbols
+remain valid. The four-field descriptor is described under Feeds.
 
 This creates one diagonal edge from the old position to the new position when
 the wire is on. It does not create a forward edge followed by an upward edge.
@@ -292,7 +339,7 @@ exporter segmentation cannot bend a chord after mapping. `feed` and `steps`
 cannot be combined, and a segmented move cannot consume an already pending
 feed. Mark the desired constituent segment explicitly when it needs a feed.
 
-### `(point direction distance ... [feed location])`
+### `(point direction distance ... [feed descriptor])`
 
 Calculates a point relative to the current turtle position and local frame
 without relocating the turtle. It accepts the same chained directions,
@@ -330,7 +377,7 @@ orientation, scales, settings, and body result values otherwise survive.
 Use a direct `(wire-off)` call as the lower-level way to snip an open point
 trace without first turning the wire on.
 
-### `(spread direction distance [feed location])`
+### `(spread direction distance [feed descriptor])`
 
 Creates one full segment centered at the current position without moving the
 turtle. Conceptually, the turtle stretches a conductor equally in both
@@ -591,12 +638,29 @@ supports would remain a straight chord and would not represent the sag.
 
 ## 10. Feeds
 
-### `(feed location)`
+### `(feed descriptor)`
 
-Marks the next nonzero edge with mandatory location `'start`, `'center`, or
-`'end`. Multiple model feeds are permitted unless an exporter imposes a
-narrower limit. `move`, `point`, and `spread` can attach the same location
-inline.
+Marks the next nonzero edge. A descriptor may be a bare contextual location,
+a legacy quoted location symbol, a computed expression returning a location
+symbol, or a named excitation:
+
+```racket
+(feed center)
+(feed 'start)                         ; compatibility form
+(feed (center "A" 1.0 0))
+(move forward half-wave feed (end "B" 1.0 90))
+```
+
+The named form is `(LOCATION NAME AMPLITUDE PHASE)`. `LOCATION` is `start`,
+`center`, or `end`; `NAME` is a nonempty string unique within the model;
+`AMPLITUDE` is a nonnegative voltage magnitude; and `PHASE` is a real angle in
+degrees. Shorthand feeds receive deterministic unused names such as
+`"feed-1"`. Multiple feeds are driven simultaneously.
+
+These parenthesized descriptors are contextual macro syntax, not calls to
+procedures named `start`, `center`, or `end`. A bare location in feed position
+therefore remains a keyword even if a lexical binding has the same spelling.
+`move`, `point`, and `spread` accept the same descriptors inline.
 
 Before the marked edge, the program may rotate or change non-movement settings.
 These are errors while a feed is pending:
@@ -612,12 +676,23 @@ because that call establishes only an anchor.
 
 Target behavior:
 
-- NEC2C: `1.0` volt, `0` degree source on the first, middle, or last solver
+- NEC2C: complex excitation voltage on the first, middle, or last solver
   segment;
-- MMANA: `b`, `c`, or `e` source designation;
+- MMANA: `b`, `c`, or `e` source designation plus amplitude and phase;
 - MATLAB: center feeds only; start or end feeds produce an export error.
 
 ## 11. Model Lifecycle and Inspection
+
+### `(clear-wires)`
+
+Clears all vertices and edges and returns the turtle to the origin with its
+initial orientation and wire drawing off. It also clears the turtle stack,
+point-trace anchor, and any pending feed. Model settings—including frequency,
+ground, height, segmentation, impedance, and wire diameter—are preserved.
+
+Use this when regenerating geometry interactively under the current `(model
+...)` declaration. It may not be called inside `with-warp`, `with-surface`, or
+`radial-repeat`.
 
 ### `(reset-model!)`
 
@@ -668,13 +743,19 @@ overlapping edges each count because each represents a laid wire edge.
 ```racket
 (point3 x y z)
 (vertex id point)
-(wire-edge id start end diameter feed-location)
+(feed-spec location name amplitude phase)
+(ground-spec kind relative-permittivity conductivity)
+(wire-edge id start end diameter feed-info)
 (antenna-model vertices edges)
 ```
 
 `wire-edge-feed-location` returns `#f`, `'start`, `'center`, or `'end`.
+`wire-edge-feed-name`, `wire-edge-feed-amplitude`, and
+`wire-edge-feed-phase` expose the remaining excitation metadata.
 `wire-edge-feed?` remains available as a Boolean convenience predicate. All
-structure predicates and accessors are exported. `antenna-model` also
+structure predicates and accessors are exported. A `ground-spec` has kind
+`'none`, `'perfect`, or `'real`; only real ground carries numeric material
+fields. `antenna-model` also
 exports mutators because it is declared mutable; tooling should prefer normal
 turtle operations unless deliberate model transformation is required.
 
@@ -720,9 +801,15 @@ described below.
 
 ### `(export-nec2c path)`
 
-Writes `CM`, `CE`, `GW`, `GE 0`, feed `EX`, and `EN` cards. Coordinates are
-metres. Ground, frequency, execution, and pattern cards are intentionally
-omitted.
+Writes `CM`, `CE`, `GW`, ground, complex feed `EX`, and `EN` cards. Coordinates
+are metres and receive the `model-height` Z offset. Free space emits `GE 0`.
+Perfect ground emits `GE 1` and `GN 1`; real ground emits `GE 1` and a
+Sommerfeld `GN 2` card carrying relative permittivity and conductivity.
+Frequency, execution, and pattern cards are omitted; the NEC2C measurement API
+decorates a temporary copy with them.
+
+For grounded models, endpoints at Z=0 connect to their ground-plane image.
+Geometry below Z=0 and wires lying along Z=0 are rejected before NEC2C runs.
 
 ### `(export-mmana path)`
 
@@ -765,7 +852,320 @@ Current loft restrictions:
 - no 180-degree path reversal;
 - enough adjacent length to construct every bevel setback.
 
-## 14. Command-Line and Build API
+## 14. NEC2C Measurement and Plotting
+
+The measurement functions execute NEC2C as a subprocess and return transparent
+data structures. They never print results or open windows implicitly. A caller
+may inspect, serialize, optimize against, or explicitly plot the returned
+values.
+
+NEC2C analysis honors the model's ground and height settings. Azimuth patterns
+over ground require a nonnegative elevation. Elevation cuts default to the
+above-ground arc from 0 through 180 degrees, and radiation grids contain theta
+0 through 90 degrees rather than a physically nonexistent lower hemisphere.
+
+### Executable selection
+
+`(nec2c-executable [path-or-#f])` configures an executable for subsequent
+runs. With the default `#f`, each operation tries the `NEC2C` environment
+variable and then searches `PATH` for `nec2c`.
+
+Every measurement function accepts these common keyword arguments:
+
+```racket
+#:model-path path-or-#f
+#:executable path-or-#f
+#:keep-artifacts? boolean
+#:timeout seconds-or-#f
+```
+
+An explicit `#:model-path` is used as the base deck. Otherwise the most recent
+`export-nec2c` path for the current model is reused. If neither exists, a base
+deck is generated in a fresh temporary directory. Analysis cards are added to
+a temporary copy; an explicit export is never modified.
+
+Successful temporary artifacts are deleted unless `#:keep-artifacts? #t` is
+specified. Failed or incomplete runs retain their directory and report its
+path. The default `#:timeout #f` waits without a time limit, so an expensive
+analysis is allowed to finish. Ctrl-C terminates the NEC2C subprocess and
+interrupts the Racket program. Supply a positive number of seconds to opt into
+an automatic timeout.
+
+### `(nec2c-measure-impedance [frequency] common-keywords ...)`
+
+Runs one frequency, defaulting to `model-frequency`, and returns a
+`nec2c-impedance-result`. Its `samples` list contains one
+`nec2c-feedpoint-sample` per simultaneously driven feed, including:
+
+- feed name, frequency, NEC wire tag, and source segment;
+- complex voltage and current;
+- complex active impedance and admittance;
+- input power.
+
+For multiple feeds, impedance means the active impedance under the declared
+simultaneous excitations. It is not an isolated port impedance or an
+S-parameter measurement.
+
+### `(nec2c-vswr-sweep start stop [#:steps count | #:step increment] common-keywords ...)`
+
+Runs an inclusive additive frequency sweep. `#:steps` counts both endpoints;
+`#:step` is a MHz increment that must land exactly on `stop`. The default is
+101 samples.
+
+Returns a `nec2c-sweep-result`. Each `nec2c-sweep-frequency` contains one
+`nec2c-sweep-sample` per feed. A sample retains its raw feedpoint result and
+adds reflection coefficient, return loss in dB, and VSWR calculated against
+`model-impedance`. Infinite return loss and VSWR are represented with Racket's
+positive infinity where mathematically appropriate.
+
+### `(nec2c-azimuth-pattern ...)`
+
+```racket
+(nec2c-azimuth-pattern
+ #:frequency [frequency (model-frequency)]
+ #:elevation [degrees 0]
+ #:start [degrees 0]
+ #:stop [degrees 360]
+ #:step [degrees 1]
+ common-keywords ...)
+```
+
+Returns a `nec2c-pattern` in requested azimuth order at one fixed elevation.
+
+### `(nec2c-elevation-pattern ...)`
+
+```racket
+(nec2c-elevation-pattern
+ #:frequency [frequency (model-frequency)]
+ #:azimuth [degrees 0]
+ #:start [degrees (if grounded? 0 -90)]
+ #:stop [degrees (if grounded? 180 270)]
+ #:step [degrees 1]
+ common-keywords ...)
+```
+
+Returns a vertical-plane `nec2c-pattern`. The runner samples both the requested
+azimuth and its opposite bearing, then orders them as one continuous elevation
+cut. Free space defaults to a full -90 through 270 degree circle. Grounded
+models default to the above-ground 0 through 180 degree arc.
+
+### `(nec2c-radiation-grid ...)`
+
+```racket
+(nec2c-radiation-grid
+ #:frequency [frequency (model-frequency)]
+ #:theta-step [degrees 5]
+ #:phi-step [degrees 5]
+ common-keywords ...)
+```
+
+Returns a `nec2c-pattern-grid` covering theta 0–180 degrees in free space or
+0–90 degrees over ground, and phi 0 up to but excluding 360 degrees. The seam
+is not duplicated.
+The optional `#:frequency` defaults to the current `model-frequency`, including
+the value established by `(model frequency ...)`.
+
+Every `nec2c-pattern-sample` retains NEC theta/phi, friendly
+elevation/azimuth, vertical/horizontal/total gain, axial ratio, polarization
+tilt and sense, and complex E-theta/E-phi fields. NEC's unavailable-gain
+sentinel is represented by `#f`.
+
+### Plotting
+
+These operations explicitly open Racket Plot windows:
+
+```racket
+(show-vswr-sweep sweep [#:max-vswr #f])
+(show-impedance-sweep sweep)
+(show-radiation-cut pattern
+                    [#:component 'total]
+                    [#:floor-db -40]
+                    [#:normalize? #t])
+(show-radiation-pattern-3d grid
+                           [#:component 'total]
+                           [#:floor-db -40]
+                           [#:normalize? #t]
+                           [#:mesh-step 5]
+                           [#:aspect-ratio 1])
+(show-radiation-pattern-opengl grid
+                               [#:component 'total]
+                               [#:floor-db -40]
+                               [#:normalize? #t]
+                               [#:scale 'arrl]
+                               [#:palette 'mmana]
+                               [#:color-step #f]
+                               [#:mesh-step 2]
+                               [#:axes? #t]
+                               [#:antenna? #t]
+                               [#:width 1000]
+                               [#:height 760])
+(show-radiation-comparison
+ (list (radiation-case title grid) ...)
+ [#:component 'total]
+ [#:floor-db -40]
+ [#:scale 'arrl]
+ [#:palette 'mmana]
+ [#:color-step #f]
+ [#:mesh-step 2]
+ [#:aspect-ratio 16/9]
+ [#:width 1400])
+
+(visualization-handle? value)
+(visualization-update! handle replacement)
+(visualization-show! handle)
+(visualization-close! handle)
+(visualization-open? handle)
+```
+
+Components are `'total`, `'vertical`, or `'horizontal`. The corresponding
+headless renderer constructors—`vswr-sweep-renderers`,
+`impedance-sweep-renderers`, `radiation-cut-renderers`, and
+`radiation-grid-renderers`—return ordinary Racket Plot renderers for custom
+figures or bitmap generation.
+
+The two OpenGL operations return an opaque `visualization-handle`. Save it to
+replace a live view without closing its window:
+
+```racket
+(define view
+  (show-radiation-pattern-opengl initial-grid #:palette 'inferno))
+
+;; Camera orientation, zoom, window size, and presentation options survive.
+(visualization-update! view revised-grid)
+```
+
+For a comparison handle, the replacement is another list of
+`radiation-case` values. It must contain exactly the same number of cases as
+the original call. Titles, grids, tile peak labels, drag proxies, shared
+radius, and the shared legend are all replaced in place; changing the tile
+count requires closing and opening a new comparison. A single-pattern update
+also snapshots the current Antenna Turtle geometry for its antenna inset.
+Surface construction occurs in the calling thread and the finished scene swap
+is queued to the GUI, so NEC2C analysis remains explicit and under programmer
+control. `visualization-close!` hides the window, which may be reopened with
+`visualization-show!`; `visualization-open?` reports its current visibility.
+The Plot and Plot3D operations do not yet return these handles.
+
+The Plot3D viewer uses equal symmetric X/Y/Z bounds and a proportional
+orthographic projection. During rotation it dynamically adjusts the plot-area
+shape so that one horizontal screen unit remains the same size as one vertical
+screen unit. This preserves the physical proportions of the radiation surface
+instead of stretching every rotated bounding box to fill the window.
+`#:aspect-ratio` is an additional width-to-height multiplier; leave it at `1`
+for an undistorted view. For example, `4/3` intentionally makes the view 33%
+wider than its physically proportional projection.
+
+`show-radiation-pattern-3d` and the headless `radiation-grid-renderers`
+constructor deliberately use one steel-blue surface. Its geometry is
+precomputed once, making it the portable and responsive Plot3D baseline.
+
+`show-radiation-pattern-opengl` uses Pict3D's OpenGL renderer. It uploads and
+freezes a triangle mesh with smoothly interpolated per-vertex colors, then
+moves only the camera during interaction. Drag to orbit and use the mouse
+wheel to zoom. The camera orbits the center of the radiation surface's 3-D
+bounds rather than the RF origin, allowing asymmetric patterns to use the
+viewport efficiently. `#:palette` selects the surface and legend color ramp:
+`'mmana` (the default) follows the conventional antenna-plot progression from
+deep blue through cyan, green, yellow, red, and magenta, with extra color
+resolution in the first 10 dB below peak. `'magma` provides a dark
+navy/purple/magenta/orange SDR-style ramp; `'sdr` is its alias. `'inferno`,
+`'viridis`, and `'grayscale` are also available. Every palette covers 0
+through -30 dB, independently of the radial geometry selected by `#:scale`.
+The legend's right side shows those relative values. Its left side adds each
+relative value to the selected component's measured peak and labels the result
+in dBi, allowing colors to be read either relative to the main lobe or as
+absolute gain.
+
+By default, colors vary smoothly between mesh vertices. Set `#:color-step` to
+a positive number of decibels, such as `3`, to use hard gain bands instead.
+Each display triangle receives the palette color for the band containing its
+average relative gain, and the legend uses the same quantization. Band edges
+therefore follow the display mesh; request smaller NEC2C theta/phi steps when a
+finer contour is desired. This changes presentation only, not radial geometry
+or the returned samples.
+
+Its default `#:scale 'arrl` applies the traditional ARRL modified-log radial
+mapping. For attenuation `A` dB below the peak, normalized radius is
+`0.89^(A/2)`: -3 dB is therefore about 0.84 radius and -23.1 dB about 0.26.
+The mapping continues toward the conventional -100 dB chart center and does
+not use `#:floor-db`. Select `#:scale 'db` for the earlier behavior, which maps
+decibels linearly from `#:floor-db` at the center to 0 dB at the outer radius.
+Surface colors continue to encode actual relative gain under either geometry
+scale.
+When a grounded result ends at theta 90 degrees, both 3-D viewers close the
+horizon ring with a triangulated bottom cap. The cap is display geometry only;
+it does not invent below-ground radiation samples.
+By default, a separate lower-left orientation inset displays red X, blue Y,
+and green Z arrows. Because it is drawn in screen space rather than inserted
+into the radiation scene, the surface cannot occlude it and depth clipping
+cannot make an axis flicker. An axis aimed almost directly at the camera is
+shown as a labeled bullseye. Pass `#:axes? #f` to hide the inset.
+
+A neighboring antenna inset projects the current Antenna Turtle wire model
+using the same camera orientation. It is independently scaled around the
+geometry's bounding sphere, so the complete antenna remains visible while the
+view rotates; feed locations are marked in red. Pass `#:antenna? #f` to hide
+this inset. The inset snapshots the current model when the viewer is opened.
+
+`show-radiation-comparison` displays one through nine named radiation grids in
+a fixed tiled window. Construct each entry with `(radiation-case title grid)`,
+where `title` is a string. Dragging any tile or using its mouse wheel changes
+the orbit or zoom of every tile; clicking without dragging has no other
+effect. The viewer deliberately uses one orientation inset and no antenna
+insets. While the mouse button is held, each surface is replaced by a coarse
+wireframe sampled from the same result and projected with Racket's ordinary
+2-D canvas drawing. Far-side lines remain visible, and no OpenGL work is
+queued during the drag. Releasing the button restores all full-resolution
+colored surfaces at the final orientation. This keeps a large comparison
+responsive without changing the analyzed data or resting view.
+
+The comparison is absolute, not merely stylistic: all surfaces share the
+largest selected-component peak as their 0 dB color and radial reference, and
+all cameras share the same world-space radius. A lower-gain antenna therefore
+appears both smaller and lower on the common color scale. Each tile title
+reports its own peak in dBi, while one compact horizontal legend reports the
+shared reference. Its tick density adapts to the available width.
+`#:aspect-ratio` is the requested width/height of the window; `#:width`
+selects the width and the height is derived from both values. The viewer picks
+a row/column arrangement once when it opens, favoring nearly square tiles and
+few empty cells. Resizing does not rearrange the cases.
+
+For example:
+
+```racket
+(show-radiation-comparison
+ (list (radiation-case "Dipole" dipole-grid)
+       (radiation-case "Yagi" yagi-grid)
+       (radiation-case "Franklin" franklin-grid))
+ #:aspect-ratio 16/9
+ #:palette 'inferno)
+```
+
+`#:mesh-step` controls only the displayed surface mesh, in degrees. Plot3D
+defaults to 5 degrees; OpenGL defaults to 2 degrees and uses every available
+sample when the analysis grid is coarser. Neither viewer alters or discards
+samples in the returned `nec2c-pattern-grid` data object.
+
+VSWR plots are uncapped by default, allowing Plot to choose an axis that
+contains every finite sample. Pass a positive `#:max-vswr` greater than one
+when a manual ceiling is useful. Samples with mathematically infinite VSWR
+create a break in an uncapped curve; specifying a ceiling displays them at the
+ceiling instead.
+
+### Run metadata, errors, and parsing
+
+Every top-level result contains `nec2c-run-info`, including executable,
+version, elapsed milliseconds, exit status, captured standard output/error,
+and `nec2c-artifacts`. Retained artifact paths are useful for reproducing or
+diagnosing a run.
+
+Runner failures use `exn:fail:nec2c`; its `run-info` field is available when a
+process was started. `parse-nec2c-output` accepts an input port, report string,
+or path value and returns a `parsed-nec2c-report`. The parser structures retain
+raw NEC coordinates and tags and are primarily useful for fixtures and
+external tooling.
+
+## 15. Command-Line and Build API
 
 ### Command line
 
@@ -822,7 +1222,7 @@ supported-build-formats
 When both MATLAB formats are requested, loft receives `<stem>.m` and ribbon
 receives `<stem>-ribbon.m`.
 
-## 15. Common Lisp LOOP
+## 16. Common Lisp LOOP
 
 The imported package supports clauses such as `repeat`, `for`, `in`, `from`,
 `while`, `until`, `collect`, `sum`, `initially`, and `finally`. Examples:
@@ -839,7 +1239,7 @@ The imported package supports clauses such as `repeat`, `for`, `in`, `from`,
 Racket's native iteration forms remain available and are preferable when their
 semantics are clearer for a particular model.
 
-## 16. Geometry Semantics
+## 17. Geometry Semantics
 
 - Every wire-on nonzero movement creates one DSL edge.
 - Geometry survives `pop` and `from-here`.

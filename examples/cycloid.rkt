@@ -4,7 +4,10 @@
  title "Meshtastic Cycloid Antenna Array"
  frequency 906
  wire-diameter (* 2 millimeters)
- max-length (half centimeter))
+ max-length (half centimeter)
+ ground real
+ height 10
+)
 
 ;; A cycloid curl is roughly half a wavelength around its circumference.
 (define radius (/ quarter-wave pi))
@@ -16,7 +19,7 @@
 	(turn left 10)
 	(move up (/ wavelength 150))
 	(if (and fed? (= segment 18))
-	    (point left radius feed 'center)
+	    (point left radius feed center)
 	    (point left radius))))
 
 ;; Generate geometry for a collinear cycloid antenna array.
@@ -37,5 +40,3 @@
 (printf "Used ~a meters of wire.~n" (~r (- (wire-used) mark)))
 
 (export-mmana "mmana/cycloid.maa")
-
-(show-model)

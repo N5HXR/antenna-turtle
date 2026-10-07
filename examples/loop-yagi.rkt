@@ -12,7 +12,7 @@
 (define (loop-element radius fed?)
   (with-points
     (point right radius)
-    (when fed? (feed 'start))
+    (when fed? (feed start))
     (loop repeat 36 do
 	  (turn roll-left 10)
 	  (point right radius))))

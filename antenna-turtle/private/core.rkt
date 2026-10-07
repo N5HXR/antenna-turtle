@@ -16,8 +16,11 @@
  ;; Model data, useful to tooling and tests.
  (struct-out point3)
  (struct-out vertex)
+ (struct-out feed-spec)
+ (struct-out ground-spec)
  (struct-out wire-edge)
- wire-edge-feed?
+ wire-edge-feed? wire-edge-feed-location wire-edge-feed-name
+ wire-edge-feed-amplitude wire-edge-feed-phase
  (struct-out antenna-model)
  current-antenna-model
  model-vertices
@@ -25,9 +28,15 @@
  wire-used
 
  ;; Model settings.
+ clear-wires
  reset-model!
  validate-model!
  model-title
+ model-impedance
+ model-ground
+ model-grounded?
+ model-height
+ real-ground
  maximum-segment-length
  snap-length
  model-frequency
@@ -47,7 +56,7 @@
  scale scale-all
  wire-diameter
  push pop
- feed
+ make-feed-spec mark-feed feed
 
  ;; some utility functions
  half
@@ -79,7 +88,9 @@
 
 (struct point3 (x y z) #:transparent)
 (struct vertex (id point) #:transparent)
-(struct wire-edge (id start end diameter feed-location) #:transparent)
+(struct feed-spec (location name amplitude phase) #:transparent)
+(struct ground-spec (kind relative-permittivity conductivity) #:transparent)
+(struct wire-edge (id start end diameter feed-info) #:transparent)
 (struct antenna-model (vertices edges) #:mutable #:transparent)
 
 ;; An orientation is a row-major 3x3 local-to-global matrix.
@@ -98,13 +109,13 @@
     (0 1 0)
     (0 0 1)))
 
-(define (initial-state)
+(define (initial-state [base-diameter millimeter])
   (turtle-state (point3 0 0 0)
                 identity-matrix
                 #f
                 1
                 1
-                millimeter
+                base-diameter
                 #f
                 #f))
 
@@ -116,10 +127,67 @@
 (define current-coordinate-warp (make-parameter #f))
 (define current-radial-iterations (make-parameter '()))
 
-;; Title and frequency are ordinary Racket parameters. Maximum segment length
-;; has the same zero/one-argument interface, with #f stored internally to mean
-;; a dynamic one-twentieth-wavelength default.
+;; Model settings retain the same zero/one-argument interface as ordinary
+;; Racket parameters. Maximum segment length stores #f internally to mean a
+;; dynamic one-twentieth-wavelength default.
 (define model-title (make-parameter "Turtle Antenna"))
+(define model-impedance
+  (make-parameter
+   50
+   (lambda (value)
+     (ensure-positive-real 'model-impedance value "reference impedance")
+     value)))
+(define no-ground (ground-spec 'none #f #f))
+(define perfect-ground (ground-spec 'perfect #f #f))
+(define average-real-ground (ground-spec 'real 13 1/200))
+
+(define (real-ground relative-permittivity conductivity)
+  (ensure-positive-real
+   'real-ground relative-permittivity "relative permittivity")
+  (ensure-real 'real-ground conductivity "conductivity in S/m")
+  (when (negative? conductivity)
+    (raise-argument-error 'real-ground "nonnegative-real?" conductivity))
+  (ground-spec 'real relative-permittivity conductivity))
+
+;; The direct setter accepts the same convenient symbolic presets as the DSL;
+;; the getter returns a transparent ground-spec for tooling and exporters.
+(define model-ground
+  (make-parameter
+   no-ground
+   (lambda (value)
+     (cond
+       [(eq? value 'none) no-ground]
+       [(eq? value 'perfect) perfect-ground]
+       [(eq? value 'real) average-real-ground]
+       [(ground-spec? value)
+        (case (ground-spec-kind value)
+          [(none) no-ground]
+          [(perfect) perfect-ground]
+          [(real)
+           (real-ground (ground-spec-relative-permittivity value)
+                        (ground-spec-conductivity value))]
+          [else
+           (raise-argument-error
+            'model-ground
+            "ground-spec with kind 'none, 'perfect, or 'real"
+            value)])]
+       [else
+        (raise-argument-error
+         'model-ground
+         "(or/c 'none 'perfect 'real ground-spec?)"
+         value)]))))
+
+(define (model-grounded?)
+  (not (eq? (ground-spec-kind (model-ground)) 'none)))
+
+(define model-height
+  (make-parameter
+   0
+   (lambda (value)
+     (ensure-real 'model-height value "antenna height")
+     (when (negative? value)
+       (raise-argument-error 'model-height "nonnegative-real?" value))
+     value)))
 (define maximum-segment-length-override (make-parameter #f))
 (define snap-length-override (make-parameter #f))
 (define model-frequency (make-parameter 141/10))
@@ -291,17 +359,36 @@
    "target frequency in MHz")
   (/ observed-frequency-megahertz target-frequency-megahertz))
 
-(define (reset-model!)
+(define (check-clear-context who)
+  (define action
+    (if (eq? who 'reset-model!) "reset the model" "clear wires"))
   (when (current-coordinate-warp)
-    (error 'reset-model!
-           "cannot reset the model inside with-warp or with-surface"))
+    (error who "cannot ~a inside with-warp or with-surface" action))
   (when (pair? (current-radial-iterations))
-    (error 'reset-model! "cannot reset the model inside radial-repeat"))
+    (error who "cannot ~a inside radial-repeat" action)))
+
+(define (clear-construction-state! base-diameter)
   (current-antenna-model (antenna-model '() '()))
-  (current-turtle-state (initial-state))
+  (current-turtle-state (initial-state base-diameter))
   (current-turtle-stack '())
   (pending-feed-location #f)
+  (void))
+
+(define (clear-wires)
+  (check-clear-context 'clear-wires)
+  ;; Wire diameter is a model declaration even though it is carried by the
+  ;; turtle state. Preserve its unscaled value while resetting transient
+  ;; movement and diameter scales with the rest of the construction state.
+  (clear-construction-state!
+   (turtle-state-base-diameter (current-turtle-state))))
+
+(define (reset-model!)
+  (check-clear-context 'reset-model!)
+  (clear-construction-state! millimeter)
   (model-title "Turtle Antenna")
+  (model-impedance 50)
+  (model-ground 'none)
+  (model-height 0)
   (maximum-segment-length-override #f)
   (snap-length-override #f)
   (model-frequency 141/10)
@@ -672,16 +759,88 @@
 
 (define feed-locations '(start center end))
 
-(define (feed location)
+(define (make-feed-spec location [name #f] [amplitude 1.0] [phase 0.0])
   (unless (memq location feed-locations)
-    (raise-argument-error 'feed "(or/c 'start 'center 'end)" location))
+    (raise-argument-error
+     'make-feed-spec "(or/c 'start 'center 'end)" location))
+  (unless (or (not name) (and (string? name) (not (string=? name ""))))
+    (raise-argument-error
+     'make-feed-spec "(or/c #f non-empty-string?)" name))
+  (ensure-real 'make-feed-spec amplitude "feed amplitude")
+  (unless (>= amplitude 0)
+    (raise-argument-error
+     'make-feed-spec "nonnegative-real?" amplitude))
+  (ensure-real 'make-feed-spec phase "feed phase")
+  (feed-spec location name amplitude phase))
+
+(define (normalize-feed-info value)
+  (cond
+    [(feed-spec? value)
+     (make-feed-spec (feed-spec-location value)
+                     (feed-spec-name value)
+                     (feed-spec-amplitude value)
+                     (feed-spec-phase value))]
+    [(memq value feed-locations) (make-feed-spec value)]
+    [else
+     (raise-argument-error
+      'feed
+      "(or/c 'start 'center 'end feed-spec?)"
+      value)]))
+
+(define (mark-feed descriptor)
   (when (pending-feed-location)
     (error 'feed "a feed marker is already waiting for a drawn edge"))
-  (pending-feed-location location)
+  (pending-feed-location (normalize-feed-info descriptor))
   (void))
 
+;; Retain the pre-0.5 procedure binding for old compiled modules and programs
+;; that require the private core directly. The public language shadows it with
+;; the contextual feed macro.
+(define feed mark-feed)
+
 (define (wire-edge-feed? edge)
-  (and (wire-edge-feed-location edge) #t))
+  (and (wire-edge-feed-info edge) #t))
+
+(define (wire-edge-feed-location edge)
+  (define info (wire-edge-feed-info edge))
+  (cond [(feed-spec? info) (feed-spec-location info)]
+        [(memq info feed-locations) info]
+        [else #f]))
+
+(define (wire-edge-feed-name edge)
+  (define info (wire-edge-feed-info edge))
+  (and (feed-spec? info) (feed-spec-name info)))
+
+(define (wire-edge-feed-amplitude edge)
+  (define info (wire-edge-feed-info edge))
+  (cond [(feed-spec? info) (feed-spec-amplitude info)]
+        [(memq info feed-locations) 1.0]
+        [else #f]))
+
+(define (wire-edge-feed-phase edge)
+  (define info (wire-edge-feed-info edge))
+  (cond [(feed-spec? info) (feed-spec-phase info)]
+        [(memq info feed-locations) 0.0]
+        [else #f]))
+
+(define (used-feed-names [edges (model-edges)])
+  (filter values (map wire-edge-feed-name edges)))
+
+(define (fresh-feed-name used)
+  (let loop ([index 1])
+    (define candidate (format "feed-~a" index))
+    (if (member candidate used) (loop (add1 index)) candidate)))
+
+(define (finalize-feed-info info)
+  (and info
+       (let* ([normalized (normalize-feed-info info)]
+              [used (used-feed-names)]
+              [requested (feed-spec-name normalized)]
+              [name (or requested (fresh-feed-name used))])
+         (when (member name used)
+           (raise-arguments-error
+            'feed "feed names must be unique" "name" name))
+         (struct-copy feed-spec normalized [name name]))))
 
 (define (find-equal-vertex point)
   (for/first ([candidate (in-list (model-vertices))]
@@ -714,6 +873,7 @@
         new-vertex)))
 
 (define (append-edge! start-point end-point)
+  (define finalized-feed (finalize-feed-info (pending-feed-location)))
   (define physical-start-point (map-model-point start-point))
   (define physical-end-point (map-model-point end-point))
   (when (and (current-coordinate-warp)
@@ -741,7 +901,7 @@
                   start
                   end
                   (current-wire-diameter)
-                  (pending-feed-location)))
+                  finalized-feed))
      (set-antenna-model-edges! m (append edges (list new-edge)))
      (when (pending-feed-location) (pending-feed-location #f))])
   (values (vertex-point start) (vertex-point end)))
@@ -889,10 +1049,7 @@
                             [inline-feed-location #f])
   (for ([component (in-list (list x-distance y-distance z-distance))])
     (ensure-real 'point component "distance component"))
-  (when (and inline-feed-location
-             (not (memq inline-feed-location feed-locations)))
-    (raise-argument-error 'point "(or/c 'start 'center 'end)"
-                          inline-feed-location))
+  (when inline-feed-location (normalize-feed-info inline-feed-location))
   (define state (current-turtle-state))
   (when (turtle-state-pen-down? state)
     (error 'point "point tracing requires the wire to be off"))
@@ -915,7 +1072,7 @@
      (current-turtle-state
       (struct-copy turtle-state state [point-anchor destination]))]
     [else
-     (when inline-feed-location (feed inline-feed-location))
+     (when inline-feed-location (mark-feed inline-feed-location))
      (define-values (_canonical-source canonical-destination)
        (append-edge! anchor destination))
      (current-turtle-state

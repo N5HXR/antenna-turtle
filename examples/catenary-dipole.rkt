@@ -19,9 +19,7 @@
           (let ([x {support-spacing
                     * (index / segment-count - 1 / 2)}])
             (if (= index feed-segment)
-                (point forward x feed 'start)
+                (point forward x feed start)
                 (point forward x))))))
 
 (export-mmana "mmana/catenary-dipole.maa")
-
-(show-model #:vertices? #t)

@@ -55,9 +55,7 @@
 	  (move down pos)
 	  (with-scale 0.93
 	    (with-wire
-	      (when (eq? role 'driven) (feed 'center))
+	      (when (eq? role 'driven) (feed center))
 	      (spread left len))))))
 
 (export-mmana "mmana/dish.maa")
-
-(show-model #:vertices? #t)
