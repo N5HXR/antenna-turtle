@@ -2,6 +2,7 @@
 
 (require rackunit
          racket/file
+         (prefix-in m: manifold)
          "../antenna-turtle/main.rkt"
          "../antenna-turtle/private/network.rkt"
          "../antenna-turtle/private/nec2c-view.rkt")
@@ -78,6 +79,54 @@
   (port up)
   (check-exn #rx"no volume bodies"
              (lambda () (openems-sweep 800 1000))))
+
+(test-case "OpenEMS prepares dielectric bodies and transformed conducting sheets"
+  (reset-model!)
+  (model frequency 915)
+  (define substrate-material
+    (dielectric #:name 'substrate #:relative-permittivity 4.4))
+  (define copper
+    (conducting-sheet-material #:name 'copper
+                               #:conductivity 5.8e7
+                               #:thickness 35e-6))
+  (define substrate (m:cube 0.1 0.1 0.002))
+  (body substrate geometry substrate material substrate-material priority 10)
+  (turn left 30)
+  (sheet ground
+    points '((0 0) (0.1 0) (0.1 0.1) (0 0.1))
+    material copper
+    priority 20)
+  (turn right 30)
+  (move up 0.001)
+  (port up gap 0.002 width 0.001 depth 0.001)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 850 950
+                     #:octave mock-octave
+                     #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define artifacts (openems-run-info-artifacts run))
+  (define driver (file->string (openems-artifacts-driver-path artifacts)))
+  (check-regexp-match #rx"AddMaterial" driver)
+  (check-regexp-match #rx"SetMaterialProperty" driver)
+  (check-regexp-match #rx"AddConductingSheet" driver)
+  (check-regexp-match #rx"AddPolygon" driver)
+  (check-regexp-match #rx"'Matrix'" driver)
+  (define manifest (openems-run-info-manifest run))
+  (check-equal? (length (hash-ref manifest 'geometry)) 2)
+  (check-= (hash-ref (hash-ref manifest 'mesh) 'maximum_refractive_index)
+           (sqrt 4.4) 1e-12)
+  (openems-close! artifacts)
+  (delete-file mock-octave)
+  (m:solid-close! substrate)
+  (clear-bodies))
 
 (test-case "OpenEMS artifacts can be explicitly released"
   (define directory

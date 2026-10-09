@@ -8,7 +8,8 @@
          "solid-core.rkt")
 
 (provide show-solid-model
-         solid-model->plot-renderers)
+         solid-model->plot-renderers
+         solid-model-cubic-bounds)
 
 (define-runtime-path proportional-plot3d-path "proportional-plot3d.rkt")
 
@@ -42,6 +43,16 @@
    #:line-width 0.35
    #:alpha (if (eq? kind 'dielectric) 0.45 0.9)
    #:label (format "~a" (solid-body-name body))))
+
+(define (sheet-renderer sheet)
+  (define kind (em-material-kind (planar-sheet-material sheet)))
+  (polygons3d
+   (list (map point->vector (planar-sheet-points sheet)))
+   #:color (cond [(assq kind body-colors) => cdr] [else "silver"])
+   #:line-color "gray"
+   #:line-width 0.6
+   #:alpha 0.9
+   #:label (format "~a" (planar-sheet-name sheet))))
 
 (define (point+ point . terms)
   (for/fold ([result point]) ([term (in-list terms)])
@@ -99,21 +110,25 @@
 
 (define (solid-model->plot-renderers)
   (validate-solid-scene!)
-  (when (null? (model-bodies))
-    (error 'show-solid-model "cannot display a scene without volume bodies"))
+  (when (and (null? (model-bodies)) (null? (model-sheets)))
+    (error 'show-solid-model "cannot display a scene without bodies or sheets"))
   (append
    (map body-renderer (model-bodies))
+   (map sheet-renderer (model-sheets))
    (append* (map port-renderers (model-ports)))))
 
-(define (scene-cubic-bounds)
+(define (solid-model-cubic-bounds)
   (define extrema
     (append*
-     (for/list ([body (in-list (model-bodies))])
-       (define-values (minimum maximum)
-         (m:solid-bounds (solid-body-solid body)))
-       (list (m-point->vector minimum) (m-point->vector maximum)))
-     (for/list ([port (in-list (model-ports))])
-       (map point->vector (port-corners port)))))
+     (append
+      (for/list ([body (in-list (model-bodies))])
+        (define-values (minimum maximum)
+          (m:solid-bounds (solid-body-solid body)))
+        (list (m-point->vector minimum) (m-point->vector maximum)))
+      (for/list ([sheet (in-list (model-sheets))])
+        (map point->vector (planar-sheet-points sheet)))
+      (for/list ([port (in-list (model-ports))])
+        (map point->vector (port-corners port))))))
   (define (coordinate index) (map (lambda (point) (vector-ref point index)) extrema))
   (define mins (for/list ([index (in-range 3)]) (apply min (coordinate index))))
   (define maxs (for/list ([index (in-range 3)]) (apply max (coordinate index))))
@@ -137,7 +152,7 @@
     (raise-argument-error 'show-solid-model "positive-real?" aspect-ratio))
   (define renderers (solid-model->plot-renderers))
   (define-values (x-min x-max y-min y-max z-min z-max)
-    (scene-cubic-bounds))
+    (solid-model-cubic-bounds))
   (define show-proportional
     (with-handlers ([exn:fail?
                      (lambda (failure)
@@ -146,12 +161,16 @@
                         "could not start the proportional Plot3D viewer: ~a"
                         (exn-message failure)))])
       (dynamic-require proportional-plot3d-path 'show-proportional-plot3d)))
-  (show-proportional
-   renderers
-   #:title (format "~a — solid model" (model-title))
-   #:x-label "x (m)" #:y-label "y (m)" #:z-label "z (m)"
-   #:x-min x-min #:x-max x-max
-   #:y-min y-min #:y-max y-max
-   #:z-min z-min #:z-max z-max
-   #:width width #:height height
-   #:aspect-multiplier aspect-ratio))
+  ;; Do not inherit ambient Plot theme parameters from earlier live-coding
+  ;; expressions; a deterministic light canvas keeps every material visible.
+  (parameterize ([plot-background "white"]
+                 [plot-foreground "black"])
+    (show-proportional
+     renderers
+     #:title (format "~a — solid model" (model-title))
+     #:x-label "x (m)" #:y-label "y (m)" #:z-label "z (m)"
+     #:x-min x-min #:x-max x-max
+     #:y-min y-min #:y-max y-max
+     #:z-min z-min #:z-max z-max
+     #:width width #:height height
+     #:aspect-multiplier aspect-ratio)))

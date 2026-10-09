@@ -451,15 +451,15 @@
         'body #'(_ setting ...)
         (string-append
          "expected setting/value pairs using geometry, material, priority, "
-         "or coordinates")))
+         "coordinates, or anchor")))
      (define seen (make-hasheq))
      (define settings (make-hasheq))
      (for ([pair (in-list pairs)])
        (define key (syntax-e (car pair)))
-       (unless (memq key '(geometry material priority coordinates))
+       (unless (memq key '(geometry material priority coordinates anchor))
          (raise-syntax-error
           'body
-          "expected geometry, material, priority, or coordinates"
+          "expected geometry, material, priority, coordinates, or anchor"
           stx (car pair)))
        (when (hash-ref seen key #f)
          (raise-syntax-error 'body "setting may be specified only once"
@@ -471,6 +471,7 @@
        (raise-syntax-error 'body "geometry setting is required" stx))
      (define material (hash-ref settings 'material #'pec))
      (define priority (hash-ref settings 'priority #'#f))
+     (define anchor (hash-ref settings 'anchor #f))
      (define coordinates (hash-ref settings 'coordinates #f))
      (define coordinates-expression
        (cond
@@ -481,9 +482,19 @@
          [else
           (raise-syntax-error
            'body "coordinates must be local or world" stx coordinates)]))
+     (define anchor-expression
+       (cond
+         [(not anchor) #''origin]
+         [(and (identifier? anchor)
+               (memq (syntax-e anchor) '(origin center)))
+          #`'#,(syntax-e anchor)]
+         [else
+          (raise-syntax-error
+           'body "anchor must be origin or center" stx anchor)]))
      #`(add-body '#,(syntax-e #'name) #,material #,geometry
                  #:priority #,priority
-                 #:coordinates #,coordinates-expression)]
+                 #:coordinates #,coordinates-expression
+                 #:anchor #,anchor-expression)]
     [(_ . _)
      (raise-syntax-error
       'body "expected (body NAME setting value ...)" stx)]))

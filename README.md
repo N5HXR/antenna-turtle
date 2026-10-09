@@ -11,14 +11,16 @@ program. Named feeds support independent voltage amplitude and phase. NEC2C
 models may use free space, perfect ground, or configurable real ground;
 MATLAB exports include a directly runnable far-field directivity stub.
 
-The experimental OpenEMS branch also supports Manifold PEC volume bodies, a
-turtle-oriented one-port lumped feed, Octave/OpenEMS S11 sweeps, a solid-model
-preflight viewer, and the same return-loss, impedance, and Smith-chart windows
-used for NEC2C data. Broadband NF2FF recording also feeds the existing 3-D
-radiation-pattern viewers at the model, best-match, or another swept
-frequency. See
+The experimental OpenEMS branch also supports Manifold PEC and lossless
+dielectric volume bodies, planar PEC/conducting sheets, a turtle-oriented
+one-port lumped feed, Octave/OpenEMS S11 sweeps, a solid-model preflight
+viewer, and the same return-loss, impedance, and Smith-chart windows used for
+NEC2C data. Broadband NF2FF recording also feeds the existing 3-D
+radiation-pattern viewers at the model, best-match, or another swept frequency. See
 [the staged OpenEMS design](docs/OPENEMS-SOLID-DESIGN.md) and
-[`examples/openems-dipole.rkt`](examples/openems-dipole.rkt).
+the volume-body [`examples/openems-dipole.rkt`](examples/openems-dipole.rkt)
+and dielectric/sheet [`examples/openems-patch.rkt`](examples/openems-patch.rkt)
+references.
 
 ![Rendered yagi signal pattern comparison window](docs/comparison-photo.png)
 

@@ -799,8 +799,9 @@ raco antenna-turtle build model.rkt --view
 
 ### `(show-solid-model [#:width 900] [#:height 700] [#:aspect-ratio 1])`
 
-Opens the registered Manifold volume bodies in a proportion-preserving Plot3D
-window. PEC and dielectric bodies receive distinct materials. Explicit lumped
+Opens registered Manifold volume bodies and planar sheets in a
+proportion-preserving Plot3D window. PEC, dielectric, and sheet geometry
+receive distinct materials. Explicit lumped
 ports appear as red boxes with an arrow indicating voltage polarity. This is a
 geometry preflight viewer; the OpenEMS-generated `model.xml` remains the
 authoritative view of the final Yee mesh and CSXCAD properties.
@@ -815,7 +816,8 @@ Import Manifold with a prefix, then register solids and an explicit port:
 (body radiator
   material pec
   geometry shape
-  priority 20)
+  priority 20
+  anchor center)
 
 (port up
   name "feed"
@@ -827,14 +829,29 @@ Import Manifold with a prefix, then register solids and an explicit port:
 
 Bodies use the current turtle frame unless `coordinates world` is supplied.
 The scene owns a transformed copy; the caller remains responsible for closing
-the original Manifold handle. `clear-bodies` closes and clears registered
-bodies, sheets, and their subordinate ports.
+the original Manifold handle. `anchor origin` is the default; `anchor center`
+first places the center of the solid's axis-aligned bounding box on the turtle,
+which is convenient for Yagi elements and arbitrary CSG assemblies. Manifold
+primitives such as `m:cylinder` and `m:cube` also accept `#:center? #t` when
+constructor-level centering is preferable. `clear-bodies` closes and clears
+registered bodies, sheets, and their subordinate ports.
+
+Lossless dielectric volumes use `(dielectric #:name name
+#:relative-permittivity epsilon-r [#:relative-permeability 1])`. Planar
+conductors use `(sheet name points ... material ... priority ...)`, where
+`points` is a local-XY polygon. `pec` gives a zero-thickness perfect conductor;
+`conducting-sheet-material` supplies finite conductivity and thickness. The
+sheet follows the complete turtle frame, including arbitrary rotation.
 
 ### `(openems-sweep start-mhz stop-mhz keyword-arguments ...)`
 
-The current executable slice supports PEC volume bodies and exactly one
+The current executable slice supports PEC and nondispersive lossless
+dielectric volume bodies, planar PEC/conducting sheets, and exactly one
 explicit lumped port. It returns an `openems-sweep-result` containing complex
-S11 and input impedance at every requested frequency.
+S11 and input impedance at every requested frequency. Unlike materials that
+overlap or touch through a sheet interface require distinct explicit CSXCAD
+priorities. The mesh wavelength is reduced by the largest dielectric
+`sqrt(epsilon-r * mu-r)` in the scene.
 
 ```racket
 (openems-sweep
@@ -859,11 +876,15 @@ By default a non-modal progress window follows the timestep, solver speed, and
 residual-energy reports written to `octave.stdout`. Closing the window merely
 hides it and does not cancel OpenEMS. Use `#:progress? #f` for batch runs or
 when terminal-only output is preferred. If no graphical display is available,
-the simulation automatically continues without the popup.
+the simulation automatically continues without the popup and reports the GUI
+initialization error. The artifact directory is printed before Octave starts,
+so `model.xml`, logs, and live stdout are discoverable during a long run.
 
 Successful and failed runs carry an artifact directory containing STL bodies,
 the Octave driver, CSXCAD XML, mesh lines, raw probes, logs, results, and a
-reproducibility manifest. Call `openems-close!` to release retained artifacts.
+reproducibility manifest. Sheet polygons, their transforms, complete material
+properties, and dielectric-adjusted mesh values are recorded in that manifest.
+Call `openems-close!` to release retained artifacts.
 The driver also records a broadband time-domain NF2FF box. To keep the eight
 PML cells and the NF2FF surface outside all conductors, the backend enlarges a
 requested domain padding when necessary; the effective padding is recorded in

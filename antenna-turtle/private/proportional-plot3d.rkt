@@ -129,4 +129,8 @@
        make-snip width height
        (if title (format "Plot: ~a" title) "Plot")))
     (send frame show #t)
+    ;; Give the newly shown lazy snip one GUI turn to paint before returning.
+    ;; This matters when the caller immediately starts a blocking solver run.
+    (flush-display)
+    (yield)
     (void)))

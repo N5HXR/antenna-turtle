@@ -75,12 +75,15 @@ form is pair-wise so optional settings remain extensible:
   material pec
   geometry radiator-shape
   priority 20
+  anchor center
   coordinates local)
 ```
 
 `geometry` is required. Defaults are PEC, local turtle coordinates, and no
-explicit priority. `coordinates world` is an escape hatch for already-placed
-generated geometry.
+explicit priority. The default `anchor origin` preserves the Manifold solid's
+coordinates; `anchor center` translates its axis-aligned bounds center to the
+turtle before placement. `coordinates world` is an escape hatch for
+already-placed generated geometry.
 
 Nonlinear `with-warp`/`with-surface` geometry and `radial-repeat` cannot be
 represented by a single affine body placement. The initial implementation
@@ -146,10 +149,10 @@ Overlap rules are deliberately explicit:
 - different materials with nonzero volume overlap need distinct explicit
   priorities;
 - missing or equal priorities on such an overlap are validation errors;
-- ordinary boundary contact is not volume overlap;
-- a conducting sheet may lie on a dielectric boundary; and
-- ambiguous sheet penetration or coincident priorities require an explicit
-  diagnostic rather than automatic Boolean resolution.
+- ordinary body/body boundary contact is not volume overlap;
+- sheet/body and sheet/sheet contact is checked conservatively by inclusive
+  bounds and unlike materials require distinct explicit priorities; and
+- automated Boolean material resolution remains deliberately out of scope.
 
 Ports use a backend-reserved priority higher than ordinary material geometry.
 
@@ -160,10 +163,13 @@ generates an Octave driver, runs OpenEMS, invokes `calcPort`, and writes simple
 machine-readable result tables. Failed runs retain their complete working
 directory. Successful network-only runs may clean up automatically.
 
-The first executable slice is `openems-sweep`. It currently accepts PEC
-volume bodies and exactly one explicit lumped port, applies the port-alignment
-transform, creates a conservative fixed mesh, runs Octave/OpenEMS, and returns
-frequency-indexed complex S11 and input impedance samples. The generated
+The current executable slice is `openems-sweep`. It accepts PEC and lossless
+dielectric volume bodies, planar PEC/conducting sheets, and exactly one
+explicit lumped port, applies the port-alignment transform, creates a
+conservative fixed mesh, runs Octave/OpenEMS, and returns frequency-indexed
+complex S11 and input impedance samples. Sheet polygons retain arbitrary
+turtle orientation through CSXCAD primitive transforms. The basic mesh uses
+the shortest wavelength implied by the highest-index dielectric. The generated
 driver prints its timestep ceiling and energy stop criterion before starting;
 the retained `openEMS_stats.txt` records which limit ended the run.
 
@@ -174,13 +180,14 @@ the retained `openEMS_stats.txt` records which limit ended the run.
                  #:keep-artifacts? #t))
 ```
 
-The runnable reference is `examples/openems-dipole.rkt`. OpenEMS results feed
+The runnable references are `examples/openems-dipole.rkt` and the lossless
+substrate/sheet model `examples/openems-patch.rkt`. OpenEMS results feed
 the existing VSWR, return-loss, impedance, and Smith-chart viewers through a
 solver-neutral network representation shared with NEC2C. The driver now also
 records a broadband time-domain NF2FF box, and `openems-radiation-grid`
 postprocesses it into the existing 3-D viewers without rerunning FDTD.
-Dielectrics, sheets, wire-to-capsule conversion, and adaptive mesh refinement
-remain later milestones.
+Wire-to-capsule conversion and adaptive mesh refinement remain later
+milestones.
 
 Although the proof of concept excites one port, result structures are designed
 for a frequency-indexed complex S-matrix. A complete N-port matrix eventually

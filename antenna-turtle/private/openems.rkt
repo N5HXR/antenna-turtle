@@ -53,7 +53,11 @@
 (struct exn:fail:openems exn:fail (run-info) #:transparent)
 
 (struct exported-body
-  (name filename priority minimum maximum sha1 triangles)
+  (name filename material priority minimum maximum sha1 triangles)
+  #:transparent)
+
+(struct exported-sheet
+  (name material priority points-2d transform minimum maximum)
   #:transparent)
 
 (define octave-executable
@@ -150,9 +154,33 @@
 (define (octave-vector values)
   (format "[~a]" (string-join (map number-string values) " ")))
 
+(define (octave-point-matrix points)
+  (format "[~a; ~a]"
+          (string-join (map (lambda (point) (number-string (first point))) points) " ")
+          (string-join (map (lambda (point) (number-string (second point))) points) " ")))
+
+(define (csx-matrix-string matrix)
+  (define homogeneous
+    (append (map (lambda (row) (append (take row 3) (list (fourth row)))) matrix)
+            (list '(0 0 0 1))))
+  ;; CSTransform::Transform indexes the serialized matrix as 4*row+column.
+  (string-join
+   (append* (map (lambda (row) (map number-string row)) homogeneous))
+   ","))
+
 (define (matrix->lists matrix)
   (for/list ([row (in-list matrix)])
     (map exact->inexact row)))
+
+(define (transform-point transform point)
+  (define coordinates (point->list point))
+  (for/list ([row (in-list transform)])
+    (+ (dot (take row 3) coordinates) (fourth row))))
+
+(define (transform-vector transform point)
+  (define coordinates (point->list point))
+  (for/list ([row (in-list transform)])
+    (dot (take row 3) coordinates)))
 
 (define (sanitize-label value)
   (define source (if (symbol? value) (symbol->string value) value))
@@ -164,15 +192,36 @@
 (define (file-sha1 path)
   (call-with-input-file path sha1))
 
-(define (geometry-manifest body)
-  (hash 'name (format "~a" (exported-body-name body))
+(define (material-manifest material)
+  (hash 'name (format "~a" (em-material-name material))
+        'kind (format "~a" (em-material-kind material))
+        'relative_permittivity (or (em-material-relative-permittivity material) 'null)
+        'relative_permeability (or (em-material-relative-permeability material) 'null)
+        'electric_conductivity_s_per_m (or (em-material-electric-conductivity material) 'null)
+        'magnetic_conductivity (or (em-material-magnetic-conductivity material) 'null)
+        'thickness_m (or (em-material-thickness material) 'null)))
+
+(define (body-manifest body)
+  (hash 'representation "volume-stl"
+        'name (format "~a" (exported-body-name body))
         'file (exported-body-filename body)
         'sha1 (exported-body-sha1 body)
         'priority (exported-body-priority body)
-        'material "pec"
+        'material (material-manifest (exported-body-material body))
         'minimum (map exact->inexact (exported-body-minimum body))
         'maximum (map exact->inexact (exported-body-maximum body))
         'triangle_count (exported-body-triangles body)))
+
+(define (sheet-manifest sheet)
+  (hash 'representation "planar-polygon"
+        'name (format "~a" (exported-sheet-name sheet))
+        'priority (exported-sheet-priority sheet)
+        'material (material-manifest (exported-sheet-material sheet))
+        'points_2d (map (lambda (point) (map exact->inexact point))
+                        (exported-sheet-points-2d sheet))
+        'local_to_solver_transform (matrix->lists (exported-sheet-transform sheet))
+        'minimum (map exact->inexact (exported-sheet-minimum sheet))
+        'maximum (map exact->inexact (exported-sheet-maximum sheet))))
 
 (define (json-safe value)
   (cond
@@ -197,10 +246,10 @@
 (define (transform-and-export-bodies directory transform)
   (for/list ([body (in-list (model-bodies))]
              [index (in-naturals 1)])
-    (unless (eq? (em-material-kind (solid-body-material body)) 'pec)
+    (unless (memq (em-material-kind (solid-body-material body)) '(pec dielectric))
       (raise-arguments-error
        'openems-sweep
-       "the first OpenEMS milestone supports PEC volume bodies only"
+       "OpenEMS volume bodies must use PEC or lossless dielectric material"
        "body" (solid-body-name body)
        "material" (solid-body-material body)))
     (define transformed (m:transform (solid-body-solid body) transform))
@@ -214,6 +263,7 @@
         (exported-body
          (solid-body-name body)
          filename
+         (solid-body-material body)
          (or (solid-body-priority body) 10)
          (m-point->list minimum)
          (m-point->list maximum)
@@ -221,26 +271,70 @@
          (m:solid-num-triangles transformed)))
       (lambda () (m:solid-close! transformed)))))
 
-(define (axis-values bodies accessor axis)
-  (for/list ([body (in-list bodies)])
-    (list-ref (accessor body) axis)))
+(define (list-subtract first second)
+  (map - first second))
 
-(define (critical-axis-values bodies axis domain-min domain-max port-low port-high)
+(define (transform-and-export-sheets transform)
+  (for/list ([sheet (in-list (model-sheets))])
+    (define points (map (lambda (point) (transform-point transform point))
+                        (planar-sheet-points sheet)))
+    (define origin (first points))
+    (define u (normalize 'openems-sweep (list-subtract (second points) origin)))
+    (define transformed-normal
+      (normalize 'openems-sweep
+                 (transform-vector transform (planar-sheet-normal sheet))))
+    ;; Recompute v from n and u to remove floating-point drift while retaining
+    ;; the source polygon's orientation in its local XY plane.
+    (define v (normalize 'openems-sweep (cross transformed-normal u)))
+    (define points-2d
+      (for/list ([point (in-list points)])
+        (define offset (list-subtract point origin))
+        (list (dot offset u) (dot offset v))))
+    ;; The polygon lives in local z=0, so the transform's basis columns are u,
+    ;; v, and n; csx-matrix-string serializes the matrix row-major for CSXCAD.
+    (define local-to-solver
+      (list (list (first u) (first v) (first transformed-normal) (first origin))
+            (list (second u) (second v) (second transformed-normal) (second origin))
+            (list (third u) (third v) (third transformed-normal) (third origin))))
+    (define minimum
+      (for/list ([axis (in-range 3)]) (apply min (map (lambda (p) (list-ref p axis)) points))))
+    (define maximum
+      (for/list ([axis (in-range 3)]) (apply max (map (lambda (p) (list-ref p axis)) points))))
+    (exported-sheet (planar-sheet-name sheet)
+                    (planar-sheet-material sheet)
+                    (or (planar-sheet-priority sheet) 10)
+                    points-2d local-to-solver minimum maximum)))
+
+(define (geometry-minimum geometry)
+  (if (exported-body? geometry)
+      (exported-body-minimum geometry)
+      (exported-sheet-minimum geometry)))
+
+(define (geometry-maximum geometry)
+  (if (exported-body? geometry)
+      (exported-body-maximum geometry)
+      (exported-sheet-maximum geometry)))
+
+(define (axis-values geometry accessor axis)
+  (for/list ([item (in-list geometry)])
+    (list-ref (accessor item) axis)))
+
+(define (critical-axis-values geometry axis domain-min domain-max port-low port-high)
   (sort
    (remove-duplicates
     (append (list domain-min domain-max 0 port-low port-high)
-            (axis-values bodies exported-body-minimum axis)
-            (axis-values bodies exported-body-maximum axis)))
+            (axis-values geometry geometry-minimum axis)
+            (axis-values geometry geometry-maximum axis)))
    <))
 
-(define (scene-bounds bodies)
+(define (scene-bounds geometry)
   (values
    (for/list ([axis (in-range 3)])
-     (apply min (axis-values bodies exported-body-minimum axis)))
+     (apply min (axis-values geometry geometry-minimum axis)))
    (for/list ([axis (in-range 3)])
-     (apply max (axis-values bodies exported-body-maximum axis)))))
+     (apply max (axis-values geometry geometry-maximum axis)))))
 
-(define (write-octave-driver directory bodies port start-mhz stop-mhz steps
+(define (write-octave-driver directory bodies sheets port start-mhz stop-mhz steps
                              critical-x critical-y critical-z max-resolution
                              mesh-grading maximum-timesteps end-criteria
                              geometry-minimum geometry-maximum wavelength-min)
@@ -288,12 +382,35 @@
       (line "mkdir(Sim_Path);")
       (for ([body (in-list bodies)] [index (in-naturals 1)])
         (define property (format "body_~a" index))
+        (define material (exported-body-material body))
         (line "copyfile('~a', [Sim_Path '/~a']);"
               (exported-body-filename body) (exported-body-filename body))
-        (line "CSX = AddMetal(CSX, '~a');" property)
+        (case (em-material-kind material)
+          [(pec) (line "CSX = AddMetal(CSX, '~a');" property)]
+          [(dielectric)
+           (line "CSX = AddMaterial(CSX, '~a');" property)
+           (line "CSX = SetMaterialProperty(CSX, '~a', 'Epsilon', ~a, 'Mue', ~a);"
+                 property
+                 (number-string (em-material-relative-permittivity material))
+                 (number-string (em-material-relative-permeability material)))])
         (line "CSX = ImportSTL(CSX, '~a', ~a, '~a');"
               property (exported-body-priority body)
               (exported-body-filename body)))
+      (for ([sheet (in-list sheets)] [index (in-naturals 1)])
+        (define property (format "sheet_~a" index))
+        (define material (exported-sheet-material sheet))
+        (case (em-material-kind material)
+          [(pec) (line "CSX = AddMetal(CSX, '~a');" property)]
+          [(conducting-sheet)
+           (line "CSX = AddConductingSheet(CSX, '~a', ~a, ~a);"
+                 property
+                 (number-string (em-material-electric-conductivity material))
+                 (number-string (em-material-thickness material)))])
+        (line "sheet_points_~a = ~a;" index
+              (octave-point-matrix (exported-sheet-points-2d sheet)))
+        (line "CSX = AddPolygon(CSX, '~a', ~a, 2, 0, sheet_points_~a, 'Transform', {'Matrix', '~a'});"
+              property (exported-sheet-priority sheet) index
+              (csx-matrix-string (exported-sheet-transform sheet))))
       (define half-width (/ (lumped-port-width port) 2))
       (define half-depth (/ (lumped-port-depth port) 2))
       (define half-gap (/ (lumped-port-gap port) 2))
@@ -651,7 +768,12 @@
    updated-run))
 
 (define (make-progress-window title maximum-timesteps end-criteria directory)
-  (with-handlers ([exn:fail? (lambda (_failure) #f)])
+  (with-handlers ([exn:fail?
+                   (lambda (failure)
+                     (fprintf (current-error-port)
+                              "OpenEMS progress window unavailable: ~a\n"
+                              (exn-message failure))
+                     #f)])
     ((dynamic-require openems-progress-path 'make-openems-progress-window)
      title maximum-timesteps
      (* 10 (/ (log end-criteria) (log 10)))
@@ -796,12 +918,9 @@
     (raise-user-error
      'openems-sweep
      "wire-to-capsule conversion is not implemented in this milestone; use explicit bodies"))
-  (when (pair? (model-sheets))
-    (raise-user-error
-     'openems-sweep
-     "conducting-sheet export is not implemented in this milestone"))
-  (when (null? (model-bodies))
-    (raise-user-error 'openems-sweep "the physical scene has no volume bodies"))
+  (when (and (null? (model-bodies)) (null? (model-sheets)))
+    (raise-user-error 'openems-sweep
+                      "the physical scene has no volume bodies or sheets"))
   (unless (= (length (model-ports)) 1)
     (raise-user-error
      'openems-sweep
@@ -810,6 +929,8 @@
   (define octave (resolve-octave requested-octave))
   (define directory
     (make-temporary-file "antenna-turtle-openems~a" 'directory))
+  (printf "OpenEMS artifacts: ~a\n" directory)
+  (flush-output)
   (define simulation-directory (build-path directory "simulation"))
   (define driver-path (build-path directory "run-openems.m"))
   (define manifest-path (build-path directory "simulation-manifest.rktd"))
@@ -821,9 +942,21 @@
   (define transform (port-user->solver-transform port))
   (define inverse-transform (inverse-rigid-transform transform))
   (define bodies (transform-and-export-bodies directory transform))
-  (define-values (minimum maximum) (scene-bounds bodies))
+  (define sheets (transform-and-export-sheets transform))
+  (define geometry (append bodies sheets))
+  (define-values (minimum maximum) (scene-bounds geometry))
   (define wavelength-min (/ speed-of-light (* stop-mhz 1e6)))
-  (define max-resolution (/ wavelength-min cells-per-wavelength))
+  (define maximum-index
+    (sqrt
+     (for/fold ([maximum 1]) ([body (in-list bodies)])
+       (define material (exported-body-material body))
+       (if (eq? (em-material-kind material) 'dielectric)
+           (max maximum
+                (* (em-material-relative-permittivity material)
+                   (em-material-relative-permeability material)))
+           maximum))))
+  (define material-wavelength-min (/ wavelength-min maximum-index))
+  (define max-resolution (/ material-wavelength-min cells-per-wavelength))
   ;; Eight PML cells plus two ordinary cells must fit between every radiator
   ;; and the domain wall. Honor larger user padding, but silently enlarge a
   ;; too-small request rather than allowing conductors into the absorber.
@@ -836,15 +969,15 @@
   (define half-width (/ (lumped-port-width port) 2))
   (define half-depth (/ (lumped-port-depth port) 2))
   (define critical-x
-    (critical-axis-values bodies 0 (first domain-min) (first domain-max)
+    (critical-axis-values geometry 0 (first domain-min) (first domain-max)
                           (- half-width) half-width))
   (define critical-y
-    (critical-axis-values bodies 1 (second domain-min) (second domain-max)
+    (critical-axis-values geometry 1 (second domain-min) (second domain-max)
                           (- half-depth) half-depth))
   (define critical-z
-    (critical-axis-values bodies 2 (third domain-min) (third domain-max)
+    (critical-axis-values geometry 2 (third domain-min) (third domain-max)
                           (- half-gap) half-gap))
-  (write-octave-driver directory bodies port start-mhz stop-mhz steps
+  (write-octave-driver directory bodies sheets port start-mhz stop-mhz steps
                        critical-x critical-y critical-z max-resolution
                        mesh-grading maximum-timesteps end-criteria
                        minimum maximum wavelength-min)
@@ -862,7 +995,7 @@
                   'steps steps)
      'user_to_solver_transform (matrix->lists transform)
      'solver_to_user_transform (matrix->lists inverse-transform)
-     'geometry (map geometry-manifest bodies)
+     'geometry (append (map body-manifest bodies) (map sheet-manifest sheets))
      'port (hash 'name (format "~a" (lumped-port-name port))
                  'impedance_ohms (exact->inexact (lumped-port-impedance port))
                  'gap_m (exact->inexact (lumped-port-gap port))
@@ -874,6 +1007,8 @@
                  'critical_y (map exact->inexact critical-y)
                  'critical_z (map exact->inexact critical-z)
                  'maximum_resolution_m max-resolution
+                 'shortest_material_wavelength_m material-wavelength-min
+                 'maximum_refractive_index maximum-index
                  'cells_per_wavelength (exact->inexact cells-per-wavelength)
                  'requested_padding_wavelengths
                  (exact->inexact padding-wavelengths)

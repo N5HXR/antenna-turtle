@@ -611,12 +611,17 @@ diameter; use the simulator or MATLAB solid export when surface geometry
 matters.
 
 For a physical Manifold scene, use `show-solid-model` instead. It displays the
-actual triangulated volume surfaces and marks each explicit lumped port with a
-red box and polarity arrow:
+actual triangulated volume surfaces, planar conducting sheets, and each
+explicit lumped port as a red box and polarity arrow:
 
 ```racket
 (show-solid-model)
 ```
+
+To place a Yagi element or another solid by its midpoint, either construct a
+centered Manifold primitive such as `(m:cylinder length radius #:center? #t)`
+or use `anchor center` in its `body` form. The latter works for arbitrary CSG
+results by placing the center of their bounding box on the current turtle.
 
 After an OpenEMS sweep, the returned value works with the ordinary network
 plot functions:
@@ -630,8 +635,14 @@ plot functions:
 
 OpenEMS runs can take minutes. The generated driver prints its exact mesh cell
 count, maximum timesteps, and residual-energy stop threshold before launching
-the FDTD engine. Retain artifacts when you want to inspect `model.xml` with
-AppCSXCAD.
+the FDTD engine. Antenna Turtle prints the artifact directory before launch,
+so you can inspect `simulation/model.xml` with AppCSXCAD while the solver is
+running. Retain artifacts when you want them to remain available after the
+result is returned.
+`examples/openems-dipole.rkt` is the PEC-volume reference, while
+`examples/openems-patch.rkt` demonstrates a lossless dielectric substrate with
+PEC ground and patch sheets. Dielectric scenes automatically use the shortest
+material wavelength when selecting the basic mesh resolution.
 
 ## 6. Repetition and Layout Tables
 

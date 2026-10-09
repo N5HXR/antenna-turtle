@@ -52,6 +52,20 @@
   (m:solid-close! source)
   (clear-bodies))
 
+(test-case "center anchor places a primitive's bounds center at the turtle"
+  (reset-model!)
+  (move forward 5)
+  (define source (m:cylinder 4 1 #:segments 16))
+  (define placed
+    (body element
+      geometry source
+      anchor center))
+  (define-values (minimum maximum) (body-bounds placed))
+  (check-equal? (map (lambda (low high) (/ (+ low high) 2)) minimum maximum)
+                '(5.0 0.0 0.0))
+  (m:solid-close! source)
+  (clear-bodies))
+
 (test-case "lossless dielectrics and overlap priorities validate explicitly"
   (reset-model!)
   (define substrate
@@ -77,6 +91,27 @@
   (check-not-exn validate-solid-scene!)
   (m:solid-close! prioritized-first)
   (m:solid-close! prioritized-second)
+  (clear-bodies))
+
+(test-case "a sheet touching a different volume material needs priorities"
+  (reset-model!)
+  (define substrate-material
+    (dielectric #:name 'substrate #:relative-permittivity 2.2))
+  (define first-substrate (m:cube 2 2 1))
+  (add-body 'substrate substrate-material first-substrate #:coordinates 'world)
+  (add-sheet 'ground pec '((0 0) (2 0) (2 2) (0 2))
+             #:coordinates 'world)
+  (check-exn #rx"distinct explicit priorities" validate-solid-scene!)
+  (m:solid-close! first-substrate)
+  (clear-bodies)
+
+  (define second-substrate (m:cube 2 2 1))
+  (add-body 'substrate substrate-material second-substrate
+            #:priority 10 #:coordinates 'world)
+  (add-sheet 'ground pec '((0 0) (2 0) (2 2) (0 2))
+             #:priority 20 #:coordinates 'world)
+  (check-not-exn validate-solid-scene!)
+  (m:solid-close! second-substrate)
   (clear-bodies))
 
 (test-case "planar sheets and ports use the current turtle pose"
@@ -154,5 +189,15 @@
   (port up gap 0.1 width 0.2 depth 0.3)
   (define renderers (solid-model->plot-renderers))
   (check-true (> (length renderers) 2))
+  (define bounds (call-with-values solid-model-cubic-bounds list))
+  (check-equal? (length bounds) 6)
+  (check-true (andmap real? bounds))
   (m:solid-close! source)
+  (clear-bodies))
+
+(test-case "solid model preview renders a sheet-only scene"
+  (reset-model!)
+  (sheet patch points '((-1 -1) (1 -1) (1 1) (-1 1)))
+  (define renderers (solid-model->plot-renderers))
+  (check-equal? (length renderers) 1)
   (clear-bodies))

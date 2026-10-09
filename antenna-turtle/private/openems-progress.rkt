@@ -8,13 +8,14 @@
 
 (define progress-frame%
   (class frame%
-    (define/override (on-close)
+    (define/augment (on-close)
       ;; This window reports a subprocess; it does not own or cancel it.
       (send this show #f))
     (super-new)))
 
 (define (make-openems-progress-window title maximum-timesteps target-energy-db
                                       artifact-directory)
+  (define artifact-directory-text (format "~a" artifact-directory))
   (define eventspace (make-eventspace))
   (define ready (make-channel))
   (parameterize ([current-eventspace eventspace])
@@ -25,7 +26,7 @@
            (new progress-frame%
                 [label "OpenEMS simulation progress"]
                 [width 560]
-                [height 235]))
+                [height 275]))
          (define root
            (new vertical-panel%
                 [parent frame]
@@ -65,8 +66,22 @@
                 [stretchable-width #t]))
          (new message%
               [parent root]
-              [label (format "Artifacts: ~a" artifact-directory)]
+              [label (format "Artifacts: ~a" artifact-directory-text)]
               [stretchable-width #t])
+         (define copy-artifacts
+           (new button%
+                [parent root]
+                [label "Copy artifact path"]
+                [callback
+                 (lambda (button _event)
+                   (with-handlers
+                       ([exn:fail?
+                         (lambda (_failure)
+                           (send button set-label "Could not copy path"))])
+                     (send the-clipboard set-clipboard-string
+                           artifact-directory-text
+                           0)
+                     (send button set-label "Artifact path copied")))]))
          (new message%
               [parent root]
               [label "Closing this window does not stop the simulation."]

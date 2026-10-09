@@ -141,10 +141,13 @@
 
 (define (add-body name material geometry
                   #:priority [priority #f]
-                  #:coordinates [coordinates 'local])
+                  #:coordinates [coordinates 'local]
+                  #:anchor [anchor 'origin])
   (geometry-name 'add-body name)
   (validate-material 'add-body material)
   (validate-priority 'add-body priority)
+  (unless (memq anchor '(origin center))
+    (raise-argument-error 'add-body "(or/c 'origin 'center)" anchor))
   (unless (m:solid? geometry)
     (raise-argument-error 'add-body "solid? from manifold" geometry))
   (when (m:solid-closed? geometry)
@@ -154,10 +157,25 @@
     (raise-arguments-error 'add-body "geometry names must be unique"
                            "name" name))
   (define placement (scene-transform 'add-body coordinates))
+  (define effective-placement
+    (if (eq? anchor 'origin)
+        placement
+        (let ()
+          (define-values (minimum maximum) (m:solid-bounds geometry))
+          (define center
+            (list (/ (+ (m:point3-x minimum) (m:point3-x maximum)) 2)
+                  (/ (+ (m:point3-y minimum) (m:point3-y maximum)) 2)
+                  (/ (+ (m:point3-z minimum) (m:point3-z maximum)) 2)))
+          (for/list ([row (in-list placement)])
+            (append (take row 3)
+                    (list (- (fourth row)
+                             (for/sum ([coefficient (in-list (take row 3))]
+                                       [coordinate (in-list center)])
+                               (* coefficient coordinate)))))))))
   ;; transform always returns a distinct native handle, including identity.
-  (define owned-solid (m:transform geometry placement))
+  (define owned-solid (m:transform geometry effective-placement))
   (define body
-    (solid-body name material owned-solid priority coordinates placement))
+    (solid-body name material owned-solid priority coordinates effective-placement))
   (define scene (current-solid-scene))
   (set-solid-scene-bodies!
    scene (append (solid-scene-bodies scene) (list body)))
@@ -318,6 +336,46 @@
            (positive? (m:solid-volume overlap))))
     (lambda () (m:solid-close! overlap))))
 
+(define (point-axis point axis)
+  (case axis
+    [(0) (point3-x point)]
+    [(1) (point3-y point)]
+    [else (point3-z point)]))
+
+(define (sheet-bounds sheet)
+  (values
+   (for/list ([axis (in-range 3)])
+     (apply min (map (lambda (point) (point-axis point axis))
+                     (planar-sheet-points sheet))))
+   (for/list ([axis (in-range 3)])
+     (apply max (map (lambda (point) (point-axis point axis))
+                     (planar-sheet-points sheet))))))
+
+(define (body-bounds body)
+  (define-values (minimum maximum) (m:solid-bounds (solid-body-solid body)))
+  (values (list (m:point3-x minimum) (m:point3-y minimum) (m:point3-z minimum))
+          (list (m:point3-x maximum) (m:point3-y maximum) (m:point3-z maximum))))
+
+(define (bounds-touch? first-minimum first-maximum second-minimum second-maximum)
+  (for/and ([first-low (in-list first-minimum)]
+            [first-high (in-list first-maximum)]
+            [second-low (in-list second-minimum)]
+            [second-high (in-list second-maximum)])
+    (and (<= first-low second-high) (<= second-low first-high))))
+
+(define (different-material-overlap! first-kind first-name first-material first-priority
+                                     second-kind second-name second-material second-priority)
+  (unless (or (equal? first-material second-material)
+              (and first-priority second-priority
+                   (not (= first-priority second-priority))))
+    (raise-arguments-error
+     'validate-solid-scene!
+     "overlapping geometry with different materials needs distinct explicit priorities"
+     (format "first ~a" first-kind) first-name
+     "first priority" first-priority
+     (format "second ~a" second-kind) second-name
+     "second priority" second-priority)))
+
 (define (validate-solid-scene! [scene (current-solid-scene)])
   (for* ([first-body (in-list (solid-scene-bodies scene))]
          [second-body (in-list (solid-scene-bodies scene))]
@@ -326,17 +384,36 @@
          #:unless (equal? (solid-body-material first-body)
                           (solid-body-material second-body)))
     (when (body-overlap? first-body second-body)
-      (define first-priority (solid-body-priority first-body))
-      (define second-priority (solid-body-priority second-body))
-      (unless (and first-priority second-priority
-                   (not (= first-priority second-priority)))
-        (raise-arguments-error
-         'validate-solid-scene!
-         "overlapping bodies with different materials need distinct explicit priorities"
-         "first body" (solid-body-name first-body)
-         "first priority" first-priority
-         "second body" (solid-body-name second-body)
-         "second priority" second-priority))))
+      (different-material-overlap!
+       "body" (solid-body-name first-body) (solid-body-material first-body)
+       (solid-body-priority first-body)
+       "body" (solid-body-name second-body) (solid-body-material second-body)
+       (solid-body-priority second-body))))
+  ;; Manifold gives an exact volume/volume test above. Zero-thickness sheets
+  ;; use conservative inclusive bounds: when unlike materials touch, the
+  ;; programmer must state which CSXCAD primitive wins at that interface.
+  (for* ([sheet (in-list (solid-scene-sheets scene))]
+         [body (in-list (solid-scene-bodies scene))])
+    (define-values (sheet-minimum sheet-maximum) (sheet-bounds sheet))
+    (define-values (body-minimum body-maximum) (body-bounds body))
+    (when (bounds-touch? sheet-minimum sheet-maximum body-minimum body-maximum)
+      (different-material-overlap!
+       "sheet" (planar-sheet-name sheet) (planar-sheet-material sheet)
+       (planar-sheet-priority sheet)
+       "body" (solid-body-name body) (solid-body-material body)
+       (solid-body-priority body))))
+  (for* ([first-sheet (in-list (solid-scene-sheets scene))]
+         [second-sheet (in-list (solid-scene-sheets scene))]
+         #:when (< (index-of (solid-scene-sheets scene) first-sheet eq?)
+                   (index-of (solid-scene-sheets scene) second-sheet eq?)))
+    (define-values (first-minimum first-maximum) (sheet-bounds first-sheet))
+    (define-values (second-minimum second-maximum) (sheet-bounds second-sheet))
+    (when (bounds-touch? first-minimum first-maximum second-minimum second-maximum)
+      (different-material-overlap!
+       "sheet" (planar-sheet-name first-sheet) (planar-sheet-material first-sheet)
+       (planar-sheet-priority first-sheet)
+       "sheet" (planar-sheet-name second-sheet) (planar-sheet-material second-sheet)
+       (planar-sheet-priority second-sheet))))
   (void))
 
 (define (clear-bodies)
