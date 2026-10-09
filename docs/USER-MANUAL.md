@@ -641,6 +641,22 @@ plot functions:
 (show-smith-chart sweep)
 ```
 
+With two or more ports, `openems-sweep` performs one independent excitation
+per port and returns the complete S-matrix. Unlike the convenient one-port
+case, a multiport model is not rotated automatically: every port's direction,
+width, and depth axes must already align with global X/Y/Z. The initial
+implementation requires the same reference impedance at every port.
+
+```racket
+(define two-port (openems-sweep 1800 3000))
+(show-s-parameter-magnitude two-port)
+(show-s-parameter-phase two-port)
+```
+
+The familiar network plots show the diagonal reflection and active input
+impedance for each named port. Radiation postprocessing accepts
+`#:excitation 'port-name` to select the independently recorded field data.
+
 OpenEMS runs can take minutes. The generated driver prints its exact mesh cell
 count, maximum timesteps, and residual-energy stop threshold before launching
 the FDTD engine. Antenna Turtle prints the artifact directory before launch,
@@ -655,6 +671,9 @@ PEC ground and patch sheets. `examples/openems-wire-yagi.rkt` builds an
 ordinary wire model once, derives its capsule representation for OpenEMS, and
 compares the resulting pattern with NEC2C. Dielectric scenes automatically use
 the shortest material wavelength when selecting the basic mesh resolution.
+`examples/openems-two-port-microstrip.rkt` is a simple multiport diagnostic;
+`examples/openems-interdigital-bandpass.rkt` is a three-resonator distributed
+filter modeled from calculator dimensions.
 
 ## 6. Repetition and Layout Tables
 

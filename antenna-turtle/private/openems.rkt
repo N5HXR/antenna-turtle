@@ -25,6 +25,9 @@
  (struct-out openems-run-info)
  (struct-out openems-port-sample)
  (struct-out openems-sweep-result)
+ (struct-out openems-result-port)
+ (struct-out openems-s-parameter-sample)
+ (struct-out openems-multiport-result)
  (struct-out exn:fail:openems)
  openems-sweep
  openems-load-artifacts
@@ -32,6 +35,7 @@
  openems-sweep->network-sweep
  openems-close!
  parse-openems-port-results
+ parse-openems-s-parameter-results
  parse-openems-nf2ff-results)
 
 (struct openems-artifacts
@@ -50,6 +54,16 @@
 
 (struct openems-sweep-result
   (run port-name reference-impedance samples)
+  #:transparent)
+
+(struct openems-result-port (name reference-impedance) #:transparent)
+
+(struct openems-s-parameter-sample
+  (frequency-mhz output-port input-port value db)
+  #:transparent)
+
+(struct openems-multiport-result
+  (run ports s-parameters input-samples)
   #:transparent)
 
 (struct exn:fail:openems exn:fail (run-info) #:transparent)
@@ -74,10 +88,14 @@
 (define default-maximum-timesteps 100000)
 (define default-end-criteria 1e-5)
 (define minimum-dielectric-cells-per-extent 4)
+(define identity-rigid-transform
+  '((1 0 0 0) (0 1 0 0) (0 0 1 0)))
 (define-runtime-path openems-progress-path "openems-progress.rkt")
 
 (define openems-progress-line-rx
   #px"\\[@[[:space:]]+([^]]+)\\][[:space:]]+Timestep:[[:space:]]+([0-9]+).*Speed:[[:space:]]+([0-9.]+)[[:space:]]+MC/s.*Energy:.*\\([[:space:]]*([+-]?[0-9.]+)dB\\)")
+(define openems-excitation-line-rx
+  #px"Antenna Turtle excitation ([0-9]+) of ([0-9]+)")
 
 (define (finite-real? value)
   (and (real? value) (rational? value)))
@@ -139,6 +157,56 @@
   (define center (point->list (lumped-port-center port)))
   (for/list ([row (in-list (list transverse-u transverse-v direction))])
     (append row (list (- (dot row center))))))
+
+(define (signed-axis? vector)
+  (define values (point->list vector))
+  (and (= (length (filter (lambda (value) (> (abs value) 1e-8)) values)) 1)
+       (for/and ([value (in-list values)])
+         (or (< (abs value) 1e-8)
+             (< (abs (- (abs value) 1)) 1e-8)))))
+
+(define (validate-multiport-alignment! ports)
+  (define reference-impedances
+    (remove-duplicates (map lumped-port-impedance ports) =))
+  (unless (= (length reference-impedances) 1)
+    (raise-user-error
+     'openems-sweep
+     (string-append
+      "the initial multiport backend requires every port to use the same "
+      "reference impedance; mixed-impedance power-wave normalization is "
+      "not implemented yet")))
+  (for ([port (in-list ports)])
+    (unless (and (signed-axis? (lumped-port-direction port))
+                 (signed-axis? (lumped-port-transverse-u port))
+                 (signed-axis? (lumped-port-transverse-v port)))
+      (raise-user-error
+       'openems-sweep
+       (string-append
+        "multiport models are not rotated automatically; port ~a must have "
+        "its direction, width, and depth axes aligned with the model's "
+        "global X/Y/Z axes")
+       (lumped-port-name port)))))
+
+(define (simulation-transform ports)
+  (if (= (length ports) 1)
+      (port-user->solver-transform (first ports))
+      (begin
+        (validate-multiport-alignment! ports)
+        identity-rigid-transform)))
+
+(define (transform-port port transform)
+  (lumped-port
+   (lumped-port-name port)
+   (lumped-port-impedance port)
+   (apply point3 (transform-point transform (lumped-port-center port)))
+   (apply point3 (transform-vector transform (lumped-port-direction port)))
+   (apply point3 (transform-vector transform (lumped-port-transverse-u port)))
+   (apply point3 (transform-vector transform (lumped-port-transverse-v port)))
+   (lumped-port-gap port)
+   (lumped-port-width port)
+   (lumped-port-depth port)
+   (lumped-port-priority port)
+   (lumped-port-placement-transform port)))
 
 (define (inverse-rigid-transform transform)
   (define rotation (map (lambda (row) (take row 3)) transform))
@@ -335,6 +403,31 @@
             [other-high (in-list maximum)])
     (and (<= low other-high) (<= other-low high))))
 
+(define (port-bounds port)
+  (define center (point->list (lumped-port-center port)))
+  (define axes
+    (list (point->list (lumped-port-transverse-u port))
+          (point->list (lumped-port-transverse-v port))
+          (point->list (lumped-port-direction port))))
+  (define half-extents
+    (list (/ (lumped-port-width port) 2)
+          (/ (lumped-port-depth port) 2)
+          (/ (lumped-port-gap port) 2)))
+  (define corners
+    (for*/list ([u-sign (in-list '(-1 1))]
+                [v-sign (in-list '(-1 1))]
+                [d-sign (in-list '(-1 1))])
+      (for/list ([coordinate (in-list center)] [axis-index (in-naturals)])
+        (+ coordinate
+           (for/sum ([axis (in-list axes)]
+                     [extent (in-list half-extents)]
+                     [sign (in-list (list u-sign v-sign d-sign))])
+             (* sign extent (list-ref axis axis-index)))))))
+  (values (for/list ([axis (in-range 3)])
+            (apply min (map (lambda (corner) (list-ref corner axis)) corners)))
+          (for/list ([axis (in-range 3)])
+            (apply max (map (lambda (corner) (list-ref corner axis)) corners)))))
+
 (define (derive-port-priority geometry port)
   ;; A lumped port must replace dielectric inside its box, while the metal at
   ;; either terminal must remain authoritative.  Follow the ordering used by
@@ -344,11 +437,7 @@
   (or
    (lumped-port-priority port)
    (let ()
-     (define half-width (/ (lumped-port-width port) 2))
-     (define half-depth (/ (lumped-port-depth port) 2))
-     (define half-gap (/ (lumped-port-gap port) 2))
-     (define minimum (list (- half-width) (- half-depth) (- half-gap)))
-     (define maximum (list half-width half-depth half-gap))
+     (define-values (minimum maximum) (port-bounds port))
      (define touching
        (filter (lambda (item) (bounds-intersect? item minimum maximum)) geometry))
      (define dielectric-priorities
@@ -408,11 +497,17 @@
                      (/ index minimum-dielectric-cells-per-extent))))
          '()))))
 
-(define (critical-axis-values geometry axis domain-min domain-max
-                              port-low port-high max-resolution)
+(define (critical-axis-values geometry ports axis domain-min domain-max
+                              max-resolution)
+  (define port-values
+    (append*
+     (for/list ([port (in-list ports)])
+       (define-values (minimum maximum) (port-bounds port))
+       (list (list-ref minimum axis) (list-ref maximum axis)))))
   (sort
    (remove-duplicates
-    (append (list domain-min domain-max 0 port-low port-high)
+    (append (list domain-min domain-max 0)
+            port-values
             (axis-values geometry geometry-minimum axis)
             (axis-values geometry geometry-maximum axis)
             (dielectric-subdivision-values geometry axis max-resolution))
@@ -426,13 +521,13 @@
    (for/list ([axis (in-range 3)])
      (apply max (axis-values geometry geometry-maximum axis)))))
 
-(define (write-octave-driver directory bodies sheets port port-priority
+(define (write-octave-driver directory bodies sheets ports port-priorities
                              start-mhz stop-mhz steps
                              critical-x critical-y critical-z max-resolution
                              mesh-grading maximum-timesteps end-criteria
                              geometry-minimum geometry-maximum wavelength-min)
   (define path (build-path directory "run-openems.m"))
-  (define simulation-name "simulation")
+  (define port-count (length ports))
   (call-with-output-file path
     #:exists 'truncate/replace
     (lambda (out)
@@ -452,10 +547,6 @@
       (line "max_timesteps = ~a;" maximum-timesteps)
       (line "end_criteria = ~a;" (number-string end-criteria))
       (line "fprintf('Antenna Turtle: at most %d timesteps; residual-energy stop threshold %.1e (%.1f dB)\\n', max_timesteps, end_criteria, 10*log10(end_criteria));")
-      (line "FDTD = InitFDTD('NrTS', max_timesteps, 'EndCriteria', end_criteria);")
-      (line "FDTD = SetGaussExcite(FDTD, f0, fc);")
-      (line "FDTD = SetBoundaryCond(FDTD, {'PML_8' 'PML_8' 'PML_8' 'PML_8' 'PML_8' 'PML_8'});")
-      (line "CSX = InitCSX();")
       (line "mesh.x = SmoothMeshLines(~a, ~a, ~a);"
             (octave-vector critical-x) (number-string max-resolution)
             (number-string mesh-grading))
@@ -468,83 +559,105 @@
       (line "mesh_cells = (numel(mesh.x)-1) * (numel(mesh.y)-1) * (numel(mesh.z)-1);")
       (line "fprintf('Antenna Turtle mesh: %d x %d x %d lines; %d cells; max resolution %.6g m\\n', numel(mesh.x), numel(mesh.y), numel(mesh.z), mesh_cells, ~a);"
             (number-string max-resolution))
-      (line "CSX = DefineRectGrid(CSX, unit, mesh);")
-      (line "Sim_Path = '~a';" simulation-name)
-      (line "Sim_XML = 'model.xml';")
-      (line "if exist(Sim_Path, 'dir'), rmdir(Sim_Path, 's'); end")
-      (line "mkdir(Sim_Path);")
-      (for ([body (in-list bodies)] [index (in-naturals 1)])
-        (define property (format "body_~a" index))
-        (define material (exported-body-material body))
-        (line "copyfile('~a', [Sim_Path '/~a']);"
-              (exported-body-filename body) (exported-body-filename body))
-        (case (em-material-kind material)
-          [(pec) (line "CSX = AddMetal(CSX, '~a');" property)]
-          [(dielectric)
-           (line "CSX = AddMaterial(CSX, '~a');" property)
-           (line "CSX = SetMaterialProperty(CSX, '~a', 'Epsilon', ~a, 'Mue', ~a);"
-                 property
-                 (number-string (em-material-relative-permittivity material))
-                 (number-string (em-material-relative-permeability material)))])
-        (line "CSX = ImportSTL(CSX, '~a', ~a, '~a');"
-              property (exported-body-priority body)
-              (exported-body-filename body)))
-      (for ([sheet (in-list sheets)] [index (in-naturals 1)])
-        (define property (format "sheet_~a" index))
-        (define material (exported-sheet-material sheet))
-        (case (em-material-kind material)
-          [(pec) (line "CSX = AddMetal(CSX, '~a');" property)]
-          [(conducting-sheet)
-           (line "CSX = AddConductingSheet(CSX, '~a', ~a, ~a);"
-                 property
-                 (number-string (em-material-electric-conductivity material))
-                 (number-string (em-material-thickness material)))])
-        (line "sheet_points_~a = ~a;" index
-              (octave-point-matrix (exported-sheet-points-2d sheet)))
-        (line "CSX = AddPolygon(CSX, '~a', ~a, 2, 0, sheet_points_~a, 'Transform', {'Matrix', '~a'});"
-              property (exported-sheet-priority sheet) index
-              (csx-matrix-string (exported-sheet-transform sheet))))
-      (define half-width (/ (lumped-port-width port) 2))
-      (define half-depth (/ (lumped-port-depth port) 2))
-      (define half-gap (/ (lumped-port-gap port) 2))
-      (line "port_start = ~a;"
-            (octave-vector (list (- half-width) (- half-depth) (- half-gap))))
-      (line "port_stop = ~a;"
-            (octave-vector (list half-width half-depth half-gap)))
-      (line "[CSX, port] = AddLumpedPort(CSX, ~a, 1, ~a, port_start, port_stop, [0 0 1], true);"
-            port-priority
-            (number-string (lumped-port-impedance port)))
-      ;; Keep the six time-domain near-field planes outside all geometry and
-      ;; on the inner boundary of the PML. The recorded broadband fields can be
-      ;; transformed at any requested frequency after the expensive FDTD run.
-      (line "pml_cells = 8;")
-      (line "if min([numel(mesh.x), numel(mesh.y), numel(mesh.z)]) <= 2*pml_cells, error('mesh too small for NF2FF box and PML'); end")
-      (line "geometry_min = ~a;" (octave-vector geometry-minimum))
-      (line "geometry_max = ~a;" (octave-vector geometry-maximum))
-      (line "nf2ff_start = [mesh.x(pml_cells+1), mesh.y(pml_cells+1), mesh.z(pml_cells+1)];")
-      (line "nf2ff_stop = [mesh.x(end-pml_cells), mesh.y(end-pml_cells), mesh.z(end-pml_cells)];")
-      (line "if any(nf2ff_start >= geometry_min) || any(nf2ff_stop <= geometry_max), error('NF2FF box does not enclose all radiating geometry'); end")
-      (line "nf2ff_resolution = ~a;" (number-string (/ wavelength-min 15)))
-      (line "[CSX, nf2ff] = CreateNF2FFBox(CSX, 'nf2ff', nf2ff_start, nf2ff_stop, 'OptResolution', nf2ff_resolution);")
-      (line "dlmwrite([Sim_Path '/mesh-x.csv'], mesh.x(:)', 'precision', '%.17g');")
-      (line "dlmwrite([Sim_Path '/mesh-y.csv'], mesh.y(:)', 'precision', '%.17g');")
-      (line "dlmwrite([Sim_Path '/mesh-z.csv'], mesh.z(:)', 'precision', '%.17g');")
-      (line "fid = fopen([Sim_Path '/versions.txt'], 'w');")
+      (line "if exist('simulation', 'dir'), rmdir('simulation', 's'); end")
+      (line "mkdir('simulation');")
+      (line "dlmwrite('simulation/mesh-x.csv', mesh.x(:)', 'precision', '%.17g');")
+      (line "dlmwrite('simulation/mesh-y.csv', mesh.y(:)', 'precision', '%.17g');")
+      (line "dlmwrite('simulation/mesh-z.csv', mesh.z(:)', 'precision', '%.17g');")
+      (line "fid = fopen('simulation/versions.txt', 'w');")
       (line "fprintf(fid, 'octave=%s\\n', version);")
       (line "packages = pkg('list');")
       (line "for k = 1:numel(packages), fprintf(fid, '%s=%s\\n', packages{k}.name, packages{k}.version); end")
       (line "fclose(fid);")
-      (line "save([Sim_Path '/nf2ff-box.mat'], 'nf2ff', 'nf2ff_start', 'nf2ff_stop', 'nf2ff_resolution');")
-      (line "WriteOpenEMS([Sim_Path '/' Sim_XML], FDTD, CSX);")
-      (line "settings.LogFile = 'openems.log'; settings.Silent = 0;")
-      (line "RunOpenEMS(Sim_Path, Sim_XML, '--dump-statistics', settings);")
       (line "freq = linspace(f_start, f_stop, ~a);" steps)
-      (line "port = calcPort(port, Sim_Path, freq);")
-      (line "s11 = port.uf.ref ./ port.uf.inc;")
-      (line "zin = port.uf.tot ./ port.if.tot;")
-      (line "s11_db = 20 * log10(abs(s11));")
-      (line "results = [freq(:), real(s11(:)), imag(s11(:)), real(zin(:)), imag(zin(:)), s11_db(:)];")
-      (line "dlmwrite([Sim_Path '/port-results.csv'], results, 'precision', '%.17g');")))
+      (line "all_s = [];")
+      (for ([active-index (in-range 1 (add1 port-count))])
+        (define simulation-name
+          (if (= port-count 1)
+              "simulation"
+              (format "simulation/excitation-~a" active-index)))
+        (line "fprintf('Antenna Turtle excitation ~a of ~a\\n');"
+              active-index port-count)
+        (line "FDTD = InitFDTD('NrTS', max_timesteps, 'EndCriteria', end_criteria);")
+        (line "FDTD = SetGaussExcite(FDTD, f0, fc);")
+        (line "FDTD = SetBoundaryCond(FDTD, {'PML_8' 'PML_8' 'PML_8' 'PML_8' 'PML_8' 'PML_8'});")
+        (line "CSX = InitCSX();")
+        (line "CSX = DefineRectGrid(CSX, unit, mesh);")
+        (line "Sim_Path = '~a';" simulation-name)
+        (line "Sim_XML = 'model.xml';")
+        (when (> port-count 1) (line "mkdir(Sim_Path);"))
+        (for ([body (in-list bodies)] [index (in-naturals 1)])
+          (define property (format "body_~a" index))
+          (define material (exported-body-material body))
+          (line "copyfile('~a', [Sim_Path '/~a']);"
+                (exported-body-filename body) (exported-body-filename body))
+          (case (em-material-kind material)
+            [(pec) (line "CSX = AddMetal(CSX, '~a');" property)]
+            [(dielectric)
+             (line "CSX = AddMaterial(CSX, '~a');" property)
+             (line "CSX = SetMaterialProperty(CSX, '~a', 'Epsilon', ~a, 'Mue', ~a);"
+                   property
+                   (number-string (em-material-relative-permittivity material))
+                   (number-string (em-material-relative-permeability material)))])
+          (line "CSX = ImportSTL(CSX, '~a', ~a, '~a');"
+                property (exported-body-priority body)
+                (exported-body-filename body)))
+        (for ([sheet (in-list sheets)] [index (in-naturals 1)])
+          (define property (format "sheet_~a" index))
+          (define material (exported-sheet-material sheet))
+          (case (em-material-kind material)
+            [(pec) (line "CSX = AddMetal(CSX, '~a');" property)]
+            [(conducting-sheet)
+             (line "CSX = AddConductingSheet(CSX, '~a', ~a, ~a);"
+                   property
+                   (number-string (em-material-electric-conductivity material))
+                   (number-string (em-material-thickness material)))])
+          (line "sheet_points_~a = ~a;" index
+                (octave-point-matrix (exported-sheet-points-2d sheet)))
+          (line "CSX = AddPolygon(CSX, '~a', ~a, 2, 0, sheet_points_~a, 'Transform', {'Matrix', '~a'});"
+                property (exported-sheet-priority sheet) index
+                (csx-matrix-string (exported-sheet-transform sheet))))
+        (line "port = {};")
+        (for ([port (in-list ports)]
+              [priority (in-list port-priorities)]
+              [port-index (in-naturals 1)])
+          (define-values (port-start port-stop) (port-bounds port))
+          (line "port_start = ~a;" (octave-vector port-start))
+          (line "port_stop = ~a;" (octave-vector port-stop))
+          (line "[CSX, port{~a}] = AddLumpedPort(CSX, ~a, ~a, ~a, port_start, port_stop, ~a, ~a);"
+                port-index priority port-index
+                (number-string (lumped-port-impedance port))
+                (octave-vector (point->list (lumped-port-direction port)))
+                (if (= port-index active-index) "true" "false")))
+        ;; Keep a separate NF2FF recording for each independent excitation.
+        (line "pml_cells = 8;")
+        (line "if min([numel(mesh.x), numel(mesh.y), numel(mesh.z)]) <= 2*pml_cells, error('mesh too small for NF2FF box and PML'); end")
+        (line "geometry_min = ~a;" (octave-vector geometry-minimum))
+        (line "geometry_max = ~a;" (octave-vector geometry-maximum))
+        (line "nf2ff_start = [mesh.x(pml_cells+1), mesh.y(pml_cells+1), mesh.z(pml_cells+1)];")
+        (line "nf2ff_stop = [mesh.x(end-pml_cells), mesh.y(end-pml_cells), mesh.z(end-pml_cells)];")
+        (line "if any(nf2ff_start >= geometry_min) || any(nf2ff_stop <= geometry_max), error('NF2FF box does not enclose all radiating geometry'); end")
+        (line "nf2ff_resolution = ~a;" (number-string (/ wavelength-min 15)))
+        (line "[CSX, nf2ff] = CreateNF2FFBox(CSX, 'nf2ff', nf2ff_start, nf2ff_stop, 'OptResolution', nf2ff_resolution);")
+        (line "save([Sim_Path '/nf2ff-box.mat'], 'nf2ff', 'nf2ff_start', 'nf2ff_stop', 'nf2ff_resolution');")
+        (line "WriteOpenEMS([Sim_Path '/' Sim_XML], FDTD, CSX);")
+        (line "settings.LogFile = 'openems.log'; settings.Silent = 0;")
+        (line "RunOpenEMS(Sim_Path, Sim_XML, '--dump-statistics', settings);")
+        (for ([port-index (in-range 1 (add1 port-count))])
+          (line "port{~a} = calcPort(port{~a}, Sim_Path, freq);"
+                port-index port-index))
+        (for ([output-index (in-range 1 (add1 port-count))])
+          (line "s = port{~a}.uf.ref ./ port{~a}.uf.inc;"
+                output-index active-index)
+          (line "all_s = [all_s; freq(:), repmat(~a, numel(freq), 1), repmat(~a, numel(freq), 1), real(s(:)), imag(s(:)), 20*log10(abs(s(:)))];"
+                output-index active-index))
+        (line "sii = port{~a}.uf.ref ./ port{~a}.uf.inc;"
+              active-index active-index)
+        (line "zin = port{~a}.uf.tot ./ port{~a}.if.tot;"
+              active-index active-index)
+        (line "results = [freq(:), real(sii(:)), imag(sii(:)), real(zin(:)), imag(zin(:)), 20*log10(abs(sii(:)))];")
+        (line "dlmwrite([Sim_Path '/port-results.csv'], results, 'precision', '%.17g');"))
+      (line "dlmwrite('simulation/s-parameters.csv', all_s, 'precision', '%.17g');")))
   path)
 
 (define (read-number-list path)
@@ -599,6 +712,33 @@
      (make-rectangular impedance-real impedance-imaginary)
      s11-db)))
 
+(define (parse-openems-s-parameter-results path port-names)
+  (unless (file-exists? path)
+    (raise-user-error 'parse-openems-s-parameter-results
+                      "OpenEMS S-parameter result file does not exist: ~a"
+                      path))
+  (for/list ([line (in-list (file->lines path))]
+             #:unless (string=? (string-trim line) ""))
+    (define fields (map string->number (string-split line ",")))
+    (unless (and (= (length fields) 6) (andmap number? fields))
+      (error 'parse-openems-s-parameter-results
+             "invalid result row: ~e" line))
+    (match-define
+      (list frequency-hz output-index input-index real-value imaginary-value db)
+      fields)
+    (unless (and (exact-integer? output-index)
+                 (exact-integer? input-index)
+                 (<= 1 output-index (length port-names))
+                 (<= 1 input-index (length port-names)))
+      (error 'parse-openems-s-parameter-results
+             "invalid port indexes in row: ~e" line))
+    (openems-s-parameter-sample
+     (/ frequency-hz 1e6)
+     (list-ref port-names (sub1 output-index))
+     (list-ref port-names (sub1 input-index))
+     (make-rectangular real-value imaginary-value)
+     db)))
+
 (define (openems-load-artifacts directory)
   (unless (path-string? directory)
     (raise-argument-error 'openems-load-artifacts "path-string?" directory))
@@ -608,13 +748,9 @@
                       "artifact directory does not exist: ~a" root))
   (define manifest-path (build-path root "simulation-manifest.rktd"))
   (define simulation-directory (build-path root "simulation"))
-  (define result-path (build-path simulation-directory "port-results.csv"))
   (unless (file-exists? manifest-path)
     (raise-user-error 'openems-load-artifacts
                       "artifact manifest does not exist: ~a" manifest-path))
-  (unless (file-exists? result-path)
-    (raise-user-error 'openems-load-artifacts
-                      "artifact port results do not exist: ~a" result-path))
   (define manifest
     (call-with-input-file manifest-path
       (lambda (in)
@@ -624,21 +760,30 @@
                             "artifact manifest is not a hash: ~a"
                             manifest-path))
         value)))
+  (define saved-ports
+    (let ([ports (hash-ref manifest 'ports #f)])
+      (if (and (list? ports) (pair? ports))
+          ports
+          (let ([port (hash-ref manifest 'port #f)])
+            (if (hash? port) (list port) '())))))
   (define format-version (hash-ref manifest 'format_version #f))
   (unless (equal? format-version 1)
     (raise-user-error 'openems-load-artifacts
                       "unsupported artifact manifest format: ~e"
                       format-version))
-  (define port-data (hash-ref manifest 'port #f))
-  (unless (hash? port-data)
+  (when (null? saved-ports)
     (raise-user-error 'openems-load-artifacts
                       "artifact manifest has no port description"))
-  (define port-name (hash-ref port-data 'name #f))
-  (define reference-impedance (hash-ref port-data 'impedance_ohms #f))
-  (unless (and port-name (finite-real? reference-impedance)
-               (> reference-impedance 0))
-    (raise-user-error 'openems-load-artifacts
-                      "artifact manifest has an invalid port description"))
+  (define result-ports
+    (for/list ([port-data (in-list saved-ports)])
+      (define port-name (hash-ref port-data 'name #f))
+      (define reference-impedance
+        (hash-ref port-data 'impedance_ohms #f))
+      (unless (and port-name (finite-real? reference-impedance)
+                   (> reference-impedance 0))
+        (raise-user-error 'openems-load-artifacts
+                          "artifact manifest has an invalid port description"))
+      (openems-result-port port-name reference-impedance)))
   (define solver (hash-ref manifest 'solver (hash)))
   (define saved-octave
     (let ([value (and (hash? solver)
@@ -662,19 +807,38 @@
      (saved-text "octave.stdout")
      (saved-text "octave.stderr")
      artifacts manifest))
-  (openems-sweep-result
-   run port-name reference-impedance
-   (parse-openems-port-results result-path)))
+  (if (= (length result-ports) 1)
+      (let* ([port (first result-ports)]
+             [result-path
+              (build-path simulation-directory "port-results.csv")])
+        (openems-sweep-result
+         run
+         (openems-result-port-name port)
+         (openems-result-port-reference-impedance port)
+         (parse-openems-port-results result-path)))
+      (let ([names (map openems-result-port-name result-ports)])
+        (openems-multiport-result
+         run result-ports
+         (parse-openems-s-parameter-results
+          (build-path simulation-directory "s-parameters.csv") names)
+         (for/hash ([name (in-list names)] [index (in-naturals 1)])
+           (values
+            name
+            (parse-openems-port-results
+             (build-path simulation-directory
+                         (format "excitation-~a" index)
+                         "port-results.csv"))))))))
 
 ;; Keep the solver's detailed result available while presenting the plotting
 ;; layer with a backend-independent one-port network sweep.
 (define (openems-sweep->network-sweep result)
-  (unless (openems-sweep-result? result)
+  (unless (or (openems-sweep-result? result)
+              (openems-multiport-result? result))
     (raise-argument-error
-     'openems-sweep->network-sweep "openems-sweep-result?" result))
-  (define name (format "~a" (openems-sweep-result-port-name result)))
-  (define reference (openems-sweep-result-reference-impedance result))
-  (define (convert sample)
+     'openems-sweep->network-sweep
+     "(or/c openems-sweep-result? openems-multiport-result?)"
+     result))
+  (define (convert name sample)
     (define gamma (openems-port-sample-reflection-coefficient sample))
     (network-sample
      name
@@ -683,9 +847,36 @@
      (openems-port-sample-impedance sample)
      (openems-port-sample-s11-db sample)
      (reflection-magnitude->vswr (magnitude gamma))))
-  (network-sweep
-   'openems (openems-sweep-result-run result) reference
-   (map convert (openems-sweep-result-samples result))))
+  (cond
+    [(openems-sweep-result? result)
+     (define name (format "~a" (openems-sweep-result-port-name result)))
+     (network-sweep
+      'openems
+      (openems-sweep-result-run result)
+      (openems-sweep-result-reference-impedance result)
+      (map (lambda (sample) (convert name sample))
+           (openems-sweep-result-samples result)))]
+    [else
+     (define ports (openems-multiport-result-ports result))
+     (define references
+       (remove-duplicates
+        (map openems-result-port-reference-impedance ports) =))
+     (unless (= (length references) 1)
+       (error 'openems-sweep->network-sweep
+              (string-append
+               "the legacy impedance, return-loss, and Smith-chart views "
+               "require every port to use the same reference impedance; "
+               "use the S-parameter views for mixed-impedance ports")))
+     (network-sweep
+      'openems
+      (openems-multiport-result-run result)
+      (first references)
+      (append*
+       (for/list ([port (in-list ports)])
+         (define name (format "~a" (openems-result-port-name port)))
+         (map (lambda (sample) (convert name sample))
+              (hash-ref (openems-multiport-result-input-samples result)
+                        (openems-result-port-name port))))))]))
 
 (define (matrix-rotate transform vector)
   (for/vector ([row (in-list transform)])
@@ -824,7 +1015,8 @@
             (for/and ([a (in-list got)] [b (in-list wanted)])
               (< (abs (- a b)) 1e-8)))))))
 
-(define (write-nf2ff-driver directory frequency-hz theta-values phi-values suffix)
+(define (write-nf2ff-driver directory simulation-path frequency-hz
+                            theta-values phi-values suffix)
   (define path (build-path directory (format "postprocess-nf2ff-~a.m" suffix)))
   (call-with-output-file path
     #:exists 'truncate/replace
@@ -833,12 +1025,13 @@
         (apply fprintf out (string-append format-string "\n") values))
       (line "pkg load openems;")
       (line "pkg load csxcad;")
-      (line "load('simulation/nf2ff-box.mat');")
+      (line "load('~a/nf2ff-box.mat');" simulation-path)
       (line "frequency = ~a;" (number-string frequency-hz))
       (line "theta = (~a) * pi / 180;" (octave-vector theta-values))
       (line "phi = (~a) * pi / 180;" (octave-vector phi-values))
-      (line "nf2ff = CalcNF2FF(nf2ff, 'simulation', frequency, theta, phi, 'Center', [0 0 0], 'Mode', 1, 'Outfile', 'nf2ff-~a.h5');" suffix)
-      (line "fid = fopen('simulation/nf2ff-~a.csv', 'w');" suffix)
+      (line "nf2ff = CalcNF2FF(nf2ff, '~a', frequency, theta, phi, 'Center', [0 0 0], 'Mode', 1, 'Outfile', 'nf2ff-~a.h5');"
+            simulation-path suffix)
+      (line "fid = fopen('~a/nf2ff-~a.csv', 'w');" simulation-path suffix)
       (line "Etheta = nf2ff.E_theta{1}; Ephi = nf2ff.E_phi{1};")
       (line "for ti = 1:numel(theta)")
       (line "  for pi_idx = 1:numel(phi)")
@@ -846,7 +1039,8 @@
       (line "  end")
       (line "end")
       (line "fclose(fid);")
-      (line "fid = fopen('simulation/nf2ff-~a-metadata.csv', 'w');" suffix)
+      (line "fid = fopen('~a/nf2ff-~a-metadata.csv', 'w');"
+            simulation-path suffix)
       (line "fprintf(fid, '%.17g,%.17g,%.17g\\n', frequency, nf2ff.Dmax(1), nf2ff.Prad(1));")
       (line "fclose(fid);")))
   path)
@@ -860,19 +1054,49 @@
 
 (define (openems-radiation-grid result
                                  #:frequency [requested-frequency #f]
+                                 #:excitation [requested-excitation #f]
                                  #:theta-step [theta-step 2]
                                  #:phi-step [phi-step 2]
                                  #:octave [requested-octave #f]
                                  #:reuse? [reuse? #t]
                                  #:timeout [timeout #f])
-  (unless (openems-sweep-result? result)
-    (raise-argument-error 'openems-radiation-grid "openems-sweep-result?" result))
+  (unless (or (openems-sweep-result? result)
+              (openems-multiport-result? result))
+    (raise-argument-error
+     'openems-radiation-grid
+     "(or/c openems-sweep-result? openems-multiport-result?)" result))
   (unless (or (not timeout) (and (finite-real? timeout) (> timeout 0)))
     (raise-argument-error 'openems-radiation-grid
                           "(or/c #f positive-real?)" timeout))
   (unless (boolean? reuse?)
     (raise-argument-error 'openems-radiation-grid "boolean?" reuse?))
-  (define run (openems-sweep-result-run result))
+  (define multiport? (openems-multiport-result? result))
+  (define run
+    (if multiport?
+        (openems-multiport-result-run result)
+        (openems-sweep-result-run result)))
+  (define result-ports
+    (if multiport?
+        (openems-multiport-result-ports result)
+        (list
+         (openems-result-port
+          (openems-sweep-result-port-name result)
+          (openems-sweep-result-reference-impedance result)))))
+  (define excitation-port
+    (if requested-excitation
+        (or (for/first ([port (in-list result-ports)]
+                        #:when
+                        (equal? (format "~a" (openems-result-port-name port))
+                                (format "~a" requested-excitation)))
+              port)
+            (raise-arguments-error
+             'openems-radiation-grid
+             "unknown excitation port"
+             "excitation" requested-excitation
+             "available ports" (map openems-result-port-name result-ports)))
+        (first result-ports)))
+  (define excitation-index
+    (add1 (index-of result-ports excitation-port)))
   (define artifacts (openems-run-info-artifacts run))
   (unless (and (openems-artifacts-available? artifacts)
                (directory-exists? (openems-artifacts-directory artifacts)))
@@ -883,7 +1107,16 @@
   (define frequency
     (cond
       [(not requested-frequency) (hash-ref manifest 'model_frequency_mhz)]
-      [(eq? requested-frequency 'best-match) (best-match-frequency result)]
+      [(eq? requested-frequency 'best-match)
+       (if multiport?
+           (best-match-frequency
+            (openems-sweep-result
+             run
+             (openems-result-port-name excitation-port)
+             (openems-result-port-reference-impedance excitation-port)
+             (hash-ref (openems-multiport-result-input-samples result)
+                       (openems-result-port-name excitation-port))))
+           (best-match-frequency result))]
       [(finite-real? requested-frequency) requested-frequency]
       [else
        (raise-argument-error 'openems-radiation-grid
@@ -901,15 +1134,27 @@
   (define phi-values
     (angular-values 'openems-radiation-grid 360 phi-step #:include-stop? #f))
   (define suffix
-    (regexp-replace* #px"[^0-9A-Za-z]+" (format "~aMHz" frequency) "_"))
+    (regexp-replace*
+     #px"[^0-9A-Za-z]+"
+     (if multiport?
+         (format "~a-~aMHz"
+                 (openems-result-port-name excitation-port) frequency)
+         (format "~aMHz" frequency))
+     "_"))
   (define directory (openems-artifacts-directory artifacts))
+  (define simulation-relative-path
+    (if multiport?
+        (format "simulation/excitation-~a" excitation-index)
+        "simulation"))
+  (define excitation-simulation-directory
+    (build-path directory simulation-relative-path))
   (define stdout-path (build-path directory (format "nf2ff-~a.stdout" suffix)))
   (define stderr-path (build-path directory (format "nf2ff-~a.stderr" suffix)))
   (define result-path
-    (build-path (openems-artifacts-simulation-directory artifacts)
+    (build-path excitation-simulation-directory
                 (format "nf2ff-~a.csv" suffix)))
   (define metadata-path
-    (build-path (openems-artifacts-simulation-directory artifacts)
+    (build-path excitation-simulation-directory
                 (format "nf2ff-~a-metadata.csv" suffix)))
   (define reused?
     (and reuse?
@@ -920,7 +1165,8 @@
         0
         (let ()
           (define driver
-            (write-nf2ff-driver directory (* frequency 1e6)
+            (write-nf2ff-driver directory simulation-relative-path
+                                (* frequency 1e6)
                                 theta-values phi-values suffix))
           (define octave
             (resolve-octave
@@ -951,6 +1197,8 @@
      manifest
      'nf2ff_last_postprocess
      (hash 'frequency_mhz (exact->inexact frequency)
+           'excitation_port
+           (format "~a" (openems-result-port-name excitation-port))
            'theta_step_deg (exact->inexact theta-step)
            'phi_step_deg (exact->inexact phi-step)
            'elapsed_ms elapsed
@@ -983,15 +1231,29 @@
 
 (define (latest-progress-values path)
   (and (file-exists? path)
-       (for/fold ([latest #f]) ([line (in-list (file->lines path))])
-         (define match (regexp-match openems-progress-line-rx line))
-         (if match
-             (list line
-                   (list-ref match 1)
-                   (string->number (list-ref match 2))
-                   (string->number (list-ref match 3))
-                   (string->number (list-ref match 4)))
-             latest))))
+       (let-values
+           ([(latest _excitation)
+             (for/fold ([latest #f] [excitation #f])
+                       ([line (in-list (file->lines path))])
+               (define excitation-match
+                 (regexp-match openems-excitation-line-rx line))
+               (define next-excitation
+                 (if excitation-match
+                     (list (string->number (list-ref excitation-match 1))
+                           (string->number (list-ref excitation-match 2)))
+                     excitation))
+               (define match (regexp-match openems-progress-line-rx line))
+               (values
+                (if match
+                    (list line
+                          (list-ref match 1)
+                          (string->number (list-ref match 2))
+                          (string->number (list-ref match 3))
+                          (string->number (list-ref match 4))
+                          next-excitation)
+                    latest)
+                next-excitation))])
+         latest)))
 
 (define (solver-finished? path)
   (and (file-exists? path)
@@ -1166,11 +1428,14 @@
   (when (and (null? (model-bodies)) (null? (model-sheets)))
     (raise-user-error 'openems-sweep
                       "the physical scene has no volume bodies or sheets"))
-  (unless (= (length (model-ports)) 1)
+  (when (null? (model-ports))
     (raise-user-error
      'openems-sweep
-     "the first OpenEMS milestone requires exactly one explicit lumped port"))
-  (define port (first (model-ports)))
+     "OpenEMS requires at least one explicit or wire-derived lumped port"))
+  (define user-ports (model-ports))
+  ;; One-port models retain automatic convenience alignment. Multiport models
+  ;; deliberately preserve user coordinates and must already be grid-aligned.
+  (define transform (simulation-transform user-ports))
   (define octave (resolve-octave requested-octave))
   (define directory
     (make-temporary-file "antenna-turtle-openems~a" 'directory))
@@ -1184,8 +1449,9 @@
                        manifest-path #t #t))
   (define stdout-path (build-path directory "octave.stdout"))
   (define stderr-path (build-path directory "octave.stderr"))
-  (define transform (port-user->solver-transform port))
   (define inverse-transform (inverse-rigid-transform transform))
+  (define ports
+    (map (lambda (port) (transform-port port transform)) user-ports))
   (define bodies (transform-and-export-bodies directory transform))
   (define sheets (transform-and-export-sheets transform))
   (define geometry (append bodies sheets))
@@ -1210,20 +1476,18 @@
          (* 10 max-resolution)))
   (define domain-min (map (lambda (value) (- value padding)) minimum))
   (define domain-max (map (lambda (value) (+ value padding)) maximum))
-  (define half-gap (/ (lumped-port-gap port) 2))
-  (define half-width (/ (lumped-port-width port) 2))
-  (define half-depth (/ (lumped-port-depth port) 2))
   (define critical-x
-    (critical-axis-values geometry 0 (first domain-min) (first domain-max)
-                          (- half-width) half-width max-resolution))
+    (critical-axis-values geometry ports 0
+                          (first domain-min) (first domain-max) max-resolution))
   (define critical-y
-    (critical-axis-values geometry 1 (second domain-min) (second domain-max)
-                          (- half-depth) half-depth max-resolution))
+    (critical-axis-values geometry ports 1
+                          (second domain-min) (second domain-max) max-resolution))
   (define critical-z
-    (critical-axis-values geometry 2 (third domain-min) (third domain-max)
-                          (- half-gap) half-gap max-resolution))
-  (define port-priority (derive-port-priority geometry port))
-  (write-octave-driver directory bodies sheets port port-priority
+    (critical-axis-values geometry ports 2
+                          (third domain-min) (third domain-max) max-resolution))
+  (define port-priorities
+    (map (lambda (port) (derive-port-priority geometry port)) ports))
+  (write-octave-driver directory bodies sheets ports port-priorities
                        start-mhz stop-mhz steps
                        critical-x critical-y critical-z max-resolution
                        mesh-grading maximum-timesteps end-criteria
@@ -1259,14 +1523,42 @@
                'feed_wire_radius_m
                (or (wire-solid-derivation-radius wire-derivation) 'null))
          'null)
-     'port (hash 'name (format "~a" (lumped-port-name port))
-                 'impedance_ohms (exact->inexact (lumped-port-impedance port))
-                 'gap_m (exact->inexact (lumped-port-gap port))
-                 'width_m (exact->inexact (lumped-port-width port))
-                 'depth_m (exact->inexact (lumped-port-depth port))
-                 'priority port-priority
-                 'priority_source
-                 (if (lumped-port-priority port) "explicit" "automatic"))
+     'port_count (length ports)
+     'ports
+     (for/list ([port (in-list ports)]
+                [priority (in-list port-priorities)]
+                [index (in-naturals 1)])
+       (define-values (port-minimum port-maximum) (port-bounds port))
+       (hash 'index index
+             'name (format "~a" (lumped-port-name port))
+             'impedance_ohms (exact->inexact (lumped-port-impedance port))
+             'gap_m (exact->inexact (lumped-port-gap port))
+             'width_m (exact->inexact (lumped-port-width port))
+             'depth_m (exact->inexact (lumped-port-depth port))
+             'minimum_m (map exact->inexact port-minimum)
+             'maximum_m (map exact->inexact port-maximum)
+             'direction (map exact->inexact
+                             (point->list (lumped-port-direction port)))
+             'priority priority
+             'priority_source
+             (if (lumped-port-priority port) "explicit" "automatic")))
+     ;; Retain the original one-port key for artifact compatibility.
+     'port
+     (if (= (length ports) 1)
+         (first
+          (for/list ([port (in-list ports)]
+                     [priority (in-list port-priorities)])
+            (hash 'name (format "~a" (lumped-port-name port))
+                  'impedance_ohms
+                  (exact->inexact (lumped-port-impedance port))
+                  'gap_m (exact->inexact (lumped-port-gap port))
+                  'width_m (exact->inexact (lumped-port-width port))
+                  'depth_m (exact->inexact (lumped-port-depth port))
+                  'priority priority
+                  'priority_source
+                  (if (lumped-port-priority port)
+                      "explicit" "automatic"))))
+         'null)
      'mesh (hash 'policy "fixed-critical-coordinate-poc"
                  'minimum_dielectric_cells_per_extent
                  minimum-dielectric-cells-per-extent
@@ -1304,14 +1596,31 @@
                  directory stdout-path stderr-path timeout progress))
   (define stdout (file->string stdout-path))
   (define stderr (file->string stderr-path))
+  (define multiport? (> (length ports) 1))
+  (define primary-simulation-directory
+    (if multiport?
+        (build-path simulation-directory "excitation-1")
+        simulation-directory))
   (define mesh-available?
     (and (file-exists? (build-path simulation-directory "mesh-x.csv"))
          (file-exists? (build-path simulation-directory "mesh-y.csv"))
          (file-exists? (build-path simulation-directory "mesh-z.csv"))))
   (define solver-statistics
     (read-openems-statistics
-     (build-path simulation-directory "openEMS_stats.txt")
+     (build-path primary-simulation-directory "openEMS_stats.txt")
      maximum-timesteps))
+  (define excitation-statistics
+    (for/list ([port (in-list ports)] [index (in-naturals 1)])
+      (define excitation-directory
+        (if multiport?
+            (build-path simulation-directory (format "excitation-~a" index))
+            simulation-directory))
+      (hash 'index index
+            'port (format "~a" (lumped-port-name port))
+            'statistics
+            (read-openems-statistics
+             (build-path excitation-directory "openEMS_stats.txt")
+             maximum-timesteps))))
   (define versions
     (read-version-file (build-path simulation-directory "versions.txt")))
   (define mesh-values
@@ -1347,7 +1656,9 @@
      'elapsed_ms elapsed
      'exit_code status
      'software_versions versions
+     'excitation_count (length ports)
      'solver_statistics solver-statistics
+     'excitation_statistics excitation-statistics
      'mesh final-mesh
      'nf2ff final-nf2ff
      'artifacts (artifact-sizes directory)))
@@ -1361,8 +1672,17 @@
              directory)
      (flush-output)
      (define result
-       (openems-sweep-result
-        run (lumped-port-name port) (lumped-port-impedance port) '()))
+       (if multiport?
+           (openems-multiport-result
+            run
+            (map (lambda (port)
+                   (openems-result-port
+                    (lumped-port-name port) (lumped-port-impedance port)))
+                 ports)
+            '() (hash))
+           (openems-sweep-result
+            run (lumped-port-name (first ports))
+            (lumped-port-impedance (first ports)) '())))
      (unless keep? (openems-close! result))
      result]
     [timed-out?
@@ -1380,18 +1700,40 @@
        (current-continuation-marks)
        run))]
     [else
-     (define result-path (build-path simulation-directory "port-results.csv"))
-     (unless (file-exists? result-path)
+     (define s-parameter-path
+       (build-path simulation-directory "s-parameters.csv"))
+     (define input-result-paths
+       (for/list ([index (in-range 1 (add1 (length ports)))])
+         (build-path
+          (if multiport?
+              (build-path simulation-directory (format "excitation-~a" index))
+              simulation-directory)
+          "port-results.csv")))
+     (unless (and (file-exists? s-parameter-path)
+                  (andmap file-exists? input-result-paths))
        (raise
         (exn:fail:openems
-         (format "OpenEMS did not create port results; artifacts retained in ~a"
+         (format "OpenEMS did not create network results; artifacts retained in ~a"
                  directory)
          (current-continuation-marks)
          run)))
      (define result
-       (openems-sweep-result
-        run (lumped-port-name port) (lumped-port-impedance port)
-        (parse-openems-port-results result-path)))
+       (if multiport?
+           (let ([names (map lumped-port-name ports)])
+             (openems-multiport-result
+              run
+              (map (lambda (port)
+                     (openems-result-port
+                      (lumped-port-name port) (lumped-port-impedance port)))
+                   ports)
+              (parse-openems-s-parameter-results s-parameter-path names)
+              (for/hash ([name (in-list names)]
+                         [path (in-list input-result-paths)])
+                (values name (parse-openems-port-results path)))))
+           (openems-sweep-result
+            run (lumped-port-name (first ports))
+            (lumped-port-impedance (first ports))
+            (parse-openems-port-results (first input-result-paths)))))
      (unless keep? (openems-close! result))
      result]))
 
@@ -1400,12 +1742,16 @@
     (cond
       [(openems-sweep-result? value)
        (openems-run-info-artifacts (openems-sweep-result-run value))]
+      [(openems-multiport-result? value)
+       (openems-run-info-artifacts (openems-multiport-result-run value))]
       [(openems-run-info? value) (openems-run-info-artifacts value)]
       [(openems-artifacts? value) value]
       [else
        (raise-argument-error
         'openems-close!
-        "(or/c openems-sweep-result? openems-run-info? openems-artifacts?)"
+        (string-append
+         "(or/c openems-sweep-result? openems-multiport-result? "
+         "openems-run-info? openems-artifacts?)")
         value)]))
   (when (openems-artifacts-available? artifacts)
     (define directory (openems-artifacts-directory artifacts))

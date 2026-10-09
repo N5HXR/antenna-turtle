@@ -16,12 +16,16 @@
  return-loss-sweep-renderers
  impedance-sweep-renderers
  smith-chart-renderers
+ s-parameter-magnitude-renderers
+ s-parameter-phase-renderers
  radiation-cut-renderers
  radiation-grid-renderers
  show-vswr-sweep
  show-return-loss-sweep
  show-impedance-sweep
  show-smith-chart
+ show-s-parameter-magnitude
+ show-s-parameter-phase
  show-radiation-cut
  show-radiation-pattern-3d
  show-radiation-pattern-opengl
@@ -47,12 +51,15 @@
   (cond
     [(network-sweep? result) result]
     [(nec2c-sweep-result? result) (nec2c-sweep->network-sweep result)]
-    [(openems-sweep-result? result)
+    [(or (openems-sweep-result? result)
+         (openems-multiport-result? result))
      (openems-sweep->network-sweep result)]
     [else
      (raise-argument-error
       who
-      "(or/c nec2c-sweep-result? openems-sweep-result? network-sweep?)"
+      (string-append
+       "(or/c nec2c-sweep-result? openems-sweep-result? "
+       "openems-multiport-result? network-sweep?)")
       result)]))
 
 (define (backend-title result)
@@ -633,6 +640,91 @@
             value-name
             (cursor-number (vector-ref point 1))
             value-unit)))
+
+(define (s-parameter-series result part)
+  (unless (openems-multiport-result? result)
+    (raise-argument-error
+     's-parameter-series "openems-multiport-result?" result))
+  (define ports (map openems-result-port-name
+                     (openems-multiport-result-ports result)))
+  (define samples (openems-multiport-result-s-parameters result))
+  (define pairs
+    (for*/list ([input (in-list ports)] [output (in-list ports)])
+      (list input output)))
+  (for/list ([pair (in-list pairs)] [series-index (in-naturals)])
+    (define input (first pair))
+    (define output (second pair))
+    (define matching
+      (filter
+       (lambda (sample)
+         (and (equal? input (openems-s-parameter-sample-input-port sample))
+              (equal? output (openems-s-parameter-sample-output-port sample))))
+       samples))
+    (define output-index (add1 (index-of ports output)))
+    (define input-index (add1 (index-of ports input)))
+    (define label
+      (format "S~a~a (~a <- ~a)"
+              output-index input-index output input))
+    (define values
+      (case part
+        [(magnitude)
+         (map openems-s-parameter-sample-db matching)]
+        [(phase)
+         ;; Unwrap in radians before converting to degrees so ordinary branch
+         ;; crossings do not draw misleading full-height vertical segments.
+         (let loop ([remaining matching] [previous #f] [offset 0] [result '()])
+           (if (null? remaining)
+               (reverse result)
+               (let* ([raw (angle (openems-s-parameter-sample-value
+                                   (first remaining)))]
+                      [adjusted (+ raw offset)]
+                      [new-offset
+                       (cond [(and previous (> (- adjusted previous) pi))
+                              (- offset (* 2 pi))]
+                             [(and previous (< (- adjusted previous) (- pi)))
+                              (+ offset (* 2 pi))]
+                             [else offset])]
+                      [value (+ raw new-offset)])
+                 (loop (rest remaining) value new-offset
+                       (cons (* 180 (/ value pi)) result)))))]))
+    (cursor-series
+     label
+     (for/list ([sample (in-list matching)] [value (in-list values)])
+       (vector (openems-s-parameter-sample-frequency-mhz sample) value))
+     (color-at series-index))))
+
+(define (s-parameter-renderers result part)
+  (for/list ([series (in-list (s-parameter-series result part))])
+    (lines (cursor-series-points series)
+           #:color (cursor-series-color series)
+           #:width 1.5
+           #:label (cursor-series-label series))))
+
+(define (s-parameter-magnitude-renderers result)
+  (s-parameter-renderers result 'magnitude))
+
+(define (s-parameter-phase-renderers result)
+  (s-parameter-renderers result 'phase))
+
+(define (show-s-parameter-magnitude result)
+  (define series (s-parameter-series result 'magnitude))
+  (show-plot
+   (s-parameter-magnitude-renderers result)
+   series
+   (sweep-label-proc "magnitude" " dB")
+   #:title "OpenEMS S-parameter magnitude"
+   #:x-label "frequency (MHz)"
+   #:y-label "S-parameter magnitude (dB)"))
+
+(define (show-s-parameter-phase result)
+  (define series (s-parameter-series result 'phase))
+  (show-plot
+   (s-parameter-phase-renderers result)
+   series
+   (sweep-label-proc "phase" " degrees")
+   #:title "OpenEMS S-parameter phase"
+   #:x-label "frequency (MHz)"
+   #:y-label "unwrapped phase (degrees)"))
 
 (define (show-vswr-sweep result #:max-vswr [max-vswr #f])
   (define normalized (normalize-network-sweep 'show-vswr-sweep result))

@@ -14,7 +14,7 @@ model. The first useful backend must:
 - place geometry using the current turtle pose;
 - represent PEC volumes, lossless dielectric volumes, and zero-thickness
   conducting sheets;
-- run a one-port OpenEMS simulation through Octave;
+- run one- and multiport OpenEMS simulations through Octave;
 - return S11, input impedance, and Smith-chart data;
 - record near fields for three-dimensional radiation postprocessing; and
 - provide a solid viewer before simulation so geometry, ports, and bounds can
@@ -133,8 +133,13 @@ authoritative. An explicit `priority` overrides this inference.
 For a one-port model, the exporter rigidly rotates the complete scene so the
 port direction aligns with a Cartesian Yee-grid axis. The forward and inverse
 transforms are recorded and radiation directions are returned in the user's
-original coordinates. Future multi-port export can accept a set of directions
-only when one rigid transform makes every port grid-aligned.
+original coordinates.
+
+For two or more ports, alignment is explicitly the programmer's
+responsibility. The exporter applies the identity transform and requires every
+port's complete local frame—direction, width, and depth—to align with global
+Cartesian axes. It reports an unaligned port as a model error rather than
+searching for a common rotation or silently snapping it.
 
 ## Materials and overlap
 
@@ -171,12 +176,13 @@ directory. Successful network-only runs may clean up automatically.
 
 The current executable slice is `openems-sweep`. It accepts ordinary Turtle
 wire networks, PEC and lossless dielectric volume bodies, planar
-PEC/conducting sheets, and exactly one derived or explicit lumped port. Wire
+PEC/conducting sheets, and one or more derived or explicit lumped ports. Wire
 edges become one temporary union of Manifold capsules; the marked wire feed is
 cut from that union using the wavelength/radius policy above. It applies the
-port-alignment transform, creates a
-conservative fixed mesh, runs Octave/OpenEMS, and returns frequency-indexed
-complex S11 and input impedance samples. Sheet polygons retain arbitrary
+one-port alignment transform (or validates global alignment for multiple
+ports), creates a conservative fixed mesh, runs OpenEMS once per independently
+excited port, and returns frequency-indexed complex S parameters and active
+input impedance samples. Sheet polygons retain arbitrary
 turtle orientation through CSXCAD primitive transforms. The basic mesh uses
 the shortest wavelength implied by the highest-index dielectric. The generated
 driver prints its timestep ceiling and energy stop criterion before starting;
@@ -190,17 +196,22 @@ the retained `openEMS_stats.txt` records which limit ended the run.
 ```
 
 The runnable references are `examples/openems-dipole.rkt`, the lossless
-substrate/sheet model `examples/openems-patch.rkt`, and the shared-wire
-NEC2C/OpenEMS comparison `examples/openems-wire-yagi.rkt`. OpenEMS results feed
+substrate/sheet model `examples/openems-patch.rkt`, the two-port diagnostic
+`examples/openems-two-port-microstrip.rkt`, the distributed-filter showcase
+`examples/openems-interdigital-bandpass.rkt`, and the shared-wire NEC2C/OpenEMS
+comparison `examples/openems-wire-yagi.rkt`. OpenEMS results feed
 the existing VSWR, return-loss, impedance, and Smith-chart viewers through a
 solver-neutral network representation shared with NEC2C. The driver now also
 records a broadband time-domain NF2FF box, and `openems-radiation-grid`
 postprocesses it into the existing 3-D viewers without rerunning FDTD.
 Adaptive, topology-aware mesh simplification remains a later milestone.
 
-Although the proof of concept excites one port, result structures are designed
-for a frequency-indexed complex S-matrix. A complete N-port matrix eventually
-requires one simulation per independently excited port.
+Multiport execution creates one simulation subdirectory per excitation. All
+other ports remain present, unexcited, and terminated at their reference
+impedances. The initial implementation requires a common reference impedance;
+mixed-impedance power-wave normalization is deferred. Independent excitations
+also retain separate NF2FF recordings, selected by port name during radiation
+postprocessing.
 
 Solver-neutral network results feed the existing return-loss, impedance, and
 Smith-chart renderers. For one port:
@@ -300,6 +311,6 @@ traces, but these operations are not part of the proof of concept:
 - loft between multiple traces; and
 - decide whether any of those operations also emit useful NEC centerlines.
 
-Other deferred extensions are multi-port S-matrices, planar/distributed,
-microstrip, coplanar, coaxial, and waveguide ports, ferrite and dispersive
+Other deferred extensions are planar/distributed, microstrip, coplanar,
+coaxial, and waveguide ports, ferrite and dispersive
 materials, solid-based MATLAB export, and topology-aware mesh simplification.

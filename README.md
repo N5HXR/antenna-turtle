@@ -13,8 +13,8 @@ MATLAB exports include a directly runnable far-field directivity stub.
 
 The experimental OpenEMS branch also supports ordinary Turtle wires converted
 to physical Manifold capsule unions, Manifold PEC and lossless dielectric
-volume bodies, planar PEC/conducting sheets, one-port lumped feeds,
-Octave/OpenEMS S11 sweeps, a solid-model preflight viewer, and the same
+volume bodies, planar PEC/conducting sheets, one- and multiport lumped feeds,
+Octave/OpenEMS S-parameter sweeps, a solid-model preflight viewer, and the same
 return-loss, impedance, and Smith-chart windows used for NEC2C data. Broadband
 NF2FF recording also feeds the existing 3-D radiation-pattern viewers at the
 model, best-match, or another swept frequency. See
@@ -23,6 +23,10 @@ the volume-body [`examples/openems-dipole.rkt`](examples/openems-dipole.rkt)
 and dielectric/sheet [`examples/openems-patch.rkt`](examples/openems-patch.rkt)
 references. [`examples/openems-wire-yagi.rkt`](examples/openems-wire-yagi.rkt)
 builds one ordinary wire Yagi and compares its NEC2C and OpenEMS patterns.
+For multiport work, [`examples/openems-two-port-microstrip.rkt`](examples/openems-two-port-microstrip.rkt)
+is a compact diagnostic and
+[`examples/openems-interdigital-bandpass.rkt`](examples/openems-interdigital-bandpass.rkt)
+models a three-resonator distributed filter.
 
 ![Rendered yagi signal pattern comparison window](docs/comparison-photo.png)
 

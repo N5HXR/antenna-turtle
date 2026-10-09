@@ -28,6 +28,49 @@
                     -13.0102999566398))
     (lambda () (when (file-exists? path) (delete-file path)))))
 
+(test-case "OpenEMS parses and plots a complete two-port S matrix"
+  (define path (make-temporary-file "antenna-turtle-openems-sparams~a.csv"))
+  (dynamic-wind
+    (lambda ()
+      (call-with-output-file path
+        #:exists 'truncate/replace
+        (lambda (out)
+          (displayln "900000000,1,1,0.1,0,-20" out)
+          (displayln "900000000,2,1,0.8,-0.1,-1.8708664336" out)
+          (displayln "900000000,1,2,0.79,-0.09,-2.006" out)
+          (displayln "900000000,2,2,0.12,0.01,-18.387" out))))
+    (lambda ()
+      (define samples
+        (parse-openems-s-parameter-results path '(input output)))
+      (check-equal? (length samples) 4)
+      (check-equal? (openems-s-parameter-sample-output-port (second samples))
+                    'output)
+      (check-equal? (openems-s-parameter-sample-input-port (second samples))
+                    'input)
+      (define run (openems-run-info #f 0 0 "" "" #f (hash)))
+      (define result
+        (openems-multiport-result
+         run
+         (list (openems-result-port 'input 50)
+               (openems-result-port 'output 50))
+         samples
+         (hash
+          'input (list (openems-port-sample 900 0.1 61.111  -20))
+          'output (list (openems-port-sample 900 0.12+0.01i 63.5 -18.387)))))
+      (check-equal? (length (s-parameter-magnitude-renderers result)) 4)
+      (check-equal? (length (s-parameter-phase-renderers result)) 4)
+      (check-equal?
+       (length (network-sweep-samples (openems-sweep->network-sweep result)))
+       2)
+      (define mixed-reference-result
+        (struct-copy openems-multiport-result result
+          [ports (list (openems-result-port 'input 50)
+                       (openems-result-port 'output 75))]))
+      (check-exn #rx"require every port to use the same reference impedance"
+                 (lambda ()
+                   (openems-sweep->network-sweep mixed-reference-result))))
+    (lambda () (when (file-exists? path) (delete-file path)))))
+
 (test-case "OpenEMS NF2FF parsing restores user coordinates and field gain"
   (define path (make-temporary-file "antenna-turtle-openems-nf2ff~a.csv"))
   (dynamic-wind
@@ -215,6 +258,100 @@
   (openems-close! artifacts)
   (delete-file mock-octave)
   (m:solid-close! substrate)
+  (clear-bodies))
+
+(test-case "OpenEMS multiport export preserves coordinates and excites each port"
+  (reset-model!)
+  (model frequency 915 impedance 50)
+  (define block (m:cube 0.1 0.02 0.002 #:center? #t))
+  (body substrate geometry block
+        material (dielectric #:relative-permittivity 2.2)
+        priority 10)
+  (port up name 'input gap 0.002 width 0.002 depth 0.002 priority 15)
+  (move forward 0.04)
+  (port up name 'output gap 0.002 width 0.002 depth 0.002 priority 15)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out)
+      (displayln "#!/bin/sh" out)
+      (displayln "mkdir -p simulation/excitation-1 simulation/excitation-2" out)
+      (displayln "printf '900000000,0.1,0,55,0,-20\\n' > simulation/excitation-1/port-results.csv" out)
+      (displayln "printf '900000000,0.2,0,60,0,-13.9794\\n' > simulation/excitation-2/port-results.csv" out)
+      (displayln "printf '900000000,1,1,0.1,0,-20\\n900000000,2,1,0.8,0,-1.9382\\n900000000,1,2,0.79,0,-2.0475\\n900000000,2,2,0.2,0,-13.9794\\n' > simulation/s-parameters.csv" out)
+      (displayln "printf '0,0,1,0,0,0\\n180,0,1,0,0,0\\n' > simulation/excitation-2/nf2ff-output_915_0MHz.csv" out)
+      (displayln "printf '915000000,2,0.5\\n' > simulation/excitation-2/nf2ff-output_915_0MHz-metadata.csv" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define result
+    (openems-sweep 850 950 #:octave mock-octave #:progress? #f))
+  (check-true (openems-multiport-result? result))
+  (check-equal? (length (openems-multiport-result-s-parameters result)) 4)
+  (define run (openems-multiport-result-run result))
+  (define manifest (openems-run-info-manifest run))
+  (check-equal? (hash-ref manifest 'port_count) 2)
+  (check-equal? (hash-ref manifest 'user_to_solver_transform)
+                '((1.0 0.0 0.0 0.0)
+                  (0.0 1.0 0.0 0.0)
+                  (0.0 0.0 1.0 0.0)))
+  (define driver
+    (file->string
+     (openems-artifacts-driver-path (openems-run-info-artifacts run))))
+  (check-equal? (length (regexp-match* #rx"RunOpenEMS" driver)) 2)
+  (check-regexp-match #rx"excitation 1 of 2" driver)
+  (check-regexp-match #rx"excitation 2 of 2" driver)
+  (check-regexp-match #rx"port[{]1[}].*true" driver)
+  (check-regexp-match #rx"port[{]2[}].*true" driver)
+  (check-regexp-match #rx"simulation/s-parameters.csv" driver)
+  (define output-pattern
+    (openems-radiation-grid result
+                            #:excitation 'output
+                            #:theta-step 180
+                            #:phi-step 360))
+  (check-equal? (length (nec2c-pattern-grid-samples output-pattern)) 2)
+  (define loaded
+    (openems-load-artifacts
+     (openems-artifacts-directory (openems-run-info-artifacts run))))
+  (check-true (openems-multiport-result? loaded))
+  (check-equal? (length (openems-multiport-result-s-parameters loaded)) 4)
+  (openems-close! loaded)
+  (openems-close! result)
+  (delete-file mock-octave)
+  (m:solid-close! block)
+  (clear-bodies))
+
+(test-case "OpenEMS rejects a rotated frame in a multiport model"
+  (reset-model!)
+  (model frequency 915)
+  (define block (m:cube 0.1 0.02 0.002 #:center? #t))
+  (body substrate geometry block)
+  (port up name 'aligned)
+  (turn left 17)
+  (port up name 'rotated)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (check-exn #rx"rotated.*global X/Y/Z axes"
+             (lambda ()
+               (openems-sweep 850 950
+                              #:octave mock-octave #:progress? #f)))
+  (delete-file mock-octave)
+  (m:solid-close! block)
+  (clear-bodies))
+
+(test-case "OpenEMS rejects mixed multiport reference impedances"
+  (reset-model!)
+  (model frequency 915)
+  (define block (m:cube 0.1 0.02 0.002 #:center? #t))
+  (body substrate geometry block)
+  (port up name 'input impedance 50)
+  (move forward 0.04)
+  (port up name 'output impedance 75)
+  ;; Validation happens before Octave is resolved or artifacts are created.
+  (check-exn #rx"requires every port to use the same reference impedance"
+             (lambda () (openems-sweep 850 950 #:progress? #f)))
+  (m:solid-close! block)
   (clear-bodies))
 
 (test-case "OpenEMS derives ordinary turtle wires as a gapped capsule body"

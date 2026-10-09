@@ -2,6 +2,7 @@
 
 (require racket/class
          racket/format
+         racket/list
          racket/gui/base)
 
 (provide make-openems-progress-window)
@@ -124,12 +125,21 @@
   (hash
    'cancel-evt (semaphore-peek-evt cancel-requested)
    'update
-   (lambda (solver-elapsed current-timestep rate energy-db)
+   (lambda (solver-elapsed current-timestep rate energy-db excitation)
      (enqueue
       (lambda ()
-        (send phase set-label "Running FDTD simulation")
+        (define excitation-index (if excitation (first excitation) 1))
+        (define excitation-count (if excitation (second excitation) 1))
+        (send phase set-label
+              (if (> excitation-count 1)
+                  (format "Running FDTD excitation ~a of ~a"
+                          excitation-index excitation-count)
+                  "Running FDTD simulation"))
         (define fraction
-          (min 1.0 (/ current-timestep maximum-timesteps)))
+          (min 1.0
+               (/ (+ (sub1 excitation-index)
+                     (/ current-timestep maximum-timesteps))
+                  excitation-count)))
         (send gauge set-value (inexact->exact (round (* 1000 fraction))))
         (send timestep-label set-label
               (format "~a / ~a timesteps (~a%)"

@@ -860,9 +860,10 @@ are recorded in the simulation manifest.
 
 The current executable slice supports ordinary Turtle wires, PEC and
 nondispersive lossless dielectric volume bodies, planar PEC/conducting sheets,
-and exactly one derived or explicit lumped port. It returns an
-`openems-sweep-result` containing complex S11 and input impedance at every
-requested frequency. Unlike materials that
+and one or more derived or explicit lumped ports. One-port runs return an
+`openems-sweep-result`; multiport runs return an `openems-multiport-result`
+containing the complete complex S-matrix and active input impedance for every
+excitation and requested frequency. Materials that
 overlap or touch through a sheet interface require distinct explicit CSXCAD
 priorities. The mesh wavelength is reduced by the largest dielectric
 `sqrt(epsilon-r * mu-r)` in the scene.
@@ -889,8 +890,16 @@ PEC body without changing the live centerline graph. A marked wire feed becomes
 a physical gap and lumped port. Its default gap is
 `max(wavelength/1000, wire-radius)`; a warning is printed when that gap exceeds
 the marked edge's length. `#:wire-segments` controls capsule circular
-tessellation and must be at least three. Because the backend is currently
-one-port, a model must contain exactly one wire-derived or explicit port.
+tessellation and must be at least three.
+
+With exactly one port, the backend rigidly rotates and translates the model
+into the port's local Cartesian frame. With two or more ports, it performs no
+automatic rotation: every port's direction, width, and depth axes must already
+align with global X, Y, and Z. An unaligned multiport frame is an error naming
+the offending port. The initial implementation also requires a common
+reference impedance so voltage-wave ratios are unambiguous. Each port is
+excited in an independent FDTD run while all other ports remain present,
+unexcited, and terminated in that reference impedance.
 
 The mesh settings are deliberately explicit numerical controls, not promises
 of cross-backend equivalence. The generated Octave driver reports exact mesh
@@ -898,8 +907,10 @@ dimensions and cell count before starting OpenEMS. The default `#:timeout #f`
 allows long simulations to finish and remains interruptible with Ctrl-C.
 By default a non-modal progress window follows the timestep, solver speed, and
 residual-energy reports written to `octave.stdout`. Its **Cancel simulation**
-button terminates the complete Octave/OpenEMS process group. A cancelled call
-returns an `openems-sweep-result` with an empty sample list and records
+button terminates the complete Octave/OpenEMS process group, including all
+remaining excitations. Multiport progress reports the current excitation and
+aggregate completion. A cancelled call returns the corresponding result type
+with empty samples and records
 `"cancelled"` in the manifest status; retained artifacts remain available for
 diagnosis. Closing the window merely hides it and does not cancel OpenEMS. Use
 `#:progress? #f` for batch runs or when terminal-only output is preferred. If
@@ -921,14 +932,17 @@ PML cells and the NF2FF surface outside all conductors, the backend enlarges a
 requested domain padding when necessary; the effective padding is recorded in
 the manifest.
 
-OpenEMS sweep results can be passed directly to `show-vswr-sweep`,
+OpenEMS one- and multiport results can be passed directly to `show-vswr-sweep`,
 `show-return-loss-sweep`, `show-impedance-sweep`, and `show-smith-chart`.
+Multiport use shows each diagonal reflection/input-impedance term.
+`show-s-parameter-magnitude` and `show-s-parameter-phase` display the complete
+matrix.
 
 ### `(openems-load-artifacts directory)`
 
-Reconstructs an `openems-sweep-result` from a retained OpenEMS artifact
-directory. It reads `simulation-manifest.rktd` and
-`simulation/port-results.csv`; it does not run OpenEMS or Octave.
+Reconstructs an `openems-sweep-result` or `openems-multiport-result` from a
+retained OpenEMS artifact directory. It reads the reproducibility manifest and
+saved network CSV files; it does not run OpenEMS or Octave.
 
 ```racket
 (define recovered
@@ -952,15 +966,16 @@ never deleted by `openems-close!`.
 
 ### `(openems-radiation-grid result keyword-arguments ...)`
 
-Transforms the retained near fields from an `openems-sweep-result` into the
-same three-dimensional pattern grid consumed by the existing radiation
-viewers:
+Transforms the retained near fields from an `openems-sweep-result` or
+`openems-multiport-result` into the same three-dimensional pattern grid
+consumed by the existing radiation viewers:
 
 ```racket
 (define pattern
   (openems-radiation-grid
    result
    #:frequency #f       ; model frequency; or MHz or 'best-match
+   #:excitation #f      ; first port, or a port name for multiport data
    #:theta-step 2
    #:phi-step 2
    #:octave #f
@@ -982,6 +997,15 @@ port-aligned solver frame into the user's original Turtle coordinate system.
 The grid metadata records maximum directivity and radiated power. For this PEC
 proof of concept the viewer's dBi scale is directivity; efficiency and realized
 gain are not yet reported.
+
+### `(show-s-parameter-magnitude result)`
+
+### `(show-s-parameter-phase result)`
+
+Display every term of an `openems-multiport-result`. Labels include both the
+conventional matrix index and named direction, such as
+`S21 (output <- input)`. Phase is unwrapped independently for each term. Both
+views retain left-drag zoom and right-drag sample inspection.
 
 ## 14. Export Functions
 

@@ -14,7 +14,7 @@
 (define substrate-height 0.0016)
 (define patch-width (* factor 0.099))
 (define patch-length (* factor 0.077))
-(define feed-offset-y -0.022)
+(define feed-offset-y -0.013)
 (define feed-size 0.002)
 
 (define substrate-material
@@ -79,4 +79,4 @@
 (show-smith-chart result)
 
 (define pattern (openems-radiation-grid result))
-(show-radiation-pattern-opengl pattern #:palette 'inferno)
+(show-radiation-pattern-opengl pattern #:palette 'electric)
