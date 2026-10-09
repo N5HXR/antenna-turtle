@@ -13,6 +13,7 @@
          racket/system
          (prefix-in m: manifold)
          "core.rkt"
+         "network.rkt"
          "solid-core.rkt")
 
 (provide
@@ -23,6 +24,7 @@
  (struct-out openems-sweep-result)
  (struct-out exn:fail:openems)
  openems-sweep
+ openems-sweep->network-sweep
  openems-close!
  parse-openems-port-results)
 
@@ -59,8 +61,8 @@
      value)))
 
 (define speed-of-light 299792458.0)
-(define maximum-timesteps 100000)
-(define end-criteria 1e-5)
+(define default-maximum-timesteps 100000)
+(define default-end-criteria 1e-5)
 
 (define (finite-real? value)
   (and (real? value) (rational? value)))
@@ -231,7 +233,8 @@
      (apply max (axis-values bodies exported-body-maximum axis)))))
 
 (define (write-octave-driver directory bodies port start-mhz stop-mhz steps
-                             critical-x critical-y critical-z max-resolution)
+                             critical-x critical-y critical-z max-resolution
+                             mesh-grading maximum-timesteps end-criteria)
   (define path (build-path directory "run-openems.m"))
   (define simulation-name "simulation")
   (call-with-output-file path
@@ -257,12 +260,18 @@
       (line "FDTD = SetGaussExcite(FDTD, f0, fc);")
       (line "FDTD = SetBoundaryCond(FDTD, {'PML_8' 'PML_8' 'PML_8' 'PML_8' 'PML_8' 'PML_8'});")
       (line "CSX = InitCSX();")
-      (line "mesh.x = SmoothMeshLines(~a, ~a, 1.4);"
-            (octave-vector critical-x) (number-string max-resolution))
-      (line "mesh.y = SmoothMeshLines(~a, ~a, 1.4);"
-            (octave-vector critical-y) (number-string max-resolution))
-      (line "mesh.z = SmoothMeshLines(~a, ~a, 1.4);"
-            (octave-vector critical-z) (number-string max-resolution))
+      (line "mesh.x = SmoothMeshLines(~a, ~a, ~a);"
+            (octave-vector critical-x) (number-string max-resolution)
+            (number-string mesh-grading))
+      (line "mesh.y = SmoothMeshLines(~a, ~a, ~a);"
+            (octave-vector critical-y) (number-string max-resolution)
+            (number-string mesh-grading))
+      (line "mesh.z = SmoothMeshLines(~a, ~a, ~a);"
+            (octave-vector critical-z) (number-string max-resolution)
+            (number-string mesh-grading))
+      (line "mesh_cells = (numel(mesh.x)-1) * (numel(mesh.y)-1) * (numel(mesh.z)-1);")
+      (line "fprintf('Antenna Turtle mesh: %d x %d x %d lines; %d cells; max resolution %.6g m\\n', numel(mesh.x), numel(mesh.y), numel(mesh.z), mesh_cells, ~a);"
+            (number-string max-resolution))
       (line "CSX = DefineRectGrid(CSX, unit, mesh);")
       (line "Sim_Path = '~a';" simulation-name)
       (line "Sim_XML = 'model.xml';")
@@ -318,7 +327,7 @@
         (values (string->symbol key) value))
       (hash)))
 
-(define (read-openems-statistics path)
+(define (read-openems-statistics path maximum-timesteps)
   (define values
     (and (file-exists? path)
          (for/list ([line (in-list (file->lines path))])
@@ -356,6 +365,27 @@
      (make-rectangular s11-real s11-imaginary)
      (make-rectangular impedance-real impedance-imaginary)
      s11-db)))
+
+;; Keep the solver's detailed result available while presenting the plotting
+;; layer with a backend-independent one-port network sweep.
+(define (openems-sweep->network-sweep result)
+  (unless (openems-sweep-result? result)
+    (raise-argument-error
+     'openems-sweep->network-sweep "openems-sweep-result?" result))
+  (define name (format "~a" (openems-sweep-result-port-name result)))
+  (define reference (openems-sweep-result-reference-impedance result))
+  (define (convert sample)
+    (define gamma (openems-port-sample-reflection-coefficient sample))
+    (network-sample
+     name
+     (openems-port-sample-frequency-mhz sample)
+     gamma
+     (openems-port-sample-impedance sample)
+     (openems-port-sample-s11-db sample)
+     (reflection-magnitude->vswr (magnitude gamma))))
+  (network-sweep
+   'openems (openems-sweep-result-run result) reference
+   (map convert (openems-sweep-result-samples result))))
 
 (define (run-command executable arguments directory stdout-path stderr-path timeout)
   (define started (current-inexact-milliseconds))
@@ -409,6 +439,12 @@
 
 (define (openems-sweep start-mhz stop-mhz
                        #:steps [steps 101]
+                       #:cells-per-wavelength [cells-per-wavelength 20]
+                       #:mesh-grading [mesh-grading 1.4]
+                       #:padding-wavelengths [padding-wavelengths 0.5]
+                       #:max-timesteps [maximum-timesteps
+                                        default-maximum-timesteps]
+                       #:end-criteria [end-criteria default-end-criteria]
                        #:octave [requested-octave #f]
                        #:keep-artifacts? [keep? #t]
                        #:timeout [timeout #f])
@@ -420,6 +456,14 @@
                            "start" start-mhz "stop" stop-mhz))
   (unless (and (exact-integer? steps) (>= steps 2))
     (raise-argument-error 'openems-sweep "exact integer >= 2" steps))
+  (positive-real 'openems-sweep cells-per-wavelength "cells per wavelength")
+  (unless (and (finite-real? mesh-grading) (> mesh-grading 1))
+    (raise-argument-error 'openems-sweep "real > 1" mesh-grading))
+  (positive-real 'openems-sweep padding-wavelengths "padding wavelengths")
+  (unless (exact-positive-integer? maximum-timesteps)
+    (raise-argument-error 'openems-sweep "exact-positive-integer?" maximum-timesteps))
+  (unless (and (finite-real? end-criteria) (> end-criteria 0) (< end-criteria 1))
+    (raise-argument-error 'openems-sweep "real strictly between 0 and 1" end-criteria))
   (unless (boolean? keep?)
     (raise-argument-error 'openems-sweep "boolean?" keep?))
   (unless (or (not timeout) (and (finite-real? timeout) (> timeout 0)))
@@ -457,7 +501,7 @@
   (define bodies (transform-and-export-bodies directory transform))
   (define-values (minimum maximum) (scene-bounds bodies))
   (define wavelength-min (/ speed-of-light (* stop-mhz 1e6)))
-  (define padding (/ wavelength-min 2))
+  (define padding (* wavelength-min padding-wavelengths))
   (define domain-min (map (lambda (value) (- value padding)) minimum))
   (define domain-max (map (lambda (value) (+ value padding)) maximum))
   (define half-gap (/ (lumped-port-gap port) 2))
@@ -472,9 +516,10 @@
   (define critical-z
     (critical-axis-values bodies 2 (third domain-min) (third domain-max)
                           (- half-gap) half-gap))
-  (define max-resolution (/ wavelength-min 20))
+  (define max-resolution (/ wavelength-min cells-per-wavelength))
   (write-octave-driver directory bodies port start-mhz stop-mhz steps
-                       critical-x critical-y critical-z max-resolution)
+                       critical-x critical-y critical-z max-resolution
+                       mesh-grading maximum-timesteps end-criteria)
   (define initial-manifest
     (hash
      'format_version 1
@@ -501,7 +546,9 @@
                  'critical_y (map exact->inexact critical-y)
                  'critical_z (map exact->inexact critical-z)
                  'maximum_resolution_m max-resolution
-                 'grading 1.4
+                 'cells_per_wavelength (exact->inexact cells-per-wavelength)
+                 'padding_wavelengths (exact->inexact padding-wavelengths)
+                 'grading (exact->inexact mesh-grading)
                  'boundary_conditions (make-list 6 "PML_8"))
      'solver (hash 'octave_executable (path->string octave)
                    'driver "run-openems.m"
@@ -521,7 +568,8 @@
          (file-exists? (build-path simulation-directory "mesh-z.csv"))))
   (define solver-statistics
     (read-openems-statistics
-     (build-path simulation-directory "openEMS_stats.txt")))
+     (build-path simulation-directory "openEMS_stats.txt")
+     maximum-timesteps))
   (define versions
     (read-version-file (build-path simulation-directory "versions.txt")))
   (define final-manifest

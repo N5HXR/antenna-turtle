@@ -8,7 +8,8 @@
          racket/string
          "core.rkt"
          "export-common.rkt"
-         "export-nec2c.rkt")
+         "export-nec2c.rkt"
+         "network.rkt")
 
 (provide
  nec2c-executable
@@ -29,6 +30,7 @@
  parse-nec2c-output
  nec2c-measure-impedance
  nec2c-vswr-sweep
+ nec2c-sweep->network-sweep
  nec2c-azimuth-pattern
  nec2c-elevation-pattern
  nec2c-radiation-grid)
@@ -81,6 +83,27 @@
 (struct parsed-nec2c-report (feeds patterns) #:transparent)
 
 (struct exn:fail:nec2c exn:fail (run-info) #:transparent)
+
+(define (nec2c-sweep->network-sweep result)
+  (unless (nec2c-sweep-result? result)
+    (raise-argument-error
+     'nec2c-sweep->network-sweep "nec2c-sweep-result?" result))
+  (network-sweep
+   'nec2c
+   (nec2c-sweep-result-run result)
+   (nec2c-sweep-result-reference-impedance result)
+   (for*/list ([frequency
+                (in-list (nec2c-sweep-result-frequencies result))]
+               [sample
+                (in-list (nec2c-sweep-frequency-feed-samples frequency))])
+     (define feedpoint (nec2c-sweep-sample-feedpoint sample))
+     (network-sample
+      (nec2c-feedpoint-sample-feed-name feedpoint)
+      (nec2c-feedpoint-sample-frequency-mhz feedpoint)
+      (nec2c-sweep-sample-reflection-coefficient sample)
+      (nec2c-feedpoint-sample-impedance feedpoint)
+      (- (nec2c-sweep-sample-return-loss-db sample))
+      (nec2c-sweep-sample-vswr sample)))))
 
 (define nec2c-executable
   (make-parameter

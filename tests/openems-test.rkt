@@ -2,7 +2,9 @@
 
 (require rackunit
          racket/file
-         "../antenna-turtle/main.rkt")
+         "../antenna-turtle/main.rkt"
+         "../antenna-turtle/private/network.rkt"
+         "../antenna-turtle/private/nec2c-view.rkt")
 
 (test-case "OpenEMS port CSV parsing retains complex network values"
   (define path (make-temporary-file "antenna-turtle-openems-results~a.csv"))
@@ -27,6 +29,15 @@
 
 (test-case "OpenEMS rejects incomplete proof-of-concept scenes before launch"
   (reset-model!)
+  (check-exn exn:fail:contract?
+             (lambda ()
+               (openems-sweep 800 1000 #:cells-per-wavelength 0)))
+  (check-exn exn:fail:contract?
+             (lambda ()
+               (openems-sweep 800 1000 #:mesh-grading 1)))
+  (check-exn exn:fail:contract?
+             (lambda ()
+               (openems-sweep 800 1000 #:end-criteria 1)))
   (check-exn #rx"no volume bodies"
              (lambda () (openems-sweep 800 1000)))
 
@@ -48,3 +59,22 @@
   (check-false (directory-exists? directory))
   (check-false (openems-artifacts-available? artifacts))
   (check-not-exn (lambda () (openems-close! artifacts))))
+
+(test-case "OpenEMS sweeps feed the existing network plot layer"
+  (define run
+    (openems-run-info #f 1 0 "" "" #f (hash)))
+  (define result
+    (openems-sweep-result
+     run "feed" 50
+     (list
+      (openems-port-sample 900 0.1-0.2i 45+3.5i
+                           (* 20 (log (magnitude 0.1-0.2i) 10)))
+      (openems-port-sample 910 0.05 50
+                           (* 20 (log 0.05 10))))))
+  (define normalized (openems-sweep->network-sweep result))
+  (check-equal? (network-sweep-reference-impedance normalized) 50)
+  (check-equal? (length (network-sweep-samples normalized)) 2)
+  (check-not-false (pair? (vswr-sweep-renderers result)))
+  (check-not-false (pair? (return-loss-sweep-renderers result)))
+  (check-not-false (pair? (impedance-sweep-renderers result)))
+  (check-not-false (pair? (smith-chart-renderers result))))

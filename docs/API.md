@@ -797,7 +797,72 @@ The command-line equivalent is:
 raco antenna-turtle build model.rkt --view
 ```
 
-## 13. Export Functions
+### `(show-solid-model [#:width 900] [#:height 700] [#:aspect-ratio 1])`
+
+Opens the registered Manifold volume bodies in a proportion-preserving Plot3D
+window. PEC and dielectric bodies receive distinct materials. Explicit lumped
+ports appear as red boxes with an arrow indicating voltage polarity. This is a
+geometry preflight viewer; the OpenEMS-generated `model.xml` remains the
+authoritative view of the final Yee mesh and CSXCAD properties.
+
+## 13. Physical Solid Scene and OpenEMS
+
+Import Manifold with a prefix, then register solids and an explicit port:
+
+```racket
+(require (prefix-in m: manifold))
+
+(body radiator
+  material pec
+  geometry shape
+  priority 20)
+
+(port up
+  name "feed"
+  impedance 50
+  gap {0.5 * millimeter}
+  width {0.5 * millimeter}
+  depth {0.5 * millimeter})
+```
+
+Bodies use the current turtle frame unless `coordinates world` is supplied.
+The scene owns a transformed copy; the caller remains responsible for closing
+the original Manifold handle. `clear-bodies` closes and clears registered
+bodies, sheets, and their subordinate ports.
+
+### `(openems-sweep start-mhz stop-mhz keyword-arguments ...)`
+
+The current executable slice supports PEC volume bodies and exactly one
+explicit lumped port. It returns an `openems-sweep-result` containing complex
+S11 and input impedance at every requested frequency.
+
+```racket
+(openems-sweep
+ 800 1050
+ #:steps 101
+ #:cells-per-wavelength 20
+ #:mesh-grading 1.4
+ #:padding-wavelengths 0.5
+ #:max-timesteps 100000
+ #:end-criteria 1e-5
+ #:octave #f
+ #:keep-artifacts? #t
+ #:timeout #f)
+```
+
+The mesh settings are deliberately explicit numerical controls, not promises
+of cross-backend equivalence. The generated Octave driver reports exact mesh
+dimensions and cell count before starting OpenEMS. The default `#:timeout #f`
+allows long simulations to finish and remains interruptible with Ctrl-C.
+
+Successful and failed runs carry an artifact directory containing STL bodies,
+the Octave driver, CSXCAD XML, mesh lines, raw probes, logs, results, and a
+reproducibility manifest. Call `openems-close!` to release retained artifacts.
+
+OpenEMS sweep results can be passed directly to `show-vswr-sweep`,
+`show-return-loss-sweep`, `show-impedance-sweep`, and `show-smith-chart`.
+
+## 14. Export Functions
 
 Each exporter validates pending-feed state and returns its output path. NEC2C
 and MATLAB exports replace the requested file. MMANA has the update behavior
@@ -856,7 +921,7 @@ Current loft restrictions:
 - no 180-degree path reversal;
 - enough adjacent length to construct every bevel setback.
 
-## 14. NEC2C Measurement and Plotting
+## 15. NEC2C Measurement and Plotting
 
 The measurement functions execute NEC2C as a subprocess and return transparent
 data structures. They never print results or open windows implicitly. A caller
@@ -976,7 +1041,8 @@ sentinel is represented by `#f`.
 
 ### Plotting
 
-These operations explicitly open Racket Plot windows:
+These operations explicitly open Racket Plot windows. The four network plots
+accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
 
 ```racket
 (show-vswr-sweep sweep [#:max-vswr #f])

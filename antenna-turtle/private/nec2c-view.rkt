@@ -7,7 +7,9 @@
          "plot-cursor.rkt"
          "radiation-case.rkt"
          "visualization-handle.rkt"
-         "nec2c.rkt")
+         "nec2c.rkt"
+         "network.rkt"
+         "openems.rkt")
 
 (provide
  vswr-sweep-renderers
@@ -41,27 +43,37 @@
 (define (color-at index)
   (list-ref colors (modulo index (length colors))))
 
+(define (normalize-network-sweep who result)
+  (cond
+    [(network-sweep? result) result]
+    [(nec2c-sweep-result? result) (nec2c-sweep->network-sweep result)]
+    [(openems-sweep-result? result)
+     (openems-sweep->network-sweep result)]
+    [else
+     (raise-argument-error
+      who
+      "(or/c nec2c-sweep-result? openems-sweep-result? network-sweep?)"
+      result)]))
+
+(define (backend-title result)
+  (case (network-sweep-backend result)
+    [(openems) "OpenEMS"]
+    [(nec2c) "NEC2C"]
+    [else (format "~a" (network-sweep-backend result))]))
+
 (define (sweep-feed-names result)
   (remove-duplicates
-   (for*/list ([frequency (in-list (nec2c-sweep-result-frequencies result))]
-               [sample (in-list (nec2c-sweep-frequency-feed-samples frequency))])
-     (nec2c-feedpoint-sample-feed-name
-      (nec2c-sweep-sample-feedpoint sample)))))
+   (map network-sample-port-name (network-sweep-samples result))))
 
 (define (samples-for-feed result name)
-  (for*/list ([frequency (in-list (nec2c-sweep-result-frequencies result))]
-              [sample (in-list (nec2c-sweep-frequency-feed-samples frequency))]
-              #:when (string=?
-                      name
-                      (nec2c-feedpoint-sample-feed-name
-                       (nec2c-sweep-sample-feedpoint sample))))
+  (for/list ([sample (in-list (network-sweep-samples result))]
+             #:when (string=? name (network-sample-port-name sample)))
     sample))
 
 (define (vswr-points result name max-vswr)
   (for/list ([sample (in-list (samples-for-feed result name))])
-    (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-    (define vswr (nec2c-sweep-sample-vswr sample))
-    (vector (nec2c-feedpoint-sample-frequency-mhz feedpoint)
+    (define vswr (network-sample-vswr sample))
+    (vector (network-sample-frequency-mhz sample)
             (cond [max-vswr (min max-vswr vswr)]
                   ;; Plot treats a NaN point as a break in the line. An
                   ;; infinite VSWR therefore remains present in the data
@@ -77,14 +89,13 @@
                    (color-at index))))
 
 (define (vswr-sweep-renderers result #:max-vswr [max-vswr #f])
-  (unless (nec2c-sweep-result? result)
-    (raise-argument-error 'vswr-sweep-renderers "nec2c-sweep-result?" result))
+  (define normalized (normalize-network-sweep 'vswr-sweep-renderers result))
   (unless (or (not max-vswr)
               (and (rational? max-vswr) (> max-vswr 1)))
     (raise-argument-error
      'vswr-sweep-renderers "(or/c #f (and/c rational? (>/c 1)))" max-vswr))
   (append
-   (for/list ([series (in-list (vswr-cursor-series result max-vswr))])
+   (for/list ([series (in-list (vswr-cursor-series normalized max-vswr))])
      (lines (cursor-series-points series)
       #:color (cursor-series-color series)
       #:width 2
@@ -94,16 +105,11 @@
 
 (define (return-loss-points result name floor-db)
   (for/list ([sample (in-list (samples-for-feed result name))])
-    (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-    (define return-loss (nec2c-sweep-sample-return-loss-db sample))
     (vector
-     (nec2c-feedpoint-sample-frequency-mhz feedpoint)
-     (cond [floor-db (max floor-db (- return-loss))]
-           ;; The data object retains conventional positive return loss.
-           ;; Plot its negative, 20 log10 |Gamma|, so a good match is the
-           ;; familiar downward S11 dip. Break an exact-match infinity in
-           ;; an uncapped line so it cannot force a non-finite axis.
-           [(rational? return-loss) (- return-loss)]
+     (network-sample-frequency-mhz sample)
+     (cond [floor-db (max floor-db (network-sample-s11-db sample))]
+           [(rational? (network-sample-s11-db sample))
+            (network-sample-s11-db sample)]
            [else +nan.0]))))
 
 (define (return-loss-cursor-series result floor-db)
@@ -116,9 +122,7 @@
 (define (return-loss-sweep-renderers
          result
          #:floor-db [floor-db #f])
-  (unless (nec2c-sweep-result? result)
-    (raise-argument-error
-     'return-loss-sweep-renderers "nec2c-sweep-result?" result))
+  (define normalized (normalize-network-sweep 'return-loss-sweep-renderers result))
   (unless (or (not floor-db)
               (and (rational? floor-db) (negative? floor-db)))
     (raise-argument-error
@@ -127,7 +131,7 @@
      floor-db))
   (append
    (for/list ([series (in-list
-                       (return-loss-cursor-series result floor-db))])
+                       (return-loss-cursor-series normalized floor-db))])
      (lines (cursor-series-points series)
       #:color (cursor-series-color series)
       #:width 2
@@ -145,18 +149,15 @@
      (define color (color-at index))
      (define (points part)
        (for/list ([sample (in-list samples)])
-         (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-         (vector (nec2c-feedpoint-sample-frequency-mhz feedpoint)
-                 (part (nec2c-feedpoint-sample-impedance feedpoint)))))
+         (vector (network-sample-frequency-mhz sample)
+                 (part (network-sample-impedance sample)))))
      (list (cursor-series (format "~a R" name) (points real-part) color)
            (cursor-series (format "~a X" name) (points imag-part) color)))))
 
 (define (impedance-sweep-renderers result)
-  (unless (nec2c-sweep-result? result)
-    (raise-argument-error
-     'impedance-sweep-renderers "nec2c-sweep-result?" result))
+  (define normalized (normalize-network-sweep 'impedance-sweep-renderers result))
   (append*
-   (for/list ([series (in-list (impedance-cursor-series result))]
+   (for/list ([series (in-list (impedance-cursor-series normalized))]
               [index (in-naturals)])
      (list
       (lines (cursor-series-points series)
@@ -288,17 +289,16 @@
        (<= (magnitude gamma) (+ 1 1e-9))))
 
 (define (smith-sample-point sample)
-  (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-  (define gamma (nec2c-sweep-sample-reflection-coefficient sample))
+  (define gamma (network-sample-reflection-coefficient sample))
   (if (passive-gamma? gamma)
-      (let ([impedance (nec2c-feedpoint-sample-impedance feedpoint)])
+      (let ([impedance (network-sample-impedance sample)])
         (vector (real-part gamma)
                 (imag-part gamma)
-                (nec2c-feedpoint-sample-frequency-mhz feedpoint)
+                (network-sample-frequency-mhz sample)
                 (real-part impedance)
                 (imag-part impedance)
-                (- (nec2c-sweep-sample-return-loss-db sample))
-                (nec2c-sweep-sample-vswr sample)))
+                (network-sample-s11-db sample)
+                (network-sample-vswr sample)))
       ;; NaN causes Plot to break the line and is ignored by the data cursor.
       (vector +nan.0 +nan.0 0 0 0 0 0)))
 
@@ -336,10 +336,9 @@
 (define (smith-chart-renderers result
                                #:markers? [markers? #t]
                                #:theme [theme 'light])
-  (unless (nec2c-sweep-result? result)
-    (raise-argument-error 'smith-chart-renderers "nec2c-sweep-result?" result))
+  (define normalized (normalize-network-sweep 'smith-chart-renderers result))
   (validate-smith-options 'smith-chart-renderers markers? theme)
-  (define series-list (smith-cursor-series result))
+  (define series-list (smith-cursor-series normalized))
   (append
    (smith-grid-renderers theme)
    (for/list ([series (in-list series-list)])
@@ -615,49 +614,55 @@
             value-unit)))
 
 (define (show-vswr-sweep result #:max-vswr [max-vswr #f])
+  (define normalized (normalize-network-sweep 'show-vswr-sweep result))
+  (define backend (backend-title normalized))
   (show-plot
-   (vswr-sweep-renderers result #:max-vswr max-vswr)
-   (vswr-cursor-series result max-vswr)
+   (vswr-sweep-renderers normalized #:max-vswr max-vswr)
+   (vswr-cursor-series normalized max-vswr)
    (sweep-label-proc "VSWR" ":1")
-   #:title "NEC2C VSWR sweep"
+   #:title (format "~a VSWR sweep" backend)
    #:x-label "frequency (MHz)"
    #:y-label
    (format "VSWR (Z0 = ~a ohms)"
-           (nec2c-sweep-result-reference-impedance result))))
+           (network-sweep-reference-impedance normalized))))
 
 (define (show-return-loss-sweep
          result
          #:floor-db [floor-db #f])
+  (define normalized (normalize-network-sweep 'show-return-loss-sweep result))
+  (define backend (backend-title normalized))
   (show-plot
    (return-loss-sweep-renderers
-    result
+    normalized
     #:floor-db floor-db)
-   (return-loss-cursor-series result floor-db)
+   (return-loss-cursor-series normalized floor-db)
    (sweep-label-proc "S11" " dB")
-   #:title "NEC2C return-loss sweep"
+   #:title (format "~a return-loss sweep" backend)
    #:x-label "frequency (MHz)"
    #:y-label
    (format "return loss / S11 (dB, Z0 = ~a ohms)"
-           (nec2c-sweep-result-reference-impedance result))))
+           (network-sweep-reference-impedance normalized))))
 
 (define (show-impedance-sweep result)
+  (define normalized (normalize-network-sweep 'show-impedance-sweep result))
+  (define backend (backend-title normalized))
   (show-plot
-   (impedance-sweep-renderers result)
-   (impedance-cursor-series result)
+   (impedance-sweep-renderers normalized)
+   (impedance-cursor-series normalized)
    (sweep-label-proc "impedance" " ohms")
-   #:title "NEC2C active impedance"
+   #:title (format "~a input impedance" backend)
    #:x-label "frequency (MHz)"
    #:y-label "ohms"))
 
 (define (show-smith-chart result
                           #:markers? [markers? #t]
                           #:theme [theme 'light])
-  (unless (nec2c-sweep-result? result)
-    (raise-argument-error 'show-smith-chart "nec2c-sweep-result?" result))
+  (define normalized (normalize-network-sweep 'show-smith-chart result))
+  (define backend (backend-title normalized))
   (validate-smith-options 'show-smith-chart markers? theme)
   (show-plot
-   (smith-chart-renderers result #:markers? markers? #:theme theme)
-   (smith-cursor-series result)
+   (smith-chart-renderers normalized #:markers? markers? #:theme theme)
+   (smith-cursor-series normalized)
    (lambda (series point)
      (list
       (format "~a @ ~a MHz | Z ~a ohms"
@@ -668,8 +673,9 @@
               (cursor-number (vector-ref point 5))
               (cursor-number (vector-ref point 6)))))
    #:title
-   (format "NEC2C Smith chart (Z0 = ~a ohms)"
-           (nec2c-sweep-result-reference-impedance result))
+   (format "~a Smith chart (Z0 = ~a ohms)"
+           backend
+           (network-sweep-reference-impedance normalized))
    #:x-label #f
    #:y-label #f
    #:x-min -1.08 #:x-max 1.08

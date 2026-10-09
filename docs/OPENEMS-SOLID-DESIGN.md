@@ -174,9 +174,11 @@ the retained `openEMS_stats.txt` records which limit ended the run.
                  #:keep-artifacts? #t))
 ```
 
-The runnable reference is `examples/openems-dipole.rkt`. Dielectrics, sheets,
-wire-to-capsule conversion, NF2FF recording, mesh refinement, and direct plot
-adapters remain later milestones.
+The runnable reference is `examples/openems-dipole.rkt`. OpenEMS results feed
+the existing VSWR, return-loss, impedance, and Smith-chart viewers through a
+solver-neutral network representation shared with NEC2C. Dielectrics, sheets,
+wire-to-capsule conversion, NF2FF recording, and adaptive mesh refinement
+remain later milestones.
 
 Although the proof of concept excites one port, result structures are designed
 for a frequency-indexed complex S-matrix. A complete N-port matrix eventually
@@ -244,6 +246,12 @@ lambda/15, and lambda/20 meshes. Initial measurements include resonant
 frequency, impedance, S11, maximum directivity, and selected pattern samples.
 Numerical pass tolerances will be based on observed convergence rather than
 invented before the backend produces data.
+
+Cross-solver comparison is a smoke test for units, transforms, port
+connectivity, and result parsing—not a requirement that MoM and FDTD produce
+identical values. Ordinary differences caused by discretization, port shape,
+mesh policy, and solver methodology are recorded rather than tuned away unless
+they expose an architectural or integration defect.
 
 ## Reproducibility manifest
 

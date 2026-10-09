@@ -45,6 +45,8 @@
 (m:solid-close! lower-arm)
 (m:solid-close! upper-arm)
 
+;; (show-solid-model) ; inspect bodies and port before committing to a long run
+
 (define result
   (openems-sweep 800 1050
                  #:steps 101
@@ -62,3 +64,8 @@
 (printf "Artifacts retained in ~a\n"
         (openems-artifacts-directory
          (openems-run-info-artifacts (openems-sweep-result-run result))))
+
+;; The same result can be viewed without converting it by hand:
+;; (show-return-loss-sweep result)
+;; (show-impedance-sweep result)
+;; (show-smith-chart result)

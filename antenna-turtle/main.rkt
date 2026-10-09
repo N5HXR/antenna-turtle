@@ -2,6 +2,7 @@
 
 (require (except-in "private/core.rkt" feed)
          "private/solid-core.rkt"
+         "private/solid-view.rkt"
          "private/openems.rkt"
          "private/export-nec2c.rkt"
          "private/export-mmana.rkt"
@@ -63,7 +64,8 @@
  export-mmana
  export-matlab
  export-matlab-loft
- show-model)
+ show-model
+ show-solid-model)
 
 ;; The language reader tags {...} as (#%braces ...). Delegate those tokens to
 ;; k-infix while retaining the lexical context of identifiers inside the form.

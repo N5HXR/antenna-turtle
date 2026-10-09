@@ -610,6 +610,29 @@ Lines are intentionally screen-visible and do not depict the physical wire
 diameter; use the simulator or MATLAB solid export when surface geometry
 matters.
 
+For a physical Manifold scene, use `show-solid-model` instead. It displays the
+actual triangulated volume surfaces and marks each explicit lumped port with a
+red box and polarity arrow:
+
+```racket
+(show-solid-model)
+```
+
+After an OpenEMS sweep, the returned value works with the ordinary network
+plot functions:
+
+```racket
+(define sweep (openems-sweep 800 1050))
+(show-return-loss-sweep sweep)
+(show-impedance-sweep sweep)
+(show-smith-chart sweep)
+```
+
+OpenEMS runs can take minutes. The generated driver prints its exact mesh cell
+count, maximum timesteps, and residual-energy stop threshold before launching
+the FDTD engine. Retain artifacts when you want to inspect `model.xml` with
+AppCSXCAD.
+
 ## 6. Repetition and Layout Tables
 
 Normal Racket iteration is available, and Antenna Turtle also imports the

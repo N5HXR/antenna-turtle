@@ -2,7 +2,8 @@
 
 (require rackunit
          (prefix-in m: manifold)
-         "../antenna-turtle/main.rkt")
+         "../antenna-turtle/main.rkt"
+         "../antenna-turtle/private/solid-view.rkt")
 
 (define (m-point->list point)
   (list (m:point3-x point) (m:point3-y point) (m:point3-z point)))
@@ -145,3 +146,13 @@
      (radial-repeat 2
        (body repeated geometry source))))
   (m:solid-close! source))
+
+(test-case "solid model preview renders bodies and finite ports without a GUI"
+  (reset-model!)
+  (define source (m:cube 1 #:center? #t))
+  (body radiator geometry source)
+  (port up gap 0.1 width 0.2 depth 0.3)
+  (define renderers (solid-model->plot-renderers))
+  (check-true (> (length renderers) 2))
+  (m:solid-close! source)
+  (clear-bodies))

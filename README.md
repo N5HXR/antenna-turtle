@@ -11,6 +11,13 @@ program. Named feeds support independent voltage amplitude and phase. NEC2C
 models may use free space, perfect ground, or configurable real ground;
 MATLAB exports include a directly runnable far-field directivity stub.
 
+The experimental OpenEMS branch also supports Manifold PEC volume bodies, a
+turtle-oriented one-port lumped feed, Octave/OpenEMS S11 sweeps, a solid-model
+preflight viewer, and the same return-loss, impedance, and Smith-chart windows
+used for NEC2C data. See
+[the staged OpenEMS design](docs/OPENEMS-SOLID-DESIGN.md) and
+[`examples/openems-dipole.rkt`](examples/openems-dipole.rkt).
+
 ![Rendered yagi signal pattern comparison window](docs/comparison-photo.png)
 
 Documentation:
