@@ -111,6 +111,22 @@
      (raise-argument-error
       'radiation-pattern "(or/c 'total 'vertical 'horizontal)" component)]))
 
+(define (sample-direction sample)
+  (or (nec2c-pattern-sample-direction sample)
+      (let* ([theta (degrees->radians
+                     (nec2c-pattern-sample-theta-deg sample))]
+             [phi (degrees->radians
+                   (nec2c-pattern-sample-phi-deg sample))])
+        (vector (* (sin theta) (cos phi))
+                (* (sin theta) (sin phi))
+                (cos theta)))))
+
+(define (radiation-backend-title grid)
+  (define run (nec2c-pattern-grid-run grid))
+  (if (and (hash? run) (eq? (hash-ref run 'backend #f) 'openems))
+      "OpenEMS"
+      "NEC2C"))
+
 (define (interpolate-color a b fraction)
   (for/list ([component-a (in-list a)]
              [component-b (in-list b)])
@@ -271,11 +287,10 @@
   (define (make-surface-vertex theta-deg phi-deg [face-color-db #f])
     (define sample (grid-sample theta-deg phi-deg))
     (define radius (radius-for sample))
-    (define theta (degrees->radians theta-deg))
-    (define phi (degrees->radians phi-deg))
-    (define nx (* (sin theta) (cos phi)))
-    (define ny (* (sin theta) (sin phi)))
-    (define nz (cos theta))
+    (define direction (sample-direction sample))
+    (define nx (vector-ref direction 0))
+    (define ny (vector-ref direction 1))
+    (define nz (vector-ref direction 2))
     (define rgb
       (relative-gain-color
        (color-gain
@@ -388,13 +403,10 @@
   (define surface-points
     (for/list ([sample (in-list samples)])
       (define radius (radius-for sample))
-      (define theta
-        (degrees->radians (nec2c-pattern-sample-theta-deg sample)))
-      (define phi
-        (degrees->radians (nec2c-pattern-sample-phi-deg sample)))
-      (vector (* radius (sin theta) (cos phi))
-              (* radius (sin theta) (sin phi))
-              (* radius (cos theta)))))
+      (define direction (sample-direction sample))
+      (vector (* radius (vector-ref direction 0))
+              (* radius (vector-ref direction 1))
+              (* radius (vector-ref direction 2)))))
   (define (coordinate-values index)
     (map (lambda (point) (vector-ref point index)) surface-points))
   (define xs (coordinate-values 0))
@@ -1052,16 +1064,16 @@
       (- phi (* 360 (floor (/ phi 360)))))
     (hash-ref table (angle-key theta normalized-phi)))
   (define (point-at theta-deg phi-deg)
-    (define gain (sample-gain (sample-at theta-deg phi-deg) component))
+    (define sample (sample-at theta-deg phi-deg))
+    (define gain (sample-gain sample component))
     (define radius
       (if (real? gain)
           (scaled-radius gain reference-peak floor-db #t radial-scale)
           0))
-    (define theta (degrees->radians theta-deg))
-    (define phi (degrees->radians phi-deg))
-    (vector (* radius (sin theta) (cos phi))
-            (* radius (sin theta) (sin phi))
-            (* radius (cos theta))))
+    (define direction (sample-direction sample))
+    (vector (* radius (vector-ref direction 0))
+            (* radius (vector-ref direction 1))
+            (* radius (vector-ref direction 2))))
   (append
    ;; Meridians include both poles (or pole and grounded horizon).
    (for/list ([phi (in-list phi-values)])
@@ -1120,7 +1132,8 @@
                             #:mesh-step mesh-step))
   (define frame
     (new frame%
-         [label "NEC2C OpenGL radiation pattern"]
+         [label (format "~a OpenGL radiation pattern"
+                        (radiation-backend-title grid))]
          [width width]
          [height height]))
   (define eventspace (current-eventspace))

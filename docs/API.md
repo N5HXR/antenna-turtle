@@ -858,9 +858,43 @@ allows long simulations to finish and remains interruptible with Ctrl-C.
 Successful and failed runs carry an artifact directory containing STL bodies,
 the Octave driver, CSXCAD XML, mesh lines, raw probes, logs, results, and a
 reproducibility manifest. Call `openems-close!` to release retained artifacts.
+The driver also records a broadband time-domain NF2FF box. To keep the eight
+PML cells and the NF2FF surface outside all conductors, the backend enlarges a
+requested domain padding when necessary; the effective padding is recorded in
+the manifest.
 
 OpenEMS sweep results can be passed directly to `show-vswr-sweep`,
 `show-return-loss-sweep`, `show-impedance-sweep`, and `show-smith-chart`.
+
+### `(openems-radiation-grid result keyword-arguments ...)`
+
+Transforms the retained near fields from an `openems-sweep-result` into the
+same three-dimensional pattern grid consumed by the existing radiation
+viewers:
+
+```racket
+(define pattern
+  (openems-radiation-grid
+   result
+   #:frequency #f       ; model frequency; or MHz or 'best-match
+   #:theta-step 2
+   #:phi-step 2
+   #:octave #f
+   #:timeout #f))
+
+(show-radiation-pattern-opengl pattern #:palette 'inferno)
+;; The Plot3D viewer works too:
+;; (show-radiation-pattern-3d pattern)
+```
+
+NF2FF postprocessing does not rerun FDTD. It may be repeated at arbitrary
+frequencies inside the original sweep while the field artifacts remain
+available. The returned grid is independent of those files and remains usable
+after `openems-close!`. Directions and complex polarization components are
+rotated back from the port-aligned solver frame into the user's original
+Turtle coordinate system. The grid metadata records maximum directivity and
+radiated power. For this PEC proof of concept the viewer's dBi scale is
+directivity; efficiency and realized gain are not yet reported.
 
 ## 14. Export Functions
 

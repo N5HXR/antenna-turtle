@@ -27,6 +27,36 @@
                     -13.0102999566398))
     (lambda () (when (file-exists? path) (delete-file path)))))
 
+(test-case "OpenEMS NF2FF parsing restores user coordinates and field gain"
+  (define path (make-temporary-file "antenna-turtle-openems-nf2ff~a.csv"))
+  (dynamic-wind
+    (lambda ()
+      (call-with-output-file path
+        #:exists 'truncate/replace
+        (lambda (out)
+          ;; A solver +Z sample with a unit theta-polarized field.
+          (displayln "0,0,1,0,0,0" out))))
+    (lambda ()
+      ;; Rotate solver +Z onto user +X.
+      (define transform
+        '((0 0 1 0)
+          (0 1 0 0)
+          (-1 0 0 0)))
+      (define grid
+        (parse-openems-nf2ff-results path 915 2.0 0.5 transform #f))
+      (define sample (first (nec2c-pattern-grid-samples grid)))
+      (check-= (nec2c-pattern-sample-total-gain-db sample)
+               (* 10 (/ (log 2) (log 10)))
+               1e-10)
+      (define direction (nec2c-pattern-sample-direction sample))
+      (check-= (vector-ref direction 0) 1.0 1e-12)
+      (check-= (vector-ref direction 1) 0.0 1e-12)
+      (check-= (vector-ref direction 2) 0.0 1e-12)
+      (check-= (nec2c-pattern-sample-elevation-deg sample) 0.0 1e-12)
+      (check-= (nec2c-pattern-sample-azimuth-deg sample) 0.0 1e-12)
+      (check-not-false (pair? (radiation-grid-renderers grid #:mesh-step 30))))
+    (lambda () (when (file-exists? path) (delete-file path)))))
+
 (test-case "OpenEMS rejects incomplete proof-of-concept scenes before launch"
   (reset-model!)
   (check-exn exn:fail:contract?

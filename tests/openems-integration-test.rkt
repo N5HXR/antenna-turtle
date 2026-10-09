@@ -34,7 +34,7 @@
                      #:cells-per-wavelength 15
                      #:max-timesteps 50000
                      #:end-criteria 1e-4
-                     #:keep-artifacts? #f))
+                     #:keep-artifacts? #t))
     (define samples (openems-sweep-result-samples result))
     (check-equal? (length samples) 31)
     (check-true
@@ -44,4 +44,17 @@
              samples))
     ;; This is a smoke test, not a demand that FDTD reproduce NEC2C.
     (check-true (< (apply min (map openems-port-sample-s11-db samples)) -6))
+    (define pattern
+      (openems-radiation-grid result
+                              #:frequency 915
+                              #:theta-step 30
+                              #:phi-step 30))
+    (check-equal? (length (nec2c-pattern-grid-samples pattern)) 84)
+    (define peak
+      (apply max
+             (filter real?
+                     (map nec2c-pattern-sample-total-gain-db
+                          (nec2c-pattern-grid-samples pattern)))))
+    (check-true (< 0 peak 4))
+    (openems-close! result)
     (clear-bodies)))

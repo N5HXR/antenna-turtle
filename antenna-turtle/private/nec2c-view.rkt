@@ -427,6 +427,28 @@
           (* horizontal (sin phi))
           (* radius (cos theta))))
 
+(define (radiation-backend-title grid)
+  (define run (nec2c-pattern-grid-run grid))
+  (if (and (hash? run) (eq? (hash-ref run 'backend #f) 'openems))
+      "OpenEMS"
+      "NEC2C"))
+
+(define (sample-direction sample)
+  (or (nec2c-pattern-sample-direction sample)
+      (let* ([theta (degrees->radians
+                     (nec2c-pattern-sample-theta-deg sample))]
+             [phi (degrees->radians
+                   (nec2c-pattern-sample-phi-deg sample))])
+        (vector (* (sin theta) (cos phi))
+                (* (sin theta) (sin phi))
+                (cos theta)))))
+
+(define (sample-point sample radius)
+  (define direction (sample-direction sample))
+  (vector (* radius (vector-ref direction 0))
+          (* radius (vector-ref direction 1))
+          (* radius (vector-ref direction 2))))
+
 ;; NEC2C can profitably calculate a much finer angular grid than Plot3D can
 ;; profitably draw as thousands of independently colored polygons. Keep the
 ;; analysis samples intact, but select an existing subset for display. The
@@ -523,22 +545,21 @@
           ;; sorter can cause pathological recursion on a fine grid. A single
           ;; shared pole and a triangle describe the same surface cleanly.
           [(zero? theta-a)
-           (list (spherical-point
-                  theta-a phi-a (/ (+ (list-ref radii 0)
-                                      (list-ref radii 1)) 2))
-                 (spherical-point theta-b phi-b (list-ref radii 2))
-                 (spherical-point theta-b phi-a (list-ref radii 3)))]
+           (list (sample-point
+                  (list-ref face-samples 0)
+                  (/ (+ (list-ref radii 0) (list-ref radii 1)) 2))
+                 (sample-point (list-ref face-samples 2) (list-ref radii 2))
+                 (sample-point (list-ref face-samples 3) (list-ref radii 3)))]
           [(= theta-b 180)
-           (list (spherical-point theta-a phi-a (list-ref radii 0))
-                 (spherical-point theta-a phi-b (list-ref radii 1))
-                 (spherical-point
-                  theta-b phi-a (/ (+ (list-ref radii 2)
-                                      (list-ref radii 3)) 2)))]
+           (list (sample-point (list-ref face-samples 0) (list-ref radii 0))
+                 (sample-point (list-ref face-samples 1) (list-ref radii 1))
+                 (sample-point
+                  (list-ref face-samples 2)
+                  (/ (+ (list-ref radii 2) (list-ref radii 3)) 2)))]
         [else
-           (list (spherical-point theta-a phi-a (list-ref radii 0))
-                 (spherical-point theta-a phi-b (list-ref radii 1))
-                 (spherical-point theta-b phi-b (list-ref radii 2))
-                 (spherical-point theta-b phi-a (list-ref radii 3)))])))
+           (for/list ([sample (in-list face-samples)]
+                      [radius (in-list radii)])
+             (sample-point sample radius))])))
   (define cap-polygons
     (if (and (pair? theta-values)
              (< (abs (- (last theta-values) 90)) 1e-6))
@@ -751,7 +772,9 @@
     (sort
      (list (cons '#:aspect-multiplier aspect-ratio)
            (cons '#:legend-anchor 'top-left)
-           (cons '#:title "NEC2C 3-D radiation pattern")
+           (cons '#:title
+                 (format "~a 3-D radiation pattern"
+                         (radiation-backend-title grid)))
            (cons '#:x-label "x")
            (cons '#:x-min (- radius-limit))
            (cons '#:x-max radius-limit)

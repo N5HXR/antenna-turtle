@@ -64,7 +64,8 @@
   (frequency-mhz theta-deg phi-deg elevation-deg azimuth-deg
    vertical-gain-db horizontal-gain-db total-gain-db
    axial-ratio tilt-deg polarization-sense
-   e-theta e-phi)
+   e-theta e-phi [direction #:auto #:mutable])
+  #:auto-value #f
   #:transparent)
 
 (struct nec2c-pattern (run kind fixed-angle samples) #:transparent)

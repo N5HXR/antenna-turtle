@@ -176,8 +176,10 @@ the retained `openEMS_stats.txt` records which limit ended the run.
 
 The runnable reference is `examples/openems-dipole.rkt`. OpenEMS results feed
 the existing VSWR, return-loss, impedance, and Smith-chart viewers through a
-solver-neutral network representation shared with NEC2C. Dielectrics, sheets,
-wire-to-capsule conversion, NF2FF recording, and adaptive mesh refinement
+solver-neutral network representation shared with NEC2C. The driver now also
+records a broadband time-domain NF2FF box, and `openems-radiation-grid`
+postprocesses it into the existing 3-D viewers without rerunning FDTD.
+Dielectrics, sheets, wire-to-capsule conversion, and adaptive mesh refinement
 remain later milestones.
 
 Although the proof of concept excites one port, result structures are designed
