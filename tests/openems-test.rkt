@@ -68,6 +68,9 @@
   (check-exn exn:fail:contract?
              (lambda ()
                (openems-sweep 800 1000 #:end-criteria 1)))
+  (check-exn exn:fail:contract?
+             (lambda ()
+               (openems-sweep 800 1000 #:progress? 'sometimes)))
   (check-exn #rx"no volume bodies"
              (lambda () (openems-sweep 800 1000)))
 

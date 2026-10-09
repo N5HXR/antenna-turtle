@@ -9,6 +9,7 @@
          racket/math
          racket/path
          racket/port
+         racket/runtime-path
          racket/string
          racket/system
          (prefix-in m: manifold)
@@ -66,6 +67,10 @@
 (define speed-of-light 299792458.0)
 (define default-maximum-timesteps 100000)
 (define default-end-criteria 1e-5)
+(define-runtime-path openems-progress-path "openems-progress.rkt")
+
+(define openems-progress-line-rx
+  #px"\\[@[[:space:]]+([^]]+)\\][[:space:]]+Timestep:[[:space:]]+([0-9]+).*Speed:[[:space:]]+([0-9.]+)[[:space:]]+MC/s.*Energy:.*\\([[:space:]]*([+-]?[0-9.]+)dB\\)")
 
 (define (finite-real? value)
   (and (real? value) (rational? value)))
@@ -645,7 +650,32 @@
    (hash-ref manifest 'solver_to_user_transform)
    updated-run))
 
-(define (run-command executable arguments directory stdout-path stderr-path timeout)
+(define (make-progress-window title maximum-timesteps end-criteria directory)
+  (with-handlers ([exn:fail? (lambda (_failure) #f)])
+    ((dynamic-require openems-progress-path 'make-openems-progress-window)
+     title maximum-timesteps
+     (* 10 (/ (log end-criteria) (log 10)))
+     (path->string directory))))
+
+(define (latest-progress-values path)
+  (and (file-exists? path)
+       (for/fold ([latest #f]) ([line (in-list (file->lines path))])
+         (define match (regexp-match openems-progress-line-rx line))
+         (if match
+             (list line
+                   (list-ref match 1)
+                   (string->number (list-ref match 2))
+                   (string->number (list-ref match 3))
+                   (string->number (list-ref match 4)))
+             latest))))
+
+(define (solver-finished? path)
+  (and (file-exists? path)
+       (for/or ([line (in-list (file->lines path))])
+         (regexp-match? #px"^Time for [0-9]+ iterations" line))))
+
+(define (run-command executable arguments directory stdout-path stderr-path timeout
+                     [progress #f])
   (define started (current-inexact-milliseconds))
   (define environment
     (environment-variables-copy (current-environment-variables)))
@@ -662,12 +692,42 @@
               (define-values (process _stdout stdin _stderr)
                 (apply subprocess stdout #f stderr executable arguments))
               (close-output-port stdin)
+              (define stop-monitor? (box #f))
+              (define monitor
+                (and progress
+                     (thread
+                      (lambda ()
+                        (let loop ([previous-line #f] [finishing? #f])
+                          (unless (unbox stop-monitor?)
+                            (define values
+                              (with-handlers ([exn:fail? (lambda (_failure) #f)])
+                                (latest-progress-values stdout-path)))
+                            (define next-line
+                              (if values (first values) previous-line))
+                            (when (and values
+                                       (not (equal? next-line previous-line)))
+                              (apply (hash-ref progress 'update) (rest values)))
+                            (define next-finishing?
+                              (or finishing?
+                                  (with-handlers
+                                      ([exn:fail? (lambda (_failure) #f)])
+                                    (solver-finished? stdout-path))))
+                            (when (and next-finishing? (not finishing?))
+                              ((hash-ref progress 'phase)
+                               "FDTD complete; extracting port results…"))
+                            (sleep 0.25)
+                            (loop next-line next-finishing?)))))))
+              (define (finish-progress!)
+                (set-box! stop-monitor? #t)
+                (when monitor (thread-wait monitor))
+                (when progress ((hash-ref progress 'close))))
               (define completed
                 (with-handlers
                     ([exn:break?
                       (lambda (failure)
                         (subprocess-kill process #t)
                         (sync process)
+                        (finish-progress!)
                         (raise failure))])
                   (if timeout
                       (sync/timeout timeout process)
@@ -675,6 +735,7 @@
               (unless completed
                 (subprocess-kill process #t)
                 (sync process))
+              (finish-progress!)
               (values process (and timeout (not completed)))))))))
   (values (subprocess-status process)
           timed-out?
@@ -705,6 +766,7 @@
                        #:end-criteria [end-criteria default-end-criteria]
                        #:octave [requested-octave #f]
                        #:keep-artifacts? [keep? #t]
+                       #:progress? [progress? #t]
                        #:timeout [timeout #f])
   (positive-real 'openems-sweep start-mhz "start frequency in MHz")
   (positive-real 'openems-sweep stop-mhz "stop frequency in MHz")
@@ -724,6 +786,8 @@
     (raise-argument-error 'openems-sweep "real strictly between 0 and 1" end-criteria))
   (unless (boolean? keep?)
     (raise-argument-error 'openems-sweep "boolean?" keep?))
+  (unless (boolean? progress?)
+    (raise-argument-error 'openems-sweep "boolean?" progress?))
   (unless (or (not timeout) (and (finite-real? timeout) (> timeout 0)))
     (raise-argument-error 'openems-sweep "(or/c #f positive-real?)" timeout))
   (validate-model!)
@@ -829,9 +893,13 @@
                    'max_timesteps maximum-timesteps
                    'end_criteria end-criteria)))
   (write-manifest directory initial-manifest)
+  (define progress
+    (and progress?
+         (make-progress-window (model-title) maximum-timesteps end-criteria
+                               directory)))
   (define-values (status timed-out? elapsed)
     (run-command octave '("--quiet" "--no-gui" "run-openems.m")
-                 directory stdout-path stderr-path timeout))
+                 directory stdout-path stderr-path timeout progress))
   (define stdout (file->string stdout-path))
   (define stderr (file->string stderr-path))
   (define mesh-available?

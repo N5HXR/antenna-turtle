@@ -847,6 +847,7 @@ S11 and input impedance at every requested frequency.
  #:end-criteria 1e-5
  #:octave #f
  #:keep-artifacts? #t
+ #:progress? #t
  #:timeout #f)
 ```
 
@@ -854,6 +855,11 @@ The mesh settings are deliberately explicit numerical controls, not promises
 of cross-backend equivalence. The generated Octave driver reports exact mesh
 dimensions and cell count before starting OpenEMS. The default `#:timeout #f`
 allows long simulations to finish and remains interruptible with Ctrl-C.
+By default a non-modal progress window follows the timestep, solver speed, and
+residual-energy reports written to `octave.stdout`. Closing the window merely
+hides it and does not cancel OpenEMS. Use `#:progress? #f` for batch runs or
+when terminal-only output is preferred. If no graphical display is available,
+the simulation automatically continues without the popup.
 
 Successful and failed runs carry an artifact directory containing STL bodies,
 the Octave driver, CSXCAD XML, mesh lines, raw probes, logs, results, and a
