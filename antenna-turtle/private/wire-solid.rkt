@@ -146,6 +146,7 @@
            gap
            (wire-edge-diameter feed-edge)
            (wire-edge-diameter feed-edge)
+           #f
            (frame-transform u v direction center)))
         (values cut-solid port
                 (list feed-edge gap radius)))))

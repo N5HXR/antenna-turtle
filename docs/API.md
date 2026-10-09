@@ -788,8 +788,9 @@ adjusts the Plot3D viewport during rotation so horizontal and vertical screen
 units remain equal. This avoids both independent data-axis stretching and the
 angle-dependent distortion of Plot3D's normal fit-to-window behavior. It
 renders DSL edges before solver subdivision and uses a fixed visible line
-width rather than physical conductor diameter. An empty model or an unused
-pending feed is an error.
+width rather than physical conductor diameter. Plot3D windows use independent
+GUI eventspaces, so they remain interactive while a synchronous solver call is
+running. An empty model or an unused pending feed is an error.
 
 The command-line equivalent is:
 
@@ -807,6 +808,8 @@ dielectric, and sheet geometry receive distinct materials. Derived and
 explicit lumped ports appear as red boxes with a polarity arrow. This is a
 geometry preflight viewer; the OpenEMS-generated `model.xml` remains the
 authoritative view of the final Yee mesh and CSXCAD properties.
+Like `show-model`, this window remains interactive during a blocking
+`openems-sweep` call.
 
 ## 13. Physical Solid Scene and OpenEMS
 
@@ -826,7 +829,8 @@ Import Manifold with a prefix, then register solids and an explicit port:
   impedance 50
   gap {0.5 * millimeter}
   width {0.5 * millimeter}
-  depth {0.5 * millimeter})
+  depth {0.5 * millimeter}
+  priority 15)
 ```
 
 Bodies use the current turtle frame unless `coordinates world` is supplied.
@@ -844,6 +848,13 @@ conductors use `(sheet name points ... material ... priority ...)`, where
 `points` is a local-XY polygon. `pec` gives a zero-thickness perfect conductor;
 `conducting-sheet-material` supplies finite conductivity and thickness. The
 sheet follows the complete turtle frame, including arbitrary rotation.
+
+Port `priority` is optional. By default, the OpenEMS exporter chooses an
+integer priority between touching dielectric and conductor geometry, following
+the usual `dielectric < port < conductor` ordering. An explicit value overrides
+that inference and is useful when a more complex overlap hierarchy requires
+manual control. The effective value and whether it was automatic or explicit
+are recorded in the simulation manifest.
 
 ### `(openems-sweep start-mhz stop-mhz keyword-arguments ...)`
 
@@ -886,18 +897,25 @@ of cross-backend equivalence. The generated Octave driver reports exact mesh
 dimensions and cell count before starting OpenEMS. The default `#:timeout #f`
 allows long simulations to finish and remains interruptible with Ctrl-C.
 By default a non-modal progress window follows the timestep, solver speed, and
-residual-energy reports written to `octave.stdout`. Closing the window merely
-hides it and does not cancel OpenEMS. Use `#:progress? #f` for batch runs or
-when terminal-only output is preferred. If no graphical display is available,
-the simulation automatically continues without the popup and reports the GUI
-initialization error. The artifact directory is printed before Octave starts,
-so `model.xml`, logs, and live stdout are discoverable during a long run.
+residual-energy reports written to `octave.stdout`. Its **Cancel simulation**
+button terminates the complete Octave/OpenEMS process group. A cancelled call
+returns an `openems-sweep-result` with an empty sample list and records
+`"cancelled"` in the manifest status; retained artifacts remain available for
+diagnosis. Closing the window merely hides it and does not cancel OpenEMS. Use
+`#:progress? #f` for batch runs or when terminal-only output is preferred. If
+no graphical display is available, the simulation automatically continues
+without the popup and reports the GUI initialization error. The artifact
+directory is printed before Octave starts, so `model.xml`, logs, and live
+stdout are discoverable during a long run.
 
 Successful and failed runs carry an artifact directory containing STL bodies,
 the Octave driver, CSXCAD XML, mesh lines, raw probes, logs, results, and a
 reproducibility manifest. Sheet polygons, their transforms, complete material
 properties, and dielectric-adjusted mesh values are recorded in that manifest.
-Call `openems-close!` to release retained artifacts.
+Call `openems-close!` to release retained artifacts. For a result created by
+`openems-sweep`, this removes its temporary directory. For a result opened by
+`openems-load-artifacts`, it only invalidates that in-memory handle; the
+caller-owned directory remains on disk.
 The driver also records a broadband time-domain NF2FF box. To keep the eight
 PML cells and the NF2FF surface outside all conductors, the backend enlarges a
 requested domain padding when necessary; the effective padding is recorded in
@@ -905,6 +923,32 @@ the manifest.
 
 OpenEMS sweep results can be passed directly to `show-vswr-sweep`,
 `show-return-loss-sweep`, `show-impedance-sweep`, and `show-smith-chart`.
+
+### `(openems-load-artifacts directory)`
+
+Reconstructs an `openems-sweep-result` from a retained OpenEMS artifact
+directory. It reads `simulation-manifest.rktd` and
+`simulation/port-results.csv`; it does not run OpenEMS or Octave.
+
+```racket
+(define recovered
+  (openems-load-artifacts
+   "/var/tmp/antenna-turtle-openems17915763761791576376090"))
+
+(show-return-loss-sweep recovered)
+(show-impedance-sweep recovered)
+(show-smith-chart recovered)
+
+(define recovered-pattern
+  (openems-radiation-grid recovered))
+(show-radiation-pattern-opengl recovered-pattern #:palette 'inferno)
+```
+
+If the requested frequency and angular grid match an existing NF2FF CSV,
+`openems-radiation-grid` reuses it. Otherwise it performs NF2FF
+postprocessing from the retained time-domain fields, which is much quicker
+than rerunning FDTD. Loaded directories are treated as caller-owned and are
+never deleted by `openems-close!`.
 
 ### `(openems-radiation-grid result keyword-arguments ...)`
 
@@ -920,6 +964,7 @@ viewers:
    #:theta-step 2
    #:phi-step 2
    #:octave #f
+   #:reuse? #t
    #:timeout #f))
 
 (show-radiation-pattern-opengl pattern #:palette 'inferno)
@@ -927,14 +972,16 @@ viewers:
 ;; (show-radiation-pattern-3d pattern)
 ```
 
-NF2FF postprocessing does not rerun FDTD. It may be repeated at arbitrary
-frequencies inside the original sweep while the field artifacts remain
-available. The returned grid is independent of those files and remains usable
-after `openems-close!`. Directions and complex polarization components are
-rotated back from the port-aligned solver frame into the user's original
-Turtle coordinate system. The grid metadata records maximum directivity and
-radiated power. For this PEC proof of concept the viewer's dBi scale is
-directivity; efficiency and realized gain are not yet reported.
+NF2FF postprocessing does not rerun FDTD. With the default `#:reuse? #t`, a
+matching saved CSV is loaded directly; use `#:reuse? #f` to force fresh NF2FF
+postprocessing. It may be repeated at arbitrary frequencies inside the
+original sweep while the field artifacts remain available. The returned grid
+is independent of those files and remains usable after `openems-close!`.
+Directions and complex polarization components are rotated back from the
+port-aligned solver frame into the user's original Turtle coordinate system.
+The grid metadata records maximum directivity and radiated power. For this PEC
+proof of concept the viewer's dBi scale is directivity; efficiency and realized
+gain are not yet reported.
 
 ## 14. Export Functions
 

@@ -58,6 +58,79 @@
       (check-not-false (pair? (radiation-grid-renderers grid #:mesh-step 30))))
     (lambda () (when (file-exists? path) (delete-file path)))))
 
+(test-case "OpenEMS NF2FF postprocessing accepts the command runner result"
+  ;; This exercises the subprocess boundary without launching OpenEMS.  It
+  ;; guards the four-value run-command protocol used by cancellation support.
+  (define directory
+    (make-temporary-file "antenna-turtle-openems-nf2ff-run~a" 'directory))
+  (define simulation-directory (build-path directory "simulation"))
+  (make-directory simulation-directory)
+  (define mock-octave (build-path directory "mock-octave"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out)
+      (displayln "#!/bin/sh" out)
+      (displayln "printf '0,0,1,0,0,0\\n180,0,1,0,0,0\\n' > simulation/nf2ff-900MHz.csv" out)
+      (displayln "printf '900000000,2,0.5\\n' > simulation/nf2ff-900MHz-metadata.csv" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define artifacts
+    (openems-artifacts
+     directory
+     (build-path directory "run-openems.m")
+     simulation-directory
+     (build-path directory "simulation-manifest.rktd")
+     #t #t))
+  (define manifest
+    (hash 'format_version 1
+          'status "complete"
+          'elapsed_ms 1234
+          'exit_code 0
+          'sweep (hash 'start_mhz 800 'stop_mhz 1000)
+          'model_frequency_mhz 900
+          'port (hash 'name "feed" 'impedance_ohms 50)
+          'solver (hash 'octave_executable "/missing/saved/octave")
+          'solver_to_user_transform
+          '((0 0 1 0) (0 1 0 0) (-1 0 0 0))))
+  (call-with-output-file (openems-artifacts-manifest-path artifacts)
+    #:exists 'truncate/replace
+    (lambda (out) (write manifest out) (newline out)))
+  (call-with-output-file (build-path simulation-directory "port-results.csv")
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "900000000,0,0,50,0,-inf.0" out)))
+  (define run
+    (openems-run-info mock-octave 0 0 "" "" artifacts manifest))
+  (define result
+    (openems-sweep-result
+     run "feed" 50
+     (list (openems-port-sample 900 0 50 -inf.0))))
+  (dynamic-wind
+    void
+    (lambda ()
+      (define grid
+        (openems-radiation-grid result
+                                #:frequency 900
+                                #:theta-step 180
+                                #:phi-step 360
+                                #:octave mock-octave))
+      (check-equal? (length (nec2c-pattern-grid-samples grid)) 2)
+      (check-= (nec2c-pattern-sample-total-gain-db
+                (first (nec2c-pattern-grid-samples grid)))
+               (* 10 (/ (log 2) (log 10)))
+               1e-10)
+      (define loaded (openems-load-artifacts directory))
+      (check-equal? (length (openems-sweep-result-samples loaded)) 1)
+      ;; A matching saved NF2FF grid is reused without resolving or launching
+      ;; the deliberately nonexistent saved Octave executable.
+      (define loaded-grid
+        (openems-radiation-grid loaded
+                                #:frequency 900
+                                #:theta-step 180
+                                #:phi-step 360))
+      (check-equal? (length (nec2c-pattern-grid-samples loaded-grid)) 2)
+      (openems-close! loaded)
+      (check-true (directory-exists? directory)))
+    (lambda () (openems-close! artifacts))))
+
 (test-case "OpenEMS rejects incomplete proof-of-concept scenes before launch"
   (reset-model!)
   (check-exn exn:fail:contract?
@@ -119,10 +192,26 @@
   (check-regexp-match #rx"AddConductingSheet" driver)
   (check-regexp-match #rx"AddPolygon" driver)
   (check-regexp-match #rx"'Matrix'" driver)
+  (check-regexp-match #rx"AddLumpedPort\\(CSX, 15, 1," driver)
   (define manifest (openems-run-info-manifest run))
   (check-equal? (length (hash-ref manifest 'geometry)) 2)
-  (check-= (hash-ref (hash-ref manifest 'mesh) 'maximum_refractive_index)
+  (check-equal? (hash-ref (hash-ref manifest 'port) 'priority) 15)
+  (check-equal? (hash-ref (hash-ref manifest 'port) 'priority_source)
+                "automatic")
+  (define mesh (hash-ref manifest 'mesh))
+  (check-= (hash-ref mesh 'maximum_refractive_index)
            (sqrt 4.4) 1e-12)
+  (check-equal? (hash-ref mesh 'minimum_dielectric_cells_per_extent) 4)
+  ;; The port transform centers the 2 mm substrate on solver Z.  Its two
+  ;; interfaces plus three derived interior coordinates make four cells
+  ;; through the dielectric without changing global cells-per-wavelength.
+  (define substrate-z-lines
+    (filter (lambda (value) (<= -0.0010000001 value 0.0010000001))
+            (hash-ref mesh 'critical_z)))
+  (check-equal? (length substrate-z-lines) 5)
+  (for ([actual (in-list substrate-z-lines)]
+        [expected (in-list '(-0.001 -0.0005 0 0.0005 0.001))])
+    (check-= actual expected 1e-12))
   (openems-close! artifacts)
   (delete-file mock-octave)
   (m:solid-close! substrate)

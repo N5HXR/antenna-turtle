@@ -27,6 +27,7 @@
  (struct-out openems-sweep-result)
  (struct-out exn:fail:openems)
  openems-sweep
+ openems-load-artifacts
  openems-radiation-grid
  openems-sweep->network-sweep
  openems-close!
@@ -72,6 +73,7 @@
 (define speed-of-light 299792458.0)
 (define default-maximum-timesteps 100000)
 (define default-end-criteria 1e-5)
+(define minimum-dielectric-cells-per-extent 4)
 (define-runtime-path openems-progress-path "openems-progress.rkt")
 
 (define openems-progress-line-rx
@@ -316,16 +318,105 @@
       (exported-body-maximum geometry)
       (exported-sheet-maximum geometry)))
 
+(define (geometry-material geometry)
+  (if (exported-body? geometry)
+      (exported-body-material geometry)
+      (exported-sheet-material geometry)))
+
+(define (geometry-priority geometry)
+  (if (exported-body? geometry)
+      (exported-body-priority geometry)
+      (exported-sheet-priority geometry)))
+
+(define (bounds-intersect? geometry minimum maximum)
+  (for/and ([low (in-list (geometry-minimum geometry))]
+            [high (in-list (geometry-maximum geometry))]
+            [other-low (in-list minimum)]
+            [other-high (in-list maximum)])
+    (and (<= low other-high) (<= other-low high))))
+
+(define (derive-port-priority geometry port)
+  ;; A lumped port must replace dielectric inside its box, while the metal at
+  ;; either terminal must remain authoritative.  Follow the ordering used by
+  ;; the OpenEMS patch reference: dielectric < port < conductor.  Restrict the
+  ;; calculation to geometry touching the port so unrelated scene priorities
+  ;; do not constrain it.
+  (or
+   (lumped-port-priority port)
+   (let ()
+     (define half-width (/ (lumped-port-width port) 2))
+     (define half-depth (/ (lumped-port-depth port) 2))
+     (define half-gap (/ (lumped-port-gap port) 2))
+     (define minimum (list (- half-width) (- half-depth) (- half-gap)))
+     (define maximum (list half-width half-depth half-gap))
+     (define touching
+       (filter (lambda (item) (bounds-intersect? item minimum maximum)) geometry))
+     (define dielectric-priorities
+       (for/list ([item (in-list touching)]
+                  #:when (eq? (em-material-kind (geometry-material item))
+                              'dielectric))
+         (geometry-priority item)))
+     (define conductor-priorities
+       (for/list ([item (in-list touching)]
+                  #:when (memq (em-material-kind (geometry-material item))
+                               '(pec conducting-sheet)))
+         (geometry-priority item)))
+     (cond
+       [(and (pair? dielectric-priorities) (pair? conductor-priorities))
+        (define dielectric-priority (apply max dielectric-priorities))
+        (define conductor-priority (apply min conductor-priorities))
+        (unless (>= (- conductor-priority dielectric-priority) 2)
+          (raise-user-error
+           'openems-sweep
+           (string-append
+            "geometry touching the port must leave an integer priority between "
+            "the dielectric and conductor priorities")
+           "dielectric priority" dielectric-priority
+           "conductor priority" conductor-priority))
+        (quotient (+ dielectric-priority conductor-priority) 2)]
+       [(pair? conductor-priorities) (sub1 (apply min conductor-priorities))]
+       [(pair? dielectric-priorities) (add1 (apply max dielectric-priorities))]
+       [else 10]))))
+
 (define (axis-values geometry accessor axis)
   (for/list ([item (in-list geometry)])
     (list-ref (accessor item) axis)))
 
-(define (critical-axis-values geometry axis domain-min domain-max port-low port-high)
+(define (dielectric-subdivision-values geometry axis max-resolution)
+  ;; SmoothMeshLines limits large cells but does not guarantee that an
+  ;; electrically thin material gets enough cells between its interfaces.
+  ;; Add interior critical coordinates only where the wavelength-based limit
+  ;; would otherwise permit fewer than the minimum number of cells.  In the
+  ;; port-aligned solver coordinates this gives an ordinary planar substrate
+  ;; four cells through its thickness without imposing that resolution on the
+  ;; entire simulation domain.
+  (append*
+   (for/list ([item (in-list geometry)]
+              #:when
+              (and (exported-body? item)
+                   (eq? (em-material-kind (exported-body-material item))
+                        'dielectric)))
+     (define low (list-ref (exported-body-minimum item) axis))
+     (define high (list-ref (exported-body-maximum item) axis))
+     (define extent (- high low))
+     (if (and (positive? extent)
+              (< extent
+                 (* minimum-dielectric-cells-per-extent max-resolution)))
+         (for/list ([index
+                     (in-range 1 minimum-dielectric-cells-per-extent)])
+           (+ low (* extent
+                     (/ index minimum-dielectric-cells-per-extent))))
+         '()))))
+
+(define (critical-axis-values geometry axis domain-min domain-max
+                              port-low port-high max-resolution)
   (sort
    (remove-duplicates
     (append (list domain-min domain-max 0 port-low port-high)
             (axis-values geometry geometry-minimum axis)
-            (axis-values geometry geometry-maximum axis)))
+            (axis-values geometry geometry-maximum axis)
+            (dielectric-subdivision-values geometry axis max-resolution))
+    =)
    <))
 
 (define (scene-bounds geometry)
@@ -335,7 +426,8 @@
    (for/list ([axis (in-range 3)])
      (apply max (axis-values geometry geometry-maximum axis)))))
 
-(define (write-octave-driver directory bodies sheets port start-mhz stop-mhz steps
+(define (write-octave-driver directory bodies sheets port port-priority
+                             start-mhz stop-mhz steps
                              critical-x critical-y critical-z max-resolution
                              mesh-grading maximum-timesteps end-criteria
                              geometry-minimum geometry-maximum wavelength-min)
@@ -419,7 +511,8 @@
             (octave-vector (list (- half-width) (- half-depth) (- half-gap))))
       (line "port_stop = ~a;"
             (octave-vector (list half-width half-depth half-gap)))
-      (line "[CSX, port] = AddLumpedPort(CSX, 1000, 1, ~a, port_start, port_stop, [0 0 1], true);"
+      (line "[CSX, port] = AddLumpedPort(CSX, ~a, 1, ~a, port_start, port_stop, [0 0 1], true);"
+            port-priority
             (number-string (lumped-port-impedance port)))
       ;; Keep the six time-domain near-field planes outside all geometry and
       ;; on the inner boundary of the PML. The recorded broadband fields can be
@@ -505,6 +598,73 @@
      (make-rectangular s11-real s11-imaginary)
      (make-rectangular impedance-real impedance-imaginary)
      s11-db)))
+
+(define (openems-load-artifacts directory)
+  (unless (path-string? directory)
+    (raise-argument-error 'openems-load-artifacts "path-string?" directory))
+  (define root (simplify-path (path->complete-path directory)))
+  (unless (directory-exists? root)
+    (raise-user-error 'openems-load-artifacts
+                      "artifact directory does not exist: ~a" root))
+  (define manifest-path (build-path root "simulation-manifest.rktd"))
+  (define simulation-directory (build-path root "simulation"))
+  (define result-path (build-path simulation-directory "port-results.csv"))
+  (unless (file-exists? manifest-path)
+    (raise-user-error 'openems-load-artifacts
+                      "artifact manifest does not exist: ~a" manifest-path))
+  (unless (file-exists? result-path)
+    (raise-user-error 'openems-load-artifacts
+                      "artifact port results do not exist: ~a" result-path))
+  (define manifest
+    (call-with-input-file manifest-path
+      (lambda (in)
+        (define value (read in))
+        (unless (hash? value)
+          (raise-user-error 'openems-load-artifacts
+                            "artifact manifest is not a hash: ~a"
+                            manifest-path))
+        value)))
+  (define format-version (hash-ref manifest 'format_version #f))
+  (unless (equal? format-version 1)
+    (raise-user-error 'openems-load-artifacts
+                      "unsupported artifact manifest format: ~e"
+                      format-version))
+  (define port-data (hash-ref manifest 'port #f))
+  (unless (hash? port-data)
+    (raise-user-error 'openems-load-artifacts
+                      "artifact manifest has no port description"))
+  (define port-name (hash-ref port-data 'name #f))
+  (define reference-impedance (hash-ref port-data 'impedance_ohms #f))
+  (unless (and port-name (finite-real? reference-impedance)
+               (> reference-impedance 0))
+    (raise-user-error 'openems-load-artifacts
+                      "artifact manifest has an invalid port description"))
+  (define solver (hash-ref manifest 'solver (hash)))
+  (define saved-octave
+    (let ([value (and (hash? solver)
+                      (hash-ref solver 'octave_executable #f))])
+      (and (path-string? value) value)))
+  (define (saved-text name)
+    (define path (build-path root name))
+    (if (file-exists? path) (file->string path) ""))
+  ;; A loaded directory is caller-owned. openems-close! invalidates this
+  ;; handle but deliberately does not delete it from disk.
+  (define artifacts
+    (openems-artifacts root
+                       (build-path root "run-openems.m")
+                       simulation-directory manifest-path
+                       #f #t))
+  (define run
+    (openems-run-info
+     saved-octave
+     (hash-ref manifest 'elapsed_ms 0)
+     (hash-ref manifest 'exit_code 0)
+     (saved-text "octave.stdout")
+     (saved-text "octave.stderr")
+     artifacts manifest))
+  (openems-sweep-result
+   run port-name reference-impedance
+   (parse-openems-port-results result-path)))
 
 ;; Keep the solver's detailed result available while presenting the plotting
 ;; layer with a backend-independent one-port network sweep.
@@ -644,6 +804,26 @@
   (for/list ([index (in-range (if include-stop? (add1 count) count))])
     (* index step)))
 
+(define (nf2ff-grid-matches? path theta-values phi-values)
+  (and
+   (file-exists? path)
+   (with-handlers ([exn:fail? (lambda (_failure) #f)])
+     (define actual
+       (for/list ([line (in-list (file->lines path))]
+                  #:unless (string=? (string-trim line) ""))
+         (define fields (map string->number (string-split line ",")))
+         (unless (and (= (length fields) 6) (andmap number? fields))
+           (error 'nf2ff-grid-matches? "invalid NF2FF row"))
+         (take fields 2)))
+     (define expected
+       (for*/list ([theta (in-list theta-values)]
+                   [phi (in-list phi-values)])
+         (list theta phi)))
+     (and (= (length actual) (length expected))
+          (for/and ([got (in-list actual)] [wanted (in-list expected)])
+            (for/and ([a (in-list got)] [b (in-list wanted)])
+              (< (abs (- a b)) 1e-8)))))))
+
 (define (write-nf2ff-driver directory frequency-hz theta-values phi-values suffix)
   (define path (build-path directory (format "postprocess-nf2ff-~a.m" suffix)))
   (call-with-output-file path
@@ -683,12 +863,15 @@
                                  #:theta-step [theta-step 2]
                                  #:phi-step [phi-step 2]
                                  #:octave [requested-octave #f]
+                                 #:reuse? [reuse? #t]
                                  #:timeout [timeout #f])
   (unless (openems-sweep-result? result)
     (raise-argument-error 'openems-radiation-grid "openems-sweep-result?" result))
   (unless (or (not timeout) (and (finite-real? timeout) (> timeout 0)))
     (raise-argument-error 'openems-radiation-grid
                           "(or/c #f positive-real?)" timeout))
+  (unless (boolean? reuse?)
+    (raise-argument-error 'openems-radiation-grid "boolean?" reuse?))
   (define run (openems-sweep-result-run result))
   (define artifacts (openems-run-info-artifacts run))
   (unless (and (openems-artifacts-available? artifacts)
@@ -720,31 +903,45 @@
   (define suffix
     (regexp-replace* #px"[^0-9A-Za-z]+" (format "~aMHz" frequency) "_"))
   (define directory (openems-artifacts-directory artifacts))
-  (define driver
-    (write-nf2ff-driver directory (* frequency 1e6)
-                        theta-values phi-values suffix))
   (define stdout-path (build-path directory (format "nf2ff-~a.stdout" suffix)))
   (define stderr-path (build-path directory (format "nf2ff-~a.stderr" suffix)))
-  (define octave
-    (resolve-octave
-     (or requested-octave (openems-run-info-octave-executable run))))
-  (define-values (status timed-out? elapsed)
-    (run-command octave
-                 (list "--quiet" "--no-gui" (path->string (file-name-from-path driver)))
-                 directory stdout-path stderr-path timeout))
-  (when (or timed-out? (not (zero? status)))
-    (raise-user-error
-     'openems-radiation-grid
-     "NF2FF postprocessing ~a; artifacts retained in ~a\n~a"
-     (if timed-out? "timed out" (format "exited with status ~a" status))
-     directory
-     (if (file-exists? stderr-path) (file->string stderr-path) "")))
   (define result-path
     (build-path (openems-artifacts-simulation-directory artifacts)
                 (format "nf2ff-~a.csv" suffix)))
   (define metadata-path
     (build-path (openems-artifacts-simulation-directory artifacts)
                 (format "nf2ff-~a-metadata.csv" suffix)))
+  (define reused?
+    (and reuse?
+         (file-exists? metadata-path)
+         (nf2ff-grid-matches? result-path theta-values phi-values)))
+  (define elapsed
+    (if reused?
+        0
+        (let ()
+          (define driver
+            (write-nf2ff-driver directory (* frequency 1e6)
+                                theta-values phi-values suffix))
+          (define octave
+            (resolve-octave
+             (or requested-octave (openems-run-info-octave-executable run))))
+          (define-values (status timed-out? cancelled? elapsed)
+            (run-command
+             octave
+             (list "--quiet" "--no-gui"
+                   (path->string (file-name-from-path driver)))
+             directory stdout-path stderr-path timeout))
+          (when (or timed-out? cancelled? (not (zero? status)))
+            (raise-user-error
+             'openems-radiation-grid
+             "NF2FF postprocessing ~a; artifacts retained in ~a\n~a"
+             (cond
+               [timed-out? "timed out"]
+               [cancelled? "was cancelled"]
+               [else (format "exited with status ~a" status)])
+             directory
+             (if (file-exists? stderr-path) (file->string stderr-path) "")))
+          elapsed)))
   (define metadata (read-number-list metadata-path))
   (unless (= (length metadata) 3)
     (error 'openems-radiation-grid "invalid NF2FF metadata: ~e" metadata))
@@ -757,10 +954,14 @@
            'theta_step_deg (exact->inexact theta-step)
            'phi_step_deg (exact->inexact phi-step)
            'elapsed_ms elapsed
+           'reused_existing reused?
            'maximum_directivity_linear directivity
            'radiated_power_w radiated-power)
      'artifacts (artifact-sizes directory)))
-  (write-manifest directory updated-manifest)
+  ;; Loaded artifact directories are caller-owned and may be read-only. Keep
+  ;; postprocessing metadata in the returned run without mutating them.
+  (when (openems-artifacts-temporary? artifacts)
+    (write-manifest directory updated-manifest))
   (define updated-run
     (struct-copy openems-run-info run [manifest updated-manifest]))
   (parse-openems-nf2ff-results
@@ -803,7 +1004,7 @@
   (define environment
     (environment-variables-copy (current-environment-variables)))
   (environment-variables-set! environment #"LC_ALL" #"C")
-  (define-values (process timed-out?)
+  (define-values (process timed-out? cancelled?)
     (parameterize ([current-environment-variables environment]
                    [current-directory directory])
       (call-with-output-file stdout-path
@@ -812,8 +1013,11 @@
           (call-with-output-file stderr-path
             #:exists 'truncate/replace
             (lambda (stderr)
+              ;; Octave launches OpenEMS as a child. A dedicated process group
+              ;; lets cancellation, timeout, and Ctrl-C terminate the complete
+              ;; solver tree instead of merely killing the Octave parent.
               (define-values (process _stdout stdin _stderr)
-                (apply subprocess stdout #f stderr executable arguments))
+                (apply subprocess stdout #f stderr 'new executable arguments))
               (close-output-port stdin)
               (define stop-monitor? (box #f))
               (define monitor
@@ -844,7 +1048,17 @@
                 (set-box! stop-monitor? #t)
                 (when monitor (thread-wait monitor))
                 (when progress ((hash-ref progress 'close))))
-              (define completed
+              (define process-event
+                (handle-evt process (lambda (_process) 'completed)))
+              (define cancel-event
+                (and progress (hash-ref progress 'cancel-evt #f)))
+              (define wait-events
+                (if cancel-event
+                    (list process-event
+                          (handle-evt cancel-event
+                                      (lambda (_event) 'cancelled)))
+                    (list process-event)))
+              (define outcome
                 (with-handlers
                     ([exn:break?
                       (lambda (failure)
@@ -853,15 +1067,18 @@
                         (finish-progress!)
                         (raise failure))])
                   (if timeout
-                      (sync/timeout timeout process)
-                      (sync process))))
-              (unless completed
+                      (apply sync/timeout timeout wait-events)
+                      (apply sync wait-events))))
+              (define timed-out? (not outcome))
+              (define cancelled? (eq? outcome 'cancelled))
+              (when (or timed-out? cancelled?)
                 (subprocess-kill process #t)
                 (sync process))
               (finish-progress!)
-              (values process (and timeout (not completed)))))))))
+              (values process timed-out? cancelled?)))))))
   (values (subprocess-status process)
           timed-out?
+          cancelled?
           (- (current-inexact-milliseconds) started)))
 
 (define (artifact-sizes directory)
@@ -998,14 +1215,16 @@
   (define half-depth (/ (lumped-port-depth port) 2))
   (define critical-x
     (critical-axis-values geometry 0 (first domain-min) (first domain-max)
-                          (- half-width) half-width))
+                          (- half-width) half-width max-resolution))
   (define critical-y
     (critical-axis-values geometry 1 (second domain-min) (second domain-max)
-                          (- half-depth) half-depth))
+                          (- half-depth) half-depth max-resolution))
   (define critical-z
     (critical-axis-values geometry 2 (third domain-min) (third domain-max)
-                          (- half-gap) half-gap))
-  (write-octave-driver directory bodies sheets port start-mhz stop-mhz steps
+                          (- half-gap) half-gap max-resolution))
+  (define port-priority (derive-port-priority geometry port))
+  (write-octave-driver directory bodies sheets port port-priority
+                       start-mhz stop-mhz steps
                        critical-x critical-y critical-z max-resolution
                        mesh-grading maximum-timesteps end-criteria
                        minimum maximum wavelength-min)
@@ -1045,8 +1264,12 @@
                  'gap_m (exact->inexact (lumped-port-gap port))
                  'width_m (exact->inexact (lumped-port-width port))
                  'depth_m (exact->inexact (lumped-port-depth port))
-                 'priority 1000)
+                 'priority port-priority
+                 'priority_source
+                 (if (lumped-port-priority port) "explicit" "automatic"))
      'mesh (hash 'policy "fixed-critical-coordinate-poc"
+                 'minimum_dielectric_cells_per_extent
+                 minimum-dielectric-cells-per-extent
                  'critical_x (map exact->inexact critical-x)
                  'critical_y (map exact->inexact critical-y)
                  'critical_z (map exact->inexact critical-z)
@@ -1076,7 +1299,7 @@
     (and progress?
          (make-progress-window (model-title) maximum-timesteps end-criteria
                                directory)))
-  (define-values (status timed-out? elapsed)
+  (define-values (status timed-out? cancelled? elapsed)
     (run-command octave '("--quiet" "--no-gui" "run-openems.m")
                  directory stdout-path stderr-path timeout progress))
   (define stdout (file->string stdout-path))
@@ -1117,7 +1340,10 @@
   (define final-manifest
     (hash-set*
      initial-manifest
-     'status (cond [timed-out? "timed-out"] [(zero? status) "complete"] [else "failed"])
+     'status (cond [cancelled? "cancelled"]
+                   [timed-out? "timed-out"]
+                   [(zero? status) "complete"]
+                   [else "failed"])
      'elapsed_ms elapsed
      'exit_code status
      'software_versions versions
@@ -1128,34 +1354,46 @@
   (write-manifest directory final-manifest)
   (define run
     (openems-run-info octave elapsed status stdout stderr artifacts final-manifest))
-  (when timed-out?
-    (raise
-     (exn:fail:openems
-      (format "OpenEMS timed out after ~a seconds; artifacts retained in ~a"
-              timeout directory)
-      (current-continuation-marks)
-      run)))
-  (unless (zero? status)
-    (raise
-     (exn:fail:openems
-      (format "OpenEMS/Octave exited with status ~a; artifacts retained in ~a"
-              status directory)
-      (current-continuation-marks)
-      run)))
-  (define result-path (build-path simulation-directory "port-results.csv"))
-  (unless (file-exists? result-path)
-    (raise
-     (exn:fail:openems
-      (format "OpenEMS did not create port results; artifacts retained in ~a"
-              directory)
-      (current-continuation-marks)
-      run)))
-  (define result
-    (openems-sweep-result
-     run (lumped-port-name port) (lumped-port-impedance port)
-     (parse-openems-port-results result-path)))
-  (unless keep? (openems-close! result))
-  result)
+  (cond
+    [cancelled?
+     (printf "OpenEMS simulation cancelled; ~a: ~a\n"
+             (if keep? "artifacts retained" "removing artifacts")
+             directory)
+     (flush-output)
+     (define result
+       (openems-sweep-result
+        run (lumped-port-name port) (lumped-port-impedance port) '()))
+     (unless keep? (openems-close! result))
+     result]
+    [timed-out?
+     (raise
+      (exn:fail:openems
+       (format "OpenEMS timed out after ~a seconds; artifacts retained in ~a"
+               timeout directory)
+       (current-continuation-marks)
+       run))]
+    [(not (zero? status))
+     (raise
+      (exn:fail:openems
+       (format "OpenEMS/Octave exited with status ~a; artifacts retained in ~a"
+               status directory)
+       (current-continuation-marks)
+       run))]
+    [else
+     (define result-path (build-path simulation-directory "port-results.csv"))
+     (unless (file-exists? result-path)
+       (raise
+        (exn:fail:openems
+         (format "OpenEMS did not create port results; artifacts retained in ~a"
+                 directory)
+         (current-continuation-marks)
+         run)))
+     (define result
+       (openems-sweep-result
+        run (lumped-port-name port) (lumped-port-impedance port)
+        (parse-openems-port-results result-path)))
+     (unless keep? (openems-close! result))
+     result]))
 
 (define (openems-close! value)
   (define artifacts
@@ -1171,6 +1409,8 @@
         value)]))
   (when (openems-artifacts-available? artifacts)
     (define directory (openems-artifacts-directory artifacts))
-    (when (directory-exists? directory) (delete-directory/files directory))
+    (when (and (openems-artifacts-temporary? artifacts)
+               (directory-exists? directory))
+      (delete-directory/files directory))
     (set-openems-artifacts-available?! artifacts #f))
   (void))

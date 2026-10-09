@@ -118,13 +118,17 @@ similarly to `spread`, without moving the turtle:
   impedance 50
   gap 1mm
   width 3mm
-  depth 2mm)
+  depth 2mm
+  priority 15)
 ```
 
 The minimal `(port forward)` uses a generated name, model impedance, and
 `wavelength/1000` for the gap, width, and depth. Width and depth may be
 overridden explicitly to fit the conductor geometry. Direction controls
-voltage polarity.
+voltage polarity. Priority is optional: the exporter normally derives an
+integer priority between the dielectric and conductor geometry touching the
+port, so that the port replaces substrate while its metal terminals remain
+authoritative. An explicit `priority` overrides this inference.
 
 For a one-port model, the exporter rigidly rotates the complete scene so the
 port direction aligns with a Cartesian Yee-grid axis. The forward and inverse
@@ -154,7 +158,9 @@ Overlap rules are deliberately explicit:
   bounds and unlike materials require distinct explicit priorities; and
 - automated Boolean material resolution remains deliberately out of scope.
 
-Ports use a backend-reserved priority higher than ordinary material geometry.
+Ports default to an automatically derived priority between touching dielectric
+and conductor geometry. Models with a more complex overlap hierarchy may set
+an explicit port priority.
 
 ## OpenEMS execution and results
 

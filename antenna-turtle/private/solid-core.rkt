@@ -89,7 +89,7 @@
   #:transparent)
 (struct lumped-port
   (name impedance center direction transverse-u transverse-v
-        gap width depth placement-transform)
+        gap width depth priority placement-transform)
   #:transparent)
 (struct solid-scene (bodies sheets ports) #:mutable #:transparent)
 
@@ -274,7 +274,8 @@
                          #:impedance [impedance (model-impedance)]
                          #:gap [gap (/ (model-wavelength) 1000)]
                          #:width [width (/ (model-wavelength) 1000)]
-                         #:depth [depth (/ (model-wavelength) 1000)])
+                         #:depth [depth (/ (model-wavelength) 1000)]
+                         #:priority [priority #f])
   (define local-direction (hash-ref direction-components direction #f))
   (unless local-direction
     (raise-argument-error
@@ -286,6 +287,7 @@
   (positive-real 'add-lumped-port gap "gap")
   (nonnegative-real 'add-lumped-port width "width")
   (nonnegative-real 'add-lumped-port depth "depth")
+  (validate-priority 'add-lumped-port priority)
   (define scene (current-solid-scene))
   (define name (or requested-name (fresh-port-name scene)))
   (when (for/or ([port (in-list (solid-scene-ports scene))])
@@ -301,7 +303,7 @@
      (transform-vector placement local-direction)
      (transform-vector placement (first transverse))
      (transform-vector placement (second transverse))
-     gap width depth placement))
+     gap width depth priority placement))
   (set-solid-scene-ports!
    scene (append (solid-scene-ports scene) (list port)))
   port)

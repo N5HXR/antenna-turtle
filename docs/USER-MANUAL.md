@@ -623,7 +623,8 @@ Wire edges appear as a temporary union of physical capsules with the modeled
 wire diameter. A marked feed appears as the actual gap OpenEMS will use. The
 live centerline model is not changed, so the same construction remains ready
 for NEC2C. Use `#:wire-segments` to trade circular smoothness for triangle
-count.
+count. Plot3D viewers run in independent GUI eventspaces and remain responsive
+while `openems-sweep` blocks the calling evaluation thread.
 
 To place a Yagi element or another solid by its midpoint, either construct a
 centered Manifold primitive such as `(m:cylinder length radius #:center? #t)`
@@ -644,8 +645,10 @@ OpenEMS runs can take minutes. The generated driver prints its exact mesh cell
 count, maximum timesteps, and residual-energy stop threshold before launching
 the FDTD engine. Antenna Turtle prints the artifact directory before launch,
 so you can inspect `simulation/model.xml` with AppCSXCAD while the solver is
-running. Retain artifacts when you want them to remain available after the
-result is returned.
+running. The progress window's **Cancel simulation** button stops both Octave
+and its OpenEMS child and returns an empty sweep result. Simply closing the
+window still only hides it. Retain artifacts when you want them to remain
+available after the result is returned.
 `examples/openems-dipole.rkt` is the explicit PEC-volume reference, while
 `examples/openems-patch.rkt` demonstrates a lossless dielectric substrate with
 PEC ground and patch sheets. `examples/openems-wire-yagi.rkt` builds an

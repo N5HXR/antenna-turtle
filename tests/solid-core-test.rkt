@@ -128,14 +128,17 @@
   (check-equal? (length (planar-sheet-points placed-sheet)) 4)
   (check-equal? (planar-sheet-normal placed-sheet) (point3 0 0 1))
 
-  (define placed-port (port forward))
+  (define placed-port (port forward priority 17))
   (check-equal? (lumped-port-name placed-port) "port-1")
   (check-equal? (lumped-port-impedance placed-port) 75)
   (check-equal? (lumped-port-center placed-port) (point3 3 0 0))
   (check-equal? (lumped-port-direction placed-port) (point3 0 1 0))
   (check-equal? (lumped-port-gap placed-port) (/ (model-wavelength) 1000))
   (check-equal? (lumped-port-width placed-port) (/ (model-wavelength) 1000))
-  (check-equal? (lumped-port-depth placed-port) (/ (model-wavelength) 1000)))
+  (check-equal? (lumped-port-depth placed-port) (/ (model-wavelength) 1000))
+  (check-equal? (lumped-port-priority placed-port) 17)
+  (check-exn exn:fail:contract?
+             (lambda () (port forward priority 1.5))))
 
 (test-case "clear-bodies clears subordinate sheets and ports but not wires"
   (reset-model!)

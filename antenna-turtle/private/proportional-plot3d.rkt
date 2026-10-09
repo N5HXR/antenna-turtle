@@ -32,7 +32,7 @@
        (abs (cos rho))))
   (* aspect-multiplier (/ horizontal-span vertical-span)))
 
-(define (show-proportional-plot3d
+(define (show-proportional-plot3d/current-eventspace
          renderer-tree
          #:x-min [x-min #f] #:x-max [x-max #f]
          #:y-min [y-min #f] #:y-max [y-max #f]
@@ -129,8 +129,53 @@
        make-snip width height
        (if title (format "Plot: ~a" title) "Plot")))
     (send frame show #t)
-    ;; Give the newly shown lazy snip one GUI turn to paint before returning.
-    ;; This matters when the caller immediately starts a blocking solver run.
-    (flush-display)
-    (yield)
     (void)))
+
+(define (show-proportional-plot3d
+         renderer-tree
+         #:x-min [x-min #f] #:x-max [x-max #f]
+         #:y-min [y-min #f] #:y-max [y-max #f]
+         #:z-min [z-min #f] #:z-max [z-max #f]
+         #:width [width (plot-width)]
+         #:height [height (plot-height)]
+         #:angle [angle (plot3d-angle)]
+         #:altitude [altitude (plot3d-altitude)]
+         #:title [title (plot-title)]
+         #:x-label [x-label (plot-x-label)]
+         #:y-label [y-label (plot-y-label)]
+         #:z-label [z-label (plot-z-label)]
+         #:aspect-multiplier [aspect-multiplier 1]
+         #:legend-anchor [legend-anchor (plot-legend-anchor)])
+  ;; A solver call commonly follows immediately after showing geometry and
+  ;; synchronously blocks its caller.  Give each Plot3D frame an independent
+  ;; handler thread so orbit, resize, repaint, and close events remain usable
+  ;; throughout that wait.  Preserve the caller's complete Plot parameter set,
+  ;; but replace its eventspace when the queued callback installs it.
+  (define caller-parameterization (current-parameterization))
+  (define eventspace (make-eventspace))
+  (define ready (make-channel))
+  (parameterize ([current-eventspace eventspace])
+    (queue-callback
+     (lambda ()
+       (with-handlers ([exn:fail? (lambda (failure)
+                                    (channel-put ready failure))])
+         (call-with-parameterization
+          caller-parameterization
+          (lambda ()
+            (parameterize ([current-eventspace eventspace])
+              (show-proportional-plot3d/current-eventspace
+               renderer-tree
+               #:x-min x-min #:x-max x-max
+               #:y-min y-min #:y-max y-max
+               #:z-min z-min #:z-max z-max
+               #:width width #:height height
+               #:angle angle #:altitude altitude
+               #:title title
+               #:x-label x-label #:y-label y-label #:z-label z-label
+               #:aspect-multiplier aspect-multiplier
+               #:legend-anchor legend-anchor))))
+         (channel-put ready #t)))
+     #f))
+  (define result (channel-get ready))
+  (when (exn:fail? result) (raise result))
+  (void))

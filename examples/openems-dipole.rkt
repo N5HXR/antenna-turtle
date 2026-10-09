@@ -66,6 +66,15 @@
          (openems-run-info-artifacts (openems-sweep-result-run result))))
 
 ;; The same result can be viewed without converting it by hand:
-;; (show-return-loss-sweep result)
-;; (show-impedance-sweep result)
-;; (show-smith-chart result)
+(show-return-loss-sweep result)
+(show-impedance-sweep result)
+(show-smith-chart result)
+
+(define pattern
+  (openems-radiation-grid result))
+  ;; #:frequency 'best-match
+  ;; #:frequency 915
+  ;; #:theta-step 2
+  ;; #:phi-step 2
+
+(show-radiation-pattern-opengl pattern #:palette 'inferno)

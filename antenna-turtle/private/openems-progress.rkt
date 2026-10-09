@@ -9,7 +9,8 @@
 (define progress-frame%
   (class frame%
     (define/augment (on-close)
-      ;; This window reports a subprocess; it does not own or cancel it.
+      ;; Window-manager close only hides the reporter. Cancellation remains a
+      ;; separate, deliberate button action.
       (send this show #f))
     (super-new)))
 
@@ -18,6 +19,7 @@
   (define artifact-directory-text (format "~a" artifact-directory))
   (define eventspace (make-eventspace))
   (define ready (make-channel))
+  (define cancel-requested (make-semaphore 0))
   (parameterize ([current-eventspace eventspace])
     (queue-callback
      (lambda ()
@@ -26,7 +28,7 @@
            (new progress-frame%
                 [label "OpenEMS simulation progress"]
                 [width 560]
-                [height 275]))
+                [height 315]))
          (define root
            (new vertical-panel%
                 [parent frame]
@@ -68,9 +70,15 @@
               [parent root]
               [label (format "Artifacts: ~a" artifact-directory-text)]
               [stretchable-width #t])
+         (define actions
+           (new horizontal-panel%
+                [parent root]
+                [alignment '(left center)]
+                [spacing 8]
+                [stretchable-height #f]))
          (define copy-artifacts
            (new button%
-                [parent root]
+                [parent actions]
                 [label "Copy artifact path"]
                 [callback
                  (lambda (button _event)
@@ -82,9 +90,22 @@
                            artifact-directory-text
                            0)
                      (send button set-label "Artifact path copied")))]))
+         (define cancel-simulation
+           (new button%
+                [parent actions]
+                [label "Cancel simulation"]
+                [callback
+                 (lambda (button _event)
+                   (send button enable #f)
+                   (send button set-label "Cancelling…")
+                   (send phase set-label
+                         "Stopping OpenEMS and its child processes…")
+                   (semaphore-post cancel-requested))]))
          (new message%
               [parent root]
-              [label "Closing this window does not stop the simulation."]
+              [label (string-append
+                      "Closing this window only hides it; "
+                      "Cancel simulation stops the run.")]
               [stretchable-width #t])
          (send frame show #t)
          (channel-put ready (vector frame phase gauge timestep energy speed))))
@@ -101,6 +122,7 @@
     (parameterize ([current-eventspace eventspace])
       (queue-callback thunk #f)))
   (hash
+   'cancel-evt (semaphore-peek-evt cancel-requested)
    'update
    (lambda (solver-elapsed current-timestep rate energy-db)
      (enqueue

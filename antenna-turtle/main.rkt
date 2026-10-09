@@ -560,14 +560,14 @@
             'port #'(_ setting ...)
             (string-append
              "expected setting/value pairs using name, impedance, gap, "
-             "width, or depth"))))
+             "width, depth, or priority"))))
      (define seen (make-hasheq))
      (define settings (make-hasheq))
      (for ([pair (in-list pairs)])
        (define key (syntax-e (car pair)))
-       (unless (memq key '(name impedance gap width depth))
+       (unless (memq key '(name impedance gap width depth priority))
          (raise-syntax-error
-          'port "expected name, impedance, gap, width, or depth"
+          'port "expected name, impedance, gap, width, depth, or priority"
           stx (car pair)))
        (when (hash-ref seen key #f)
          (raise-syntax-error 'port "setting may be specified only once"
@@ -585,7 +585,9 @@
         (if (hash-has-key? settings 'width)
             (list #'#:width (hash-ref settings 'width)) '())
         (if (hash-has-key? settings 'depth)
-            (list #'#:depth (hash-ref settings 'depth)) '())))
+            (list #'#:depth (hash-ref settings 'depth)) '())
+        (if (hash-has-key? settings 'priority)
+            (list #'#:priority (hash-ref settings 'priority)) '())))
      #`(add-lumped-port '#,(syntax-e #'direction) #,@keyword-arguments)]
     [(_ . _)
      (raise-syntax-error
