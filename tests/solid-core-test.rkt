@@ -97,8 +97,8 @@
   (check-equal? (lumped-port-center placed-port) (point3 3 0 0))
   (check-equal? (lumped-port-direction placed-port) (point3 0 1 0))
   (check-equal? (lumped-port-gap placed-port) (/ (model-wavelength) 1000))
-  (check-equal? (lumped-port-width placed-port) 0)
-  (check-equal? (lumped-port-depth placed-port) 0))
+  (check-equal? (lumped-port-width placed-port) (/ (model-wavelength) 1000))
+  (check-equal? (lumped-port-depth placed-port) (/ (model-wavelength) 1000)))
 
 (test-case "clear-bodies clears subordinate sheets and ports but not wires"
   (reset-model!)

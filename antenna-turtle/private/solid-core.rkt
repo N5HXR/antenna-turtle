@@ -255,8 +255,8 @@
                          #:name [requested-name #f]
                          #:impedance [impedance (model-impedance)]
                          #:gap [gap (/ (model-wavelength) 1000)]
-                         #:width [width 0]
-                         #:depth [depth 0])
+                         #:width [width (/ (model-wavelength) 1000)]
+                         #:depth [depth (/ (model-wavelength) 1000)])
   (define local-direction (hash-ref direction-components direction #f))
   (unless local-direction
     (raise-argument-error

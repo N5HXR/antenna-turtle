@@ -118,10 +118,10 @@ similarly to `spread`, without moving the turtle:
   depth 2mm)
 ```
 
-The minimal `(port forward)` uses a generated name, model impedance,
-`wavelength/1000` gap, and zero transverse dimensions. Width and depth create
-a finite planar/volumetric port where required. Direction controls voltage
-polarity.
+The minimal `(port forward)` uses a generated name, model impedance, and
+`wavelength/1000` for the gap, width, and depth. Width and depth may be
+overridden explicitly to fit the conductor geometry. Direction controls
+voltage polarity.
 
 For a one-port model, the exporter rigidly rotates the complete scene so the
 port direction aligns with a Cartesian Yee-grid axis. The forward and inverse
@@ -159,6 +159,24 @@ The backend writes one geometry artifact per body or sheet as appropriate,
 generates an Octave driver, runs OpenEMS, invokes `calcPort`, and writes simple
 machine-readable result tables. Failed runs retain their complete working
 directory. Successful network-only runs may clean up automatically.
+
+The first executable slice is `openems-sweep`. It currently accepts PEC
+volume bodies and exactly one explicit lumped port, applies the port-alignment
+transform, creates a conservative fixed mesh, runs Octave/OpenEMS, and returns
+frequency-indexed complex S11 and input impedance samples. The generated
+driver prints its timestep ceiling and energy stop criterion before starting;
+the retained `openEMS_stats.txt` records which limit ended the run.
+
+```racket
+(define result
+  (openems-sweep 800 1050
+                 #:steps 101
+                 #:keep-artifacts? #t))
+```
+
+The runnable reference is `examples/openems-dipole.rkt`. Dielectrics, sheets,
+wire-to-capsule conversion, NF2FF recording, mesh refinement, and direct plot
+adapters remain later milestones.
 
 Although the proof of concept excites one port, result structures are designed
 for a frequency-indexed complex S-matrix. A complete N-port matrix eventually

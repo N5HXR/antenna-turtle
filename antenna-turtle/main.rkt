@@ -2,6 +2,7 @@
 
 (require (except-in "private/core.rkt" feed)
          "private/solid-core.rkt"
+         "private/openems.rkt"
          "private/export-nec2c.rkt"
          "private/export-mmana.rkt"
          "private/export-matlab.rkt"
@@ -24,6 +25,7 @@
  (all-from-out "private/nec2c.rkt")
  (all-from-out "private/nec2c-view.rkt")
  (all-from-out "private/solid-core.rkt")
+ (all-from-out "private/openems.rkt")
  wavelength
  half-wave
  quarter-wave
