@@ -5,7 +5,8 @@
          plot/no-gui
          (prefix-in m: manifold)
          "core.rkt"
-         "solid-core.rkt")
+         "solid-core.rkt"
+         "wire-solid.rkt")
 
 (provide show-solid-model
          solid-model->plot-renderers
@@ -141,9 +142,7 @@
           (for/list ([center (in-list centers)])
             (list (- center half-span) (+ center half-span))))))
 
-(define (show-solid-model #:width [width 900]
-                          #:height [height 700]
-                          #:aspect-ratio [aspect-ratio 1])
+(define (show-solid-model/current width height aspect-ratio)
   (unless (exact-positive-integer? width)
     (raise-argument-error 'show-solid-model "exact-positive-integer?" width))
   (unless (exact-positive-integer? height)
@@ -174,3 +173,12 @@
      #:z-min z-min #:z-max z-max
      #:width width #:height height
      #:aspect-multiplier aspect-ratio)))
+
+(define (show-solid-model #:width [width 900]
+                          #:height [height 700]
+                          #:aspect-ratio [aspect-ratio 1]
+                          #:wire-segments [wire-segments 24])
+  (call-with-derived-wire-scene
+   (lambda (_derivation)
+     (show-solid-model/current width height aspect-ratio))
+   #:segments wire-segments))

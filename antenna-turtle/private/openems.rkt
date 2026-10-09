@@ -16,7 +16,8 @@
          "core.rkt"
          "nec2c.rkt"
          "network.rkt"
-         "solid-core.rkt")
+         "solid-core.rkt"
+         "wire-solid.rkt")
 
 (provide
  octave-executable
@@ -886,10 +887,41 @@
                        #:max-timesteps [maximum-timesteps
                                         default-maximum-timesteps]
                        #:end-criteria [end-criteria default-end-criteria]
+                       #:wire-segments [wire-segments 24]
                        #:octave [requested-octave #f]
                        #:keep-artifacts? [keep? #t]
                        #:progress? [progress? #t]
                        #:timeout [timeout #f])
+  (call-with-derived-wire-scene
+   (lambda (derivation)
+     (openems-sweep/prepared
+      start-mhz stop-mhz
+      #:steps steps
+      #:cells-per-wavelength cells-per-wavelength
+      #:mesh-grading mesh-grading
+      #:padding-wavelengths padding-wavelengths
+      #:max-timesteps maximum-timesteps
+      #:end-criteria end-criteria
+      #:octave requested-octave
+      #:keep-artifacts? keep?
+      #:progress? progress?
+      #:timeout timeout
+      #:wire-derivation derivation))
+   #:segments wire-segments))
+
+(define (openems-sweep/prepared start-mhz stop-mhz
+                       #:steps [steps 101]
+                       #:cells-per-wavelength [cells-per-wavelength 20]
+                       #:mesh-grading [mesh-grading 1.4]
+                       #:padding-wavelengths [padding-wavelengths 0.5]
+                       #:max-timesteps [maximum-timesteps
+                                        default-maximum-timesteps]
+                       #:end-criteria [end-criteria default-end-criteria]
+                       #:octave [requested-octave #f]
+                       #:keep-artifacts? [keep? #t]
+                       #:progress? [progress? #t]
+                       #:timeout [timeout #f]
+                       #:wire-derivation [wire-derivation #f])
   (positive-real 'openems-sweep start-mhz "start frequency in MHz")
   (positive-real 'openems-sweep stop-mhz "stop frequency in MHz")
   (unless (> stop-mhz start-mhz)
@@ -914,10 +946,6 @@
     (raise-argument-error 'openems-sweep "(or/c #f positive-real?)" timeout))
   (validate-model!)
   (validate-solid-scene!)
-  (when (pair? (model-edges))
-    (raise-user-error
-     'openems-sweep
-     "wire-to-capsule conversion is not implemented in this milestone; use explicit bodies"))
   (when (and (null? (model-bodies)) (null? (model-sheets)))
     (raise-user-error 'openems-sweep
                       "the physical scene has no volume bodies or sheets"))
@@ -996,6 +1024,22 @@
      'user_to_solver_transform (matrix->lists transform)
      'solver_to_user_transform (matrix->lists inverse-transform)
      'geometry (append (map body-manifest bodies) (map sheet-manifest sheets))
+     'wire_conversion
+     (if wire-derivation
+         (hash 'representation "capsule-union"
+               'body_name
+               (format "~a"
+                       (solid-body-name
+                        (wire-solid-derivation-body wire-derivation)))
+               'edge_count (wire-solid-derivation-edge-count wire-derivation)
+               'circular_segments (wire-solid-derivation-segments wire-derivation)
+               'feed_edge_id
+               (or (wire-solid-derivation-feed-edge-id wire-derivation) 'null)
+               'derived_feed_gap_m
+               (or (wire-solid-derivation-feed-gap wire-derivation) 'null)
+               'feed_wire_radius_m
+               (or (wire-solid-derivation-radius wire-derivation) 'null))
+         'null)
      'port (hash 'name (format "~a" (lumped-port-name port))
                  'impedance_ohms (exact->inexact (lumped-port-impedance port))
                  'gap_m (exact->inexact (lumped-port-gap port))

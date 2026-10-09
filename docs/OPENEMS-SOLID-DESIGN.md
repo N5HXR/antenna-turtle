@@ -163,9 +163,12 @@ generates an Octave driver, runs OpenEMS, invokes `calcPort`, and writes simple
 machine-readable result tables. Failed runs retain their complete working
 directory. Successful network-only runs may clean up automatically.
 
-The current executable slice is `openems-sweep`. It accepts PEC and lossless
-dielectric volume bodies, planar PEC/conducting sheets, and exactly one
-explicit lumped port, applies the port-alignment transform, creates a
+The current executable slice is `openems-sweep`. It accepts ordinary Turtle
+wire networks, PEC and lossless dielectric volume bodies, planar
+PEC/conducting sheets, and exactly one derived or explicit lumped port. Wire
+edges become one temporary union of Manifold capsules; the marked wire feed is
+cut from that union using the wavelength/radius policy above. It applies the
+port-alignment transform, creates a
 conservative fixed mesh, runs Octave/OpenEMS, and returns frequency-indexed
 complex S11 and input impedance samples. Sheet polygons retain arbitrary
 turtle orientation through CSXCAD primitive transforms. The basic mesh uses
@@ -180,14 +183,14 @@ the retained `openEMS_stats.txt` records which limit ended the run.
                  #:keep-artifacts? #t))
 ```
 
-The runnable references are `examples/openems-dipole.rkt` and the lossless
-substrate/sheet model `examples/openems-patch.rkt`. OpenEMS results feed
+The runnable references are `examples/openems-dipole.rkt`, the lossless
+substrate/sheet model `examples/openems-patch.rkt`, and the shared-wire
+NEC2C/OpenEMS comparison `examples/openems-wire-yagi.rkt`. OpenEMS results feed
 the existing VSWR, return-loss, impedance, and Smith-chart viewers through a
 solver-neutral network representation shared with NEC2C. The driver now also
 records a broadband time-domain NF2FF box, and `openems-radiation-grid`
 postprocesses it into the existing 3-D viewers without rerunning FDTD.
-Wire-to-capsule conversion and adaptive mesh refinement remain later
-milestones.
+Adaptive, topology-aware mesh simplification remains a later milestone.
 
 Although the proof of concept excites one port, result structures are designed
 for a frequency-indexed complex S-matrix. A complete N-port matrix eventually
@@ -250,11 +253,11 @@ The comparison records resonant frequency, impedance, S11, approximately
 differences include finite radius, physical feed gap, NEC segmentation, and
 FDTD staircasing.
 
-An opt-in mesh-convergence integration test compares approximately lambda/10,
-lambda/15, and lambda/20 meshes. Initial measurements include resonant
-frequency, impedance, S11, maximum directivity, and selected pattern samples.
-Numerical pass tolerances will be based on observed convergence rather than
-invented before the backend produces data.
+The opt-in `tests/openems-convergence-test.rkt` compares lambda/10, lambda/15,
+and lambda/20 meshes. It records best-match frequency, impedance, S11, and
+maximum directivity and checks that refinement does not produce a divergent
+sequence. Its deliberately broad floors account for sweep sampling and normal
+gridded-solver noise; future reference runs may tighten them.
 
 Cross-solver comparison is a smoke test for units, transforms, port
 connectivity, and result parsing—not a requirement that MoM and FDTD produce

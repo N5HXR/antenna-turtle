@@ -610,13 +610,20 @@ Lines are intentionally screen-visible and do not depict the physical wire
 diameter; use the simulator or MATLAB solid export when surface geometry
 matters.
 
-For a physical Manifold scene, use `show-solid-model` instead. It displays the
-actual triangulated volume surfaces, planar conducting sheets, and each
-explicit lumped port as a red box and polarity arrow:
+For a physical Manifold scene or the OpenEMS interpretation of ordinary wire
+geometry, use `show-solid-model` instead. It displays actual triangulated
+volume surfaces, planar conducting sheets, and derived or explicit lumped
+ports as red boxes and polarity arrows:
 
 ```racket
 (show-solid-model)
 ```
+
+Wire edges appear as a temporary union of physical capsules with the modeled
+wire diameter. A marked feed appears as the actual gap OpenEMS will use. The
+live centerline model is not changed, so the same construction remains ready
+for NEC2C. Use `#:wire-segments` to trade circular smoothness for triangle
+count.
 
 To place a Yagi element or another solid by its midpoint, either construct a
 centered Manifold primitive such as `(m:cylinder length radius #:center? #t)`
@@ -639,10 +646,12 @@ the FDTD engine. Antenna Turtle prints the artifact directory before launch,
 so you can inspect `simulation/model.xml` with AppCSXCAD while the solver is
 running. Retain artifacts when you want them to remain available after the
 result is returned.
-`examples/openems-dipole.rkt` is the PEC-volume reference, while
+`examples/openems-dipole.rkt` is the explicit PEC-volume reference, while
 `examples/openems-patch.rkt` demonstrates a lossless dielectric substrate with
-PEC ground and patch sheets. Dielectric scenes automatically use the shortest
-material wavelength when selecting the basic mesh resolution.
+PEC ground and patch sheets. `examples/openems-wire-yagi.rkt` builds an
+ordinary wire model once, derives its capsule representation for OpenEMS, and
+compares the resulting pattern with NEC2C. Dielectric scenes automatically use
+the shortest material wavelength when selecting the basic mesh resolution.
 
 ## 6. Repetition and Layout Tables
 

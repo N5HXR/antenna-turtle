@@ -797,12 +797,14 @@ The command-line equivalent is:
 raco antenna-turtle build model.rkt --view
 ```
 
-### `(show-solid-model [#:width 900] [#:height 700] [#:aspect-ratio 1])`
+### `(show-solid-model [#:width 900] [#:height 700] [#:aspect-ratio 1] [#:wire-segments 24])`
 
-Opens registered Manifold volume bodies and planar sheets in a
-proportion-preserving Plot3D window. PEC, dielectric, and sheet geometry
-receive distinct materials. Explicit lumped
-ports appear as red boxes with an arrow indicating voltage polarity. This is a
+Opens registered Manifold volume bodies, planar sheets, and any ordinary
+Turtle wire network in a proportion-preserving Plot3D window. Wires are shown
+as the same temporary capsule union used by OpenEMS, including its derived
+physical feed gap. `#:wire-segments` controls circular tessellation. PEC,
+dielectric, and sheet geometry receive distinct materials. Derived and
+explicit lumped ports appear as red boxes with a polarity arrow. This is a
 geometry preflight viewer; the OpenEMS-generated `model.xml` remains the
 authoritative view of the final Yee mesh and CSXCAD properties.
 
@@ -845,10 +847,11 @@ sheet follows the complete turtle frame, including arbitrary rotation.
 
 ### `(openems-sweep start-mhz stop-mhz keyword-arguments ...)`
 
-The current executable slice supports PEC and nondispersive lossless
-dielectric volume bodies, planar PEC/conducting sheets, and exactly one
-explicit lumped port. It returns an `openems-sweep-result` containing complex
-S11 and input impedance at every requested frequency. Unlike materials that
+The current executable slice supports ordinary Turtle wires, PEC and
+nondispersive lossless dielectric volume bodies, planar PEC/conducting sheets,
+and exactly one derived or explicit lumped port. It returns an
+`openems-sweep-result` containing complex S11 and input impedance at every
+requested frequency. Unlike materials that
 overlap or touch through a sheet interface require distinct explicit CSXCAD
 priorities. The mesh wavelength is reduced by the largest dielectric
 `sqrt(epsilon-r * mu-r)` in the scene.
@@ -862,11 +865,21 @@ priorities. The mesh wavelength is reduced by the largest dielectric
  #:padding-wavelengths 0.5
  #:max-timesteps 100000
  #:end-criteria 1e-5
+ #:wire-segments 24
  #:octave #f
  #:keep-artifacts? #t
  #:progress? #t
  #:timeout #f)
 ```
+
+Every wire edge becomes a physical Manifold capsule using its modeled
+diameter. Connected and disconnected capsules are combined into one temporary
+PEC body without changing the live centerline graph. A marked wire feed becomes
+a physical gap and lumped port. Its default gap is
+`max(wavelength/1000, wire-radius)`; a warning is printed when that gap exceeds
+the marked edge's length. `#:wire-segments` controls capsule circular
+tessellation and must be at least three. Because the backend is currently
+one-port, a model must contain exactly one wire-derived or explicit port.
 
 The mesh settings are deliberately explicit numerical controls, not promises
 of cross-backend equivalence. The generated Octave driver reports exact mesh

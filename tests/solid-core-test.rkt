@@ -3,7 +3,8 @@
 (require rackunit
          (prefix-in m: manifold)
          "../antenna-turtle/main.rkt"
-         "../antenna-turtle/private/solid-view.rkt")
+         "../antenna-turtle/private/solid-view.rkt"
+         "../antenna-turtle/private/wire-solid.rkt")
 
 (define (m-point->list point)
   (list (m:point3-x point) (m:point3-y point) (m:point3-z point)))
@@ -201,3 +202,31 @@
   (define renderers (solid-model->plot-renderers))
   (check-equal? (length renderers) 1)
   (clear-bodies))
+
+(test-case "wire centerlines derive a temporary capsule union and feed gap"
+  (reset-model!)
+  ;; This frequency makes wavelength exactly one metre.
+  (model frequency 299.792458 impedance 75)
+  (with-wire
+    (move up 1 feed (center "wire-feed" 1 0)))
+  (define derived-body #f)
+  (call-with-derived-wire-scene
+   (lambda (derivation)
+     (set! derived-body (wire-solid-derivation-body derivation))
+     (check-equal? (length (model-bodies)) 1)
+     (check-equal? (length (model-ports)) 1)
+     (check-equal? (wire-solid-derivation-edge-count derivation) 1)
+     (check-equal? (wire-solid-derivation-feed-edge-id derivation) 1)
+     (check-= (wire-solid-derivation-feed-gap derivation) 0.001 1e-12)
+     (define port (wire-solid-derivation-port derivation))
+     (check-equal? (lumped-port-name port) "wire-feed")
+     (check-equal? (lumped-port-impedance port) 75)
+     (check-equal? (lumped-port-center port) (point3 0 0 1/2))
+     (define solid (solid-body-solid derived-body))
+     ;; The feed center has been removed while either arm remains conductive.
+     (check-= (m:solid-winding-number solid '(0 0 0.5)) 0 1e-12)
+     (check-true (> (m:solid-winding-number solid '(0 0 0.25)) 0.9))))
+  ;; Derivation must neither mutate the live scene nor leak its native handle.
+  (check-equal? (model-bodies) '())
+  (check-equal? (model-ports) '())
+  (check-true (m:solid-closed? (solid-body-solid derived-body))))

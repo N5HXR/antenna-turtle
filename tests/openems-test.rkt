@@ -128,6 +128,42 @@
   (m:solid-close! substrate)
   (clear-bodies))
 
+(test-case "OpenEMS derives ordinary turtle wires as a gapped capsule body"
+  (reset-model!)
+  (model frequency 915 impedance 50)
+  (with-wire
+    (spread up (* 0.47 wavelength) feed center))
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 800 1050
+                     #:wire-segments 16
+                     #:octave mock-octave
+                     #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define artifacts (openems-run-info-artifacts run))
+  (define driver (file->string (openems-artifacts-driver-path artifacts)))
+  (check-regexp-match #rx"ImportSTL" driver)
+  (define manifest (openems-run-info-manifest run))
+  (define conversion (hash-ref manifest 'wire_conversion))
+  (check-equal? (hash-ref conversion 'representation) "capsule-union")
+  (check-equal? (hash-ref conversion 'edge_count) 1)
+  (check-equal? (hash-ref conversion 'circular_segments) 16)
+  (check-equal? (hash-ref conversion 'feed_edge_id) 1)
+  (check-true (positive? (hash-ref conversion 'derived_feed_gap_m)))
+  ;; Conversion is a snapshot, not a mutation of the physical scene.
+  (check-equal? (model-bodies) '())
+  (check-equal? (model-ports) '())
+  (openems-close! artifacts)
+  (delete-file mock-octave)
+  (clear-wires))
+
 (test-case "OpenEMS artifacts can be explicitly released"
   (define directory
     (make-temporary-file "antenna-turtle-openems-close~a" 'directory))
