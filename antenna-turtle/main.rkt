@@ -1,6 +1,7 @@
 #lang racket
 
 (require (except-in "private/core.rkt" feed)
+         "private/solid-core.rkt"
          "private/export-nec2c.rkt"
          "private/export-mmana.rkt"
          "private/export-matlab.rkt"
@@ -22,6 +23,7 @@
  (all-from-out (planet jphelps/loop:1:25))
  (all-from-out "private/nec2c.rkt")
  (all-from-out "private/nec2c-view.rkt")
+ (all-from-out "private/solid-core.rkt")
  wavelength
  half-wave
  quarter-wave
@@ -33,8 +35,12 @@
              call-with-wire call-with-points call-with-scale call-from-here
              call-with-warp call-with-surface call-with-reflection
              call-with-radial-repeat radial-iterations-value
+             register-model-reset-hook! current-turtle-affine-transform
              call-with-pen call-with-push)
  model
+ body
+ sheet
+ port
  turn
  move
  point
@@ -87,7 +93,8 @@
      #'(#%plain-module-begin
         (reset-model!)
         form ...
-        (validate-model!))]))
+        (validate-model!)
+        (validate-solid-scene!))]))
 
 (begin-for-syntax
   (define (syntax-pairs who stx description)
@@ -427,6 +434,147 @@
               [(wire-diameter) #`(wire-diameter #,value)]
               [(impedance)     #`(model-impedance #,value)])))))
   #`(begin #,@forms))
+
+;; Register a Manifold solid in the physical scene. The procedural add-body
+;; operation remains available for generated names and other dynamic models;
+;; this form supplies the contextual, pair-wise DSL used by ordinary antenna
+;; descriptions.
+(define-syntax (body stx)
+  (syntax-parse stx
+    [(_ name:id setting ...)
+     (define pairs
+       (syntax-pairs
+        'body #'(_ setting ...)
+        (string-append
+         "expected setting/value pairs using geometry, material, priority, "
+         "or coordinates")))
+     (define seen (make-hasheq))
+     (define settings (make-hasheq))
+     (for ([pair (in-list pairs)])
+       (define key (syntax-e (car pair)))
+       (unless (memq key '(geometry material priority coordinates))
+         (raise-syntax-error
+          'body
+          "expected geometry, material, priority, or coordinates"
+          stx (car pair)))
+       (when (hash-ref seen key #f)
+         (raise-syntax-error 'body "setting may be specified only once"
+                             stx (car pair)))
+       (hash-set! seen key #t)
+       (hash-set! settings key (cdr pair)))
+     (define geometry (hash-ref settings 'geometry #f))
+     (unless geometry
+       (raise-syntax-error 'body "geometry setting is required" stx))
+     (define material (hash-ref settings 'material #'pec))
+     (define priority (hash-ref settings 'priority #'#f))
+     (define coordinates (hash-ref settings 'coordinates #f))
+     (define coordinates-expression
+       (cond
+         [(not coordinates) #''local]
+         [(and (identifier? coordinates)
+               (memq (syntax-e coordinates) '(local world)))
+          #`'#,(syntax-e coordinates)]
+         [else
+          (raise-syntax-error
+           'body "coordinates must be local or world" stx coordinates)]))
+     #`(add-body '#,(syntax-e #'name) #,material #,geometry
+                 #:priority #,priority
+                 #:coordinates #,coordinates-expression)]
+    [(_ . _)
+     (raise-syntax-error
+      'body "expected (body NAME setting value ...)" stx)]))
+
+;; A sheet is a closed two-dimensional polygon in the turtle's local XY
+;; plane. Local placement is the useful default; world coordinates remain an
+;; explicit escape hatch for generated geometry.
+(define-syntax (sheet stx)
+  (syntax-parse stx
+    [(_ name:id setting ...)
+     (define pairs
+       (syntax-pairs
+        'sheet #'(_ setting ...)
+        (string-append
+         "expected setting/value pairs using points, material, priority, "
+         "or coordinates")))
+     (define seen (make-hasheq))
+     (define settings (make-hasheq))
+     (for ([pair (in-list pairs)])
+       (define key (syntax-e (car pair)))
+       (unless (memq key '(points material priority coordinates))
+         (raise-syntax-error
+          'sheet "expected points, material, priority, or coordinates"
+          stx (car pair)))
+       (when (hash-ref seen key #f)
+         (raise-syntax-error 'sheet "setting may be specified only once"
+                             stx (car pair)))
+       (hash-set! seen key #t)
+       (hash-set! settings key (cdr pair)))
+     (define points (hash-ref settings 'points #f))
+     (unless points
+       (raise-syntax-error 'sheet "points setting is required" stx))
+     (define material (hash-ref settings 'material #'pec))
+     (define priority (hash-ref settings 'priority #'#f))
+     (define coordinates (hash-ref settings 'coordinates #f))
+     (define coordinates-expression
+       (cond
+         [(not coordinates) #''local]
+         [(and (identifier? coordinates)
+               (memq (syntax-e coordinates) '(local world)))
+          #`'#,(syntax-e coordinates)]
+         [else
+          (raise-syntax-error
+           'sheet "coordinates must be local or world" stx coordinates)]))
+     #`(add-sheet '#,(syntax-e #'name) #,material #,points
+                  #:priority #,priority
+                  #:coordinates #,coordinates-expression)]
+    [(_ . _)
+     (raise-syntax-error
+      'sheet "expected (sheet NAME setting value ...)" stx)]))
+
+;; Like spread, a port is centered on the turtle and selects one of its local
+;; axes without changing turtle state. The scene stores world coordinates;
+;; OpenEMS may later apply a second rigid transform for Yee-grid alignment.
+(define-syntax (port stx)
+  (syntax-parse stx
+    [(_ direction:id setting ...)
+     (move-direction-components #'direction stx)
+     (define pairs
+       (if (null? (syntax->list #'(setting ...)))
+           '()
+           (syntax-pairs
+            'port #'(_ setting ...)
+            (string-append
+             "expected setting/value pairs using name, impedance, gap, "
+             "width, or depth"))))
+     (define seen (make-hasheq))
+     (define settings (make-hasheq))
+     (for ([pair (in-list pairs)])
+       (define key (syntax-e (car pair)))
+       (unless (memq key '(name impedance gap width depth))
+         (raise-syntax-error
+          'port "expected name, impedance, gap, width, or depth"
+          stx (car pair)))
+       (when (hash-ref seen key #f)
+         (raise-syntax-error 'port "setting may be specified only once"
+                             stx (car pair)))
+       (hash-set! seen key #t)
+       (hash-set! settings key (cdr pair)))
+     (define keyword-arguments
+       (append
+        (if (hash-has-key? settings 'name)
+            (list #'#:name (hash-ref settings 'name)) '())
+        (if (hash-has-key? settings 'impedance)
+            (list #'#:impedance (hash-ref settings 'impedance)) '())
+        (if (hash-has-key? settings 'gap)
+            (list #'#:gap (hash-ref settings 'gap)) '())
+        (if (hash-has-key? settings 'width)
+            (list #'#:width (hash-ref settings 'width)) '())
+        (if (hash-has-key? settings 'depth)
+            (list #'#:depth (hash-ref settings 'depth)) '())))
+     #`(add-lumped-port '#,(syntax-e #'direction) #,@keyword-arguments)]
+    [(_ . _)
+     (raise-syntax-error
+      'port "expected (port DIRECTION setting value ...)" stx)]))
 
 (define-syntax-rule (with-wire body ...)
   (call-with-wire (lambda () body ...)))

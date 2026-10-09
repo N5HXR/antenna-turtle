@@ -1,0 +1,147 @@
+#lang racket
+
+(require rackunit
+         (prefix-in m: manifold)
+         "../antenna-turtle/main.rkt")
+
+(define (m-point->list point)
+  (list (m:point3-x point) (m:point3-y point) (m:point3-z point)))
+
+(define (body-bounds body)
+  (define-values (minimum maximum) (m:solid-bounds (solid-body-solid body)))
+  (values (m-point->list minimum) (m-point->list maximum)))
+
+(test-case "body DSL places an owned Manifold copy in the turtle frame"
+  (reset-model!)
+  (move forward 2)
+  (turn left 90)
+  (define source (m:cube 1))
+  (define placed
+    (body radiator
+      geometry source))
+  (define-values (minimum maximum) (body-bounds placed))
+  (check-= (first minimum) 1 1e-12)
+  (check-= (second minimum) 0 1e-12)
+  (check-= (third minimum) 0 1e-12)
+  (check-= (first maximum) 2 1e-12)
+  (check-= (second maximum) 1 1e-12)
+  (check-= (third maximum) 1 1e-12)
+  (check-equal? (solid-body-material placed) pec)
+  (check-equal? (solid-body-coordinates placed) 'local)
+
+  ;; Clearing the scene closes only its transformed copy.
+  (clear-bodies)
+  (check-true (m:solid-closed? (solid-body-solid placed)))
+  (check-false (m:solid-closed? source))
+  (m:solid-close! source))
+
+(test-case "world-coordinate bodies bypass turtle placement"
+  (reset-model!)
+  (move up 20)
+  (define source (m:cube 2))
+  (define placed
+    (body enclosure
+      geometry source
+      coordinates world
+      priority 7))
+  (define-values (minimum maximum) (body-bounds placed))
+  (check-equal? minimum '(0.0 0.0 0.0))
+  (check-equal? maximum '(2.0 2.0 2.0))
+  (check-equal? (solid-body-priority placed) 7)
+  (m:solid-close! source)
+  (clear-bodies))
+
+(test-case "lossless dielectrics and overlap priorities validate explicitly"
+  (reset-model!)
+  (define substrate
+    (dielectric #:name 'substrate #:relative-permittivity 4.4))
+  (check-equal? (em-material-relative-permittivity substrate) 4.4)
+  (check-equal? (em-material-relative-permeability substrate) 1)
+
+  (define first-shape (m:cube 2))
+  (define second-shape (m:cube 2))
+  (add-body 'dielectric substrate first-shape #:coordinates 'world)
+  (add-body 'metal pec second-shape #:coordinates 'world)
+  (check-exn #rx"distinct explicit priorities" validate-solid-scene!)
+  (m:solid-close! first-shape)
+  (m:solid-close! second-shape)
+  (clear-bodies)
+
+  (define prioritized-first (m:cube 2))
+  (define prioritized-second (m:cube 2))
+  (add-body 'dielectric substrate prioritized-first
+            #:priority 10 #:coordinates 'world)
+  (add-body 'metal pec prioritized-second
+            #:priority 20 #:coordinates 'world)
+  (check-not-exn validate-solid-scene!)
+  (m:solid-close! prioritized-first)
+  (m:solid-close! prioritized-second)
+  (clear-bodies))
+
+(test-case "planar sheets and ports use the current turtle pose"
+  (reset-model!)
+  (model frequency 100 impedance 75)
+  (move forward 3)
+  (turn left 90)
+  (define outline '((-1 -2) (1 -2) (1 2) (-1 2)))
+  (define placed-sheet
+    (sheet reflector
+      points outline
+      material pec))
+  (check-equal? (length (planar-sheet-points placed-sheet)) 4)
+  (check-equal? (planar-sheet-normal placed-sheet) (point3 0 0 1))
+
+  (define placed-port (port forward))
+  (check-equal? (lumped-port-name placed-port) "port-1")
+  (check-equal? (lumped-port-impedance placed-port) 75)
+  (check-equal? (lumped-port-center placed-port) (point3 3 0 0))
+  (check-equal? (lumped-port-direction placed-port) (point3 0 1 0))
+  (check-equal? (lumped-port-gap placed-port) (/ (model-wavelength) 1000))
+  (check-equal? (lumped-port-width placed-port) 0)
+  (check-equal? (lumped-port-depth placed-port) 0))
+
+(test-case "clear-bodies clears subordinate sheets and ports but not wires"
+  (reset-model!)
+  (with-wire (move forward 1))
+  (define source (m:cube 1))
+  (body radome geometry source)
+  (sheet ground points '((0 0) (1 0) (0 1)))
+  (port up name "feed")
+  (check-equal? (length (model-edges)) 1)
+  (check-equal? (length (model-bodies)) 1)
+  (check-equal? (length (model-sheets)) 1)
+  (check-equal? (length (model-ports)) 1)
+
+  (clear-bodies)
+  (check-equal? (length (model-edges)) 1)
+  (check-equal? (model-bodies) '())
+  (check-equal? (model-sheets) '())
+  (check-equal? (model-ports) '())
+  (m:solid-close! source))
+
+(test-case "reset-model clears both wire and physical geometry"
+  (reset-model!)
+  (define source (m:cube 1))
+  (body block geometry source)
+  (port right)
+  (with-wire (move up 1))
+  (reset-model!)
+  (check-equal? (model-edges) '())
+  (check-equal? (model-bodies) '())
+  (check-equal? (model-ports) '())
+  (m:solid-close! source))
+
+(test-case "solid placement rejects nonlinear and repeated construction scopes"
+  (reset-model!)
+  (define source (m:cube 1))
+  (check-exn
+   #rx"cannot place solid geometry inside with-warp"
+   (lambda ()
+     (with-warp (lambda (x y z) (list x y z))
+       (body warped geometry source))))
+  (check-exn
+   #rx"cannot place solid geometry inside radial-repeat"
+   (lambda ()
+     (radial-repeat 2
+       (body repeated geometry source))))
+  (m:solid-close! source))

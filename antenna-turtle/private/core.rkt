@@ -27,6 +27,11 @@
  model-edges
  wire-used
 
+ ;; Extension support. These are consumed by geometry backends rather than
+ ;; intended as surface DSL operations.
+ register-model-reset-hook!
+ current-turtle-affine-transform
+
  ;; Model settings.
  clear-wires
  reset-model!
@@ -126,6 +131,15 @@
 (define pending-feed-location (make-parameter #f))
 (define current-coordinate-warp (make-parameter #f))
 (define current-radial-iterations (make-parameter '()))
+(define model-reset-hooks '())
+
+(define (register-model-reset-hook! hook)
+  (unless (and (procedure? hook) (procedure-arity-includes? hook 0))
+    (raise-argument-error
+     'register-model-reset-hook! "(procedure-arity-includes/c 0)" hook))
+  (unless (memq hook model-reset-hooks)
+    (set! model-reset-hooks (append model-reset-hooks (list hook))))
+  (void))
 
 ;; Model settings retain the same zero/one-argument interface as ordinary
 ;; Racket parameters. Maximum segment length stores #f internally to mean a
@@ -385,6 +399,7 @@
 (define (reset-model!)
   (check-clear-context 'reset-model!)
   (clear-construction-state! millimeter)
+  (for ([hook (in-list model-reset-hooks)]) (hook))
   (model-title "Turtle Antenna")
   (model-impedance 50)
   (model-ground 'none)
@@ -466,6 +481,24 @@
   (for/list ([row (in-list a)])
     (for/list ([column (in-list bt)])
       (for/sum ([x (in-list row)] [y (in-list column)]) (* x y)))))
+
+;; Return the conventional row-major 3x4 affine transform that places local
+;; geometry in the current turtle frame. Nonlinear coordinate warps and radial
+;; replication cannot be represented by one affine matrix; solid backends must
+;; handle those as explicit future operations rather than silently misplacing
+;; geometry.
+(define (current-turtle-affine-transform [who 'antenna-turtle])
+  (when (current-coordinate-warp)
+    (error who "cannot place solid geometry inside with-warp or with-surface"))
+  (when (pair? (current-radial-iterations))
+    (error who "cannot place solid geometry inside radial-repeat"))
+  (define state (current-turtle-state))
+  (define position (turtle-state-position state))
+  (for/list ([row (in-list (turtle-state-orientation state))]
+             [translation (in-list (list (point3-x position)
+                                         (point3-y position)
+                                         (point3-z position)))])
+    (append row (list translation))))
 
 (define (exact-quarter-turn-sin-cos degrees)
   (and (exact? degrees)
