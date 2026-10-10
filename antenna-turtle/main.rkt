@@ -510,14 +510,15 @@
         'sheet #'(_ setting ...)
         (string-append
          "expected setting/value pairs using points, material, priority, "
-         "or coordinates")))
+         "coordinates, or mesh-edges")))
      (define seen (make-hasheq))
      (define settings (make-hasheq))
      (for ([pair (in-list pairs)])
        (define key (syntax-e (car pair)))
-       (unless (memq key '(points material priority coordinates))
+       (unless (memq key '(points material priority coordinates mesh-edges))
          (raise-syntax-error
-          'sheet "expected points, material, priority, or coordinates"
+          'sheet
+          "expected points, material, priority, coordinates, or mesh-edges"
           stx (car pair)))
        (when (hash-ref seen key #f)
          (raise-syntax-error 'sheet "setting may be specified only once"
@@ -529,6 +530,7 @@
        (raise-syntax-error 'sheet "points setting is required" stx))
      (define material (hash-ref settings 'material #'pec))
      (define priority (hash-ref settings 'priority #'#f))
+     (define mesh-edges (hash-ref settings 'mesh-edges #f))
      (define coordinates (hash-ref settings 'coordinates #f))
      (define coordinates-expression
        (cond
@@ -539,9 +541,19 @@
          [else
           (raise-syntax-error
            'sheet "coordinates must be local or world" stx coordinates)]))
+     (define mesh-edges-expression
+       (cond
+         [(not mesh-edges) #''exact]
+         [(and (identifier? mesh-edges)
+               (memq (syntax-e mesh-edges) '(exact metal)))
+          #`'#,(syntax-e mesh-edges)]
+         [else
+          (raise-syntax-error
+           'sheet "mesh-edges must be exact or metal" stx mesh-edges)]))
      #`(add-sheet '#,(syntax-e #'name) #,material #,points
                   #:priority #,priority
-                  #:coordinates #,coordinates-expression)]
+                  #:coordinates #,coordinates-expression
+                  #:mesh-edges #,mesh-edges-expression)]
     [(_ . _)
      (raise-syntax-error
       'sheet "expected (sheet NAME setting value ...)" stx)]))

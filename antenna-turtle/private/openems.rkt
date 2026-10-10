@@ -73,7 +73,7 @@
   #:transparent)
 
 (struct exported-sheet
-  (name material priority points-2d transform minimum maximum)
+  (name material priority points-2d transform minimum maximum mesh-edges)
   #:transparent)
 
 (define octave-executable
@@ -87,7 +87,7 @@
 (define speed-of-light 299792458.0)
 (define default-maximum-timesteps 100000)
 (define default-end-criteria 1e-5)
-(define minimum-dielectric-cells-per-extent 4)
+(define default-minimum-dielectric-cells 4)
 (define identity-rigid-transform
   '((1 0 0 0) (0 1 0 0) (0 0 1 0)))
 (define-runtime-path openems-progress-path "openems-progress.rkt")
@@ -292,7 +292,8 @@
                         (exported-sheet-points-2d sheet))
         'local_to_solver_transform (matrix->lists (exported-sheet-transform sheet))
         'minimum (map exact->inexact (exported-sheet-minimum sheet))
-        'maximum (map exact->inexact (exported-sheet-maximum sheet))))
+        'maximum (map exact->inexact (exported-sheet-maximum sheet))
+        'mesh_edges (symbol->string (exported-sheet-mesh-edges sheet))))
 
 (define (json-safe value)
   (cond
@@ -374,7 +375,8 @@
     (exported-sheet (planar-sheet-name sheet)
                     (planar-sheet-material sheet)
                     (or (planar-sheet-priority sheet) 10)
-                    points-2d local-to-solver minimum maximum)))
+                    points-2d local-to-solver minimum maximum
+                    (planar-sheet-mesh-edges sheet))))
 
 (define (geometry-minimum geometry)
   (if (exported-body? geometry)
@@ -471,14 +473,135 @@
   (for/list ([item (in-list geometry)])
     (list-ref (accessor item) axis)))
 
-(define (dielectric-subdivision-values geometry axis max-resolution)
+(define (exported-sheet-points-3d sheet)
+  (for/list ([point (in-list (exported-sheet-points-2d sheet))])
+    (transform-point (exported-sheet-transform sheet)
+                     (point3 (first point) (second point) 0))))
+
+(define (near? first second [scale 1])
+  (<= (abs (- first second)) (* 1e-9 (max 1 scale))))
+
+(define (metal-sheet-plane-axis sheet)
+  (unless (memq (em-material-kind (exported-sheet-material sheet))
+                '(pec conducting-sheet))
+    (raise-arguments-error
+     'openems-sweep
+     "metal edge treatment requires a PEC or conducting sheet"
+     "sheet" (exported-sheet-name sheet)))
+  (define minimum (exported-sheet-minimum sheet))
+  (define maximum (exported-sheet-maximum sheet))
+  (define extents (map - maximum minimum))
+  (define scale (apply max extents))
+  (define flat-axes
+    (for/list ([extent (in-list extents)] [axis (in-naturals)]
+               #:when (near? extent 0 scale))
+      axis))
+  (unless (= (length flat-axes) 1)
+    (raise-arguments-error
+     'openems-sweep
+     "metal edge treatment requires an axis-aligned planar sheet"
+     "sheet" (exported-sheet-name sheet)))
+  (define normal-axis (first flat-axes))
+  (define in-plane-axes (remove normal-axis '(0 1 2)))
+  (define points (exported-sheet-points-3d sheet))
+  (unless
+      (and (= (length points) 4)
+           (for/and ([point (in-list points)])
+             (for/and ([axis (in-list in-plane-axes)])
+               (define coordinate (list-ref point axis))
+               (or (near? coordinate (list-ref minimum axis) scale)
+                   (near? coordinate (list-ref maximum axis) scale))))
+           (= (length
+               (remove-duplicates
+                (for/list ([point (in-list points)])
+                  (for/list ([axis (in-list in-plane-axes)])
+                    (if (near? (list-ref point axis)
+                               (list-ref minimum axis) scale)
+                        'low
+                        'high)))))
+              4))
+    (raise-arguments-error
+     'openems-sweep
+     "metal edge treatment currently requires a rectangular sheet"
+     "sheet" (exported-sheet-name sheet)))
+  normal-axis)
+
+(define (metal-edge-sheets geometry)
+  (filter (lambda (item)
+            (and (exported-sheet? item)
+                 (eq? (exported-sheet-mesh-edges item) 'metal)))
+          geometry))
+
+(define (ordinary-geometry-axis-values geometry axis)
+  (append*
+   (for/list ([item (in-list geometry)])
+     (cond
+       [(and (exported-sheet? item)
+             (eq? (exported-sheet-mesh-edges item) 'metal))
+        (define normal-axis (metal-sheet-plane-axis item))
+        ;; The sheet elevation remains an exact material boundary. Its
+        ;; in-plane edges are represented only by the shifted metal-edge pair.
+        (if (= axis normal-axis)
+            (list (list-ref (exported-sheet-minimum item) axis))
+            '())]
+       [else
+        (list (list-ref (geometry-minimum item) axis)
+              (list-ref (geometry-maximum item) axis))]))))
+
+(define (metal-edge-axis-values geometry axis resolution fixed-values)
+  ;; DetectEdges/AddEdges2Grid place two grid lines around each 2-D metal
+  ;; boundary: resolution/3 inside and 2*resolution/3 outside. If another
+  ;; required line would make either shifted line excessively close, retain
+  ;; the exact edge instead of creating a pathological sliver cell.
+  (define minimum-separation (/ resolution 4))
+  (define edges
+    (append*
+     (for/list ([sheet (in-list (metal-edge-sheets geometry))]
+                #:unless (= axis (metal-sheet-plane-axis sheet)))
+       (list (list sheet 'low
+                   (list-ref (exported-sheet-minimum sheet) axis))
+             (list sheet 'high
+                   (list-ref (exported-sheet-maximum sheet) axis))))))
+  (define-values (_existing added)
+    (for/fold ([existing fixed-values] [added '()]) ([edge (in-list edges)])
+      (match-define (list sheet side coordinate) edge)
+      (define candidates
+        (if (eq? side 'low)
+            (list (- coordinate (* 2/3 resolution))
+                  (+ coordinate (/ resolution 3)))
+            (list (- coordinate (/ resolution 3))
+                  (+ coordinate (* 2/3 resolution)))))
+      (define conflict?
+        (for/or ([candidate (in-list candidates)])
+          (for/or ([line (in-list existing)])
+            (< (abs (- candidate line)) minimum-separation))))
+      (if conflict?
+          (let ([nearby-edge-line?
+                 (for/or ([line (in-list existing)])
+                   (< (abs (- coordinate line)) minimum-separation))])
+            (eprintf
+             (string-append
+              "OpenEMS mesh warning: metal-edge lines for sheet ~a at ~a m "
+              "would be too close to another required line; ~a on this axis\n")
+             (exported-sheet-name sheet) coordinate
+             (if nearby-edge-line?
+                 "using the nearby existing line"
+                 "using the exact edge"))
+            (if nearby-edge-line?
+                (values existing added)
+                (values (cons coordinate existing) (cons coordinate added))))
+          (values (append candidates existing) (append candidates added)))))
+  added)
+
+(define (dielectric-subdivision-values geometry axis max-resolution
+                                       minimum-dielectric-cells)
   ;; SmoothMeshLines limits large cells but does not guarantee that an
   ;; electrically thin material gets enough cells between its interfaces.
   ;; Add interior critical coordinates only where the wavelength-based limit
   ;; would otherwise permit fewer than the minimum number of cells.  In the
   ;; port-aligned solver coordinates this gives an ordinary planar substrate
-  ;; four cells through its thickness without imposing that resolution on the
-  ;; entire simulation domain.
+  ;; the requested number of cells through its thickness without imposing that
+  ;; resolution on the entire simulation domain.
   (append*
    (for/list ([item (in-list geometry)]
               #:when
@@ -490,27 +613,32 @@
      (define extent (- high low))
      (if (and (positive? extent)
               (< extent
-                 (* minimum-dielectric-cells-per-extent max-resolution)))
+                 (* minimum-dielectric-cells max-resolution)))
          (for/list ([index
-                     (in-range 1 minimum-dielectric-cells-per-extent)])
+                     (in-range 1 minimum-dielectric-cells)])
            (+ low (* extent
-                     (/ index minimum-dielectric-cells-per-extent))))
+                     (/ index minimum-dielectric-cells))))
          '()))))
 
 (define (critical-axis-values geometry ports axis domain-min domain-max
-                              max-resolution)
+                              max-resolution minimum-dielectric-cells
+                              metal-edge-resolution)
   (define port-values
     (append*
      (for/list ([port (in-list ports)])
        (define-values (minimum maximum) (port-bounds port))
        (list (list-ref minimum axis) (list-ref maximum axis)))))
-  (sort
-   (remove-duplicates
+  (define fixed-values
     (append (list domain-min domain-max 0)
             port-values
-            (axis-values geometry geometry-minimum axis)
-            (axis-values geometry geometry-maximum axis)
-            (dielectric-subdivision-values geometry axis max-resolution))
+            (ordinary-geometry-axis-values geometry axis)
+            (dielectric-subdivision-values
+             geometry axis max-resolution minimum-dielectric-cells)))
+  (sort
+   (remove-duplicates
+    (append fixed-values
+            (metal-edge-axis-values
+             geometry axis metal-edge-resolution fixed-values))
     =)
    <))
 
@@ -556,8 +684,11 @@
       (line "mesh.z = SmoothMeshLines(~a, ~a, ~a);"
             (octave-vector critical-z) (number-string max-resolution)
             (number-string mesh-grading))
-      (line "mesh_cells = (numel(mesh.x)-1) * (numel(mesh.y)-1) * (numel(mesh.z)-1);")
-      (line "fprintf('Antenna Turtle mesh: %d x %d x %d lines; %d cells; max resolution %.6g m\\n', numel(mesh.x), numel(mesh.y), numel(mesh.z), mesh_cells, ~a);"
+      ;; Match the dimensions and total reported by OpenEMS itself. Its FDTD
+      ;; operator count uses the number of mesh lines on each Yee axis.
+      (line "mesh_cells = numel(mesh.x) * numel(mesh.y) * numel(mesh.z);")
+      (line "mesh_min_spacing = min([diff(mesh.x), diff(mesh.y), diff(mesh.z)]);")
+      (line "fprintf('Antenna Turtle mesh: %d x %d x %d lines; %d cells; minimum spacing %.6g m; max resolution %.6g m\\n', numel(mesh.x), numel(mesh.y), numel(mesh.z), mesh_cells, mesh_min_spacing, ~a);"
             (number-string max-resolution))
       (line "if exist('simulation', 'dir'), rmdir('simulation', 's'); end")
       (line "mkdir('simulation');")
@@ -1361,6 +1492,11 @@
 (define (openems-sweep start-mhz stop-mhz
                        #:steps [steps 101]
                        #:cells-per-wavelength [cells-per-wavelength 20]
+                       #:minimum-dielectric-cells
+                       [minimum-dielectric-cells
+                        default-minimum-dielectric-cells]
+                       #:metal-edge-resolution
+                       [requested-metal-edge-resolution #f]
                        #:mesh-grading [mesh-grading 1.4]
                        #:padding-wavelengths [padding-wavelengths 0.5]
                        #:max-timesteps [maximum-timesteps
@@ -1377,6 +1513,8 @@
       start-mhz stop-mhz
       #:steps steps
       #:cells-per-wavelength cells-per-wavelength
+      #:minimum-dielectric-cells minimum-dielectric-cells
+      #:metal-edge-resolution requested-metal-edge-resolution
       #:mesh-grading mesh-grading
       #:padding-wavelengths padding-wavelengths
       #:max-timesteps maximum-timesteps
@@ -1391,6 +1529,11 @@
 (define (openems-sweep/prepared start-mhz stop-mhz
                        #:steps [steps 101]
                        #:cells-per-wavelength [cells-per-wavelength 20]
+                       #:minimum-dielectric-cells
+                       [minimum-dielectric-cells
+                        default-minimum-dielectric-cells]
+                       #:metal-edge-resolution
+                       [requested-metal-edge-resolution #f]
                        #:mesh-grading [mesh-grading 1.4]
                        #:padding-wavelengths [padding-wavelengths 0.5]
                        #:max-timesteps [maximum-timesteps
@@ -1410,6 +1553,15 @@
   (unless (and (exact-integer? steps) (>= steps 2))
     (raise-argument-error 'openems-sweep "exact integer >= 2" steps))
   (positive-real 'openems-sweep cells-per-wavelength "cells per wavelength")
+  (unless (exact-positive-integer? minimum-dielectric-cells)
+    (raise-argument-error
+     'openems-sweep "exact-positive-integer?" minimum-dielectric-cells))
+  (unless (or (not requested-metal-edge-resolution)
+              (and (finite-real? requested-metal-edge-resolution)
+                   (positive? requested-metal-edge-resolution)))
+    (raise-argument-error
+     'openems-sweep "(or/c #f positive-real?)"
+     requested-metal-edge-resolution))
   (unless (and (finite-real? mesh-grading) (> mesh-grading 1))
     (raise-argument-error 'openems-sweep "real > 1" mesh-grading))
   (positive-real 'openems-sweep padding-wavelengths "padding wavelengths")
@@ -1468,6 +1620,8 @@
            maximum))))
   (define material-wavelength-min (/ wavelength-min maximum-index))
   (define max-resolution (/ material-wavelength-min cells-per-wavelength))
+  (define metal-edge-resolution
+    (or requested-metal-edge-resolution (/ max-resolution 2)))
   ;; Eight PML cells plus two ordinary cells must fit between every radiator
   ;; and the domain wall. Honor larger user padding, but silently enlarge a
   ;; too-small request rather than allowing conductors into the absorber.
@@ -1478,13 +1632,16 @@
   (define domain-max (map (lambda (value) (+ value padding)) maximum))
   (define critical-x
     (critical-axis-values geometry ports 0
-                          (first domain-min) (first domain-max) max-resolution))
+                          (first domain-min) (first domain-max) max-resolution
+                          minimum-dielectric-cells metal-edge-resolution))
   (define critical-y
     (critical-axis-values geometry ports 1
-                          (second domain-min) (second domain-max) max-resolution))
+                          (second domain-min) (second domain-max) max-resolution
+                          minimum-dielectric-cells metal-edge-resolution))
   (define critical-z
     (critical-axis-values geometry ports 2
-                          (third domain-min) (third domain-max) max-resolution))
+                          (third domain-min) (third domain-max) max-resolution
+                          minimum-dielectric-cells metal-edge-resolution))
   (define port-priorities
     (map (lambda (port) (derive-port-priority geometry port)) ports))
   (write-octave-driver directory bodies sheets ports port-priorities
@@ -1561,7 +1718,8 @@
          'null)
      'mesh (hash 'policy "fixed-critical-coordinate-poc"
                  'minimum_dielectric_cells_per_extent
-                 minimum-dielectric-cells-per-extent
+                 minimum-dielectric-cells
+                 'metal_edge_resolution_m metal-edge-resolution
                  'critical_x (map exact->inexact critical-x)
                  'critical_y (map exact->inexact critical-y)
                  'critical_z (map exact->inexact critical-z)
@@ -1631,10 +1789,20 @@
   (define final-mesh
     (if mesh-values
         (match-let ([(list x y z) mesh-values])
+          (define minimum-spacing
+            (apply min
+                   (append
+                    (for/list ([first (in-list x)] [second (in-list (rest x))])
+                      (- second first))
+                    (for/list ([first (in-list y)] [second (in-list (rest y))])
+                      (- second first))
+                    (for/list ([first (in-list z)] [second (in-list (rest z))])
+                      (- second first)))))
           (hash-set*
            (hash-ref initial-manifest 'mesh)
            'x x 'y y 'z z
-           'cell_count (* (sub1 (length x)) (sub1 (length y)) (sub1 (length z)))))
+           'minimum_cell_spacing_m minimum-spacing
+           'cell_count (* (length x) (length y) (length z))))
         (hash-ref initial-manifest 'mesh)))
   (define final-nf2ff
     (if mesh-values

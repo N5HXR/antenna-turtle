@@ -181,6 +181,9 @@
                (openems-sweep 800 1000 #:cells-per-wavelength 0)))
   (check-exn exn:fail:contract?
              (lambda ()
+               (openems-sweep 800 1000 #:minimum-dielectric-cells 0)))
+  (check-exn exn:fail:contract?
+             (lambda ()
                (openems-sweep 800 1000 #:mesh-grading 1)))
   (check-exn exn:fail:contract?
              (lambda ()
@@ -224,6 +227,7 @@
     (with-handlers ([exn:fail:openems? values])
       (openems-sweep 850 950
                      #:octave mock-octave
+                     #:minimum-dielectric-cells 8
                      #:progress? #f)
       #f))
   (check-true (exn:fail:openems? failure))
@@ -244,16 +248,17 @@
   (define mesh (hash-ref manifest 'mesh))
   (check-= (hash-ref mesh 'maximum_refractive_index)
            (sqrt 4.4) 1e-12)
-  (check-equal? (hash-ref mesh 'minimum_dielectric_cells_per_extent) 4)
-  ;; The port transform centers the 2 mm substrate on solver Z.  Its two
-  ;; interfaces plus three derived interior coordinates make four cells
+  (check-equal? (hash-ref mesh 'minimum_dielectric_cells_per_extent) 8)
+  ;; The port transform centers the 2 mm substrate on solver Z. Its two
+  ;; interfaces plus seven derived interior coordinates make eight cells
   ;; through the dielectric without changing global cells-per-wavelength.
   (define substrate-z-lines
     (filter (lambda (value) (<= -0.0010000001 value 0.0010000001))
             (hash-ref mesh 'critical_z)))
-  (check-equal? (length substrate-z-lines) 5)
+  (check-equal? (length substrate-z-lines) 9)
   (for ([actual (in-list substrate-z-lines)]
-        [expected (in-list '(-0.001 -0.0005 0 0.0005 0.001))])
+        [expected (in-list '(-0.001 -0.00075 -0.0005 -0.00025 0
+                            0.00025 0.0005 0.00075 0.001))])
     (check-= actual expected 1e-12))
   (openems-close! artifacts)
   (delete-file mock-octave)
@@ -317,6 +322,72 @@
   (openems-close! result)
   (delete-file mock-octave)
   (m:solid-close! block)
+  (clear-bodies))
+
+(test-case "OpenEMS applies 1/3--2/3 refinement to selected metal sheet edges"
+  (reset-model!)
+  (model frequency 915 impedance 50)
+  (define substrate-material
+    (dielectric #:name 'substrate #:relative-permittivity 4.4))
+  (define substrate (m:cube 0.1 0.1 0.002 #:center? #t))
+  (body substrate geometry substrate material substrate-material priority 10)
+  (from-here
+    (move down 0.001)
+    (sheet ground
+      points '((-0.05 -0.05) (0.05 -0.05) (0.05 0.05) (-0.05 0.05))
+      material pec priority 20 mesh-edges exact))
+  (from-here
+    (move up 0.001)
+    (sheet patch
+      points '((-0.02 -0.015) (0.02 -0.015) (0.02 0.015) (-0.02 0.015))
+      material pec priority 20 mesh-edges metal))
+  (port up name 'feed gap 0.002 width 0.002 depth 0.002)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 850 950 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define manifest (openems-run-info-manifest run))
+  (define mesh (hash-ref manifest 'mesh))
+  (define resolution (hash-ref mesh 'metal_edge_resolution_m))
+  (define x-lines (hash-ref mesh 'critical_x))
+  (define y-lines (hash-ref mesh 'critical_y))
+  (define (contains-near? values wanted)
+    (for/or ([value (in-list values)]) (< (abs (- value wanted)) 1e-10)))
+  ;; Exact patch edges are replaced by the official pair: R/3 inward and
+  ;; 2R/3 outward. Ground and dielectric boundaries remain exact.
+  (for ([edge (in-list '(-0.02 0.02))])
+    (check-false (contains-near? x-lines edge)))
+  (for ([wanted (in-list
+                 (list (- -0.02 (* 2/3 resolution))
+                       (+ -0.02 (/ resolution 3))
+                       (- 0.02 (/ resolution 3))
+                       (+ 0.02 (* 2/3 resolution))))])
+    (check-true (contains-near? x-lines wanted)))
+  (for ([edge (in-list '(-0.015 0.015))])
+    (check-false (contains-near? y-lines edge)))
+  (for ([wanted (in-list
+                 (list (- -0.015 (* 2/3 resolution))
+                       (+ -0.015 (/ resolution 3))
+                       (- 0.015 (/ resolution 3))
+                       (+ 0.015 (* 2/3 resolution))))])
+    (check-true (contains-near? y-lines wanted)))
+  (for ([boundary (in-list '(-0.05 0.05))])
+    (check-true (contains-near? x-lines boundary))
+    (check-true (contains-near? y-lines boundary)))
+  (define patch-manifest
+    (findf (lambda (item) (equal? (hash-ref item 'name) "patch"))
+           (hash-ref manifest 'geometry)))
+  (check-equal? (hash-ref patch-manifest 'mesh_edges) "metal")
+  (openems-close! (openems-run-info-artifacts run))
+  (delete-file mock-octave)
+  (m:solid-close! substrate)
   (clear-bodies))
 
 (test-case "OpenEMS rejects a rotated frame in a multiport model"

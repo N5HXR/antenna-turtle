@@ -631,6 +631,14 @@ centered Manifold primitive such as `(m:cylinder length radius #:center? #t)`
 or use `anchor center` in its `body` form. The latter works for arbitrary CSG
 results by placing the center of their bounding box on the current turtle.
 
+Planar rectangular conductors may request openEMS metal-edge meshing with
+`mesh-edges metal` in the `sheet` form. This replaces an exact in-plane edge
+line with the conventional 1/3-inside, 2/3-outside pair before mesh smoothing.
+The default `mesh-edges exact` remains useful for substrate-sized ground planes
+and material boundaries. `#:metal-edge-resolution` on `openems-sweep` sets the
+pair's total spacing in metres; its default is half the wavelength-based cell
+limit.
+
 After an OpenEMS sweep, the returned value works with the ordinary network
 plot functions:
 
@@ -671,6 +679,9 @@ PEC ground and patch sheets. `examples/openems-wire-yagi.rkt` builds an
 ordinary wire model once, derives its capsule representation for OpenEMS, and
 compares the resulting pattern with NEC2C. Dielectric scenes automatically use
 the shortest material wavelength when selecting the basic mesh resolution.
+Use `#:minimum-dielectric-cells` on `openems-sweep` to increase the minimum
+number of cells through electrically thin dielectric extents; the default is
+4. This is independent of the broader `#:cells-per-wavelength` limit.
 `examples/openems-two-port-microstrip.rkt` is a simple multiport diagnostic;
 `examples/openems-interdigital-bandpass.rkt` is a three-resonator distributed
 filter modeled from calculator dimensions.

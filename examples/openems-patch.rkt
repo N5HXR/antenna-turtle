@@ -41,7 +41,8 @@
                 (,(+ (/ substrate-width 2)) ,(+ (/ substrate-length 2)))
                 (,(- (/ substrate-width 2)) ,(+ (/ substrate-length 2))))
        material pec
-       priority 20)
+       priority 20
+       mesh-edges exact)
 
 (move up substrate-height)
 (sheet patch
@@ -50,7 +51,8 @@
                 (,(+ (/ patch-width 2)) ,(+ (/ patch-length 2)))
                 (,(- (/ patch-width 2)) ,(+ (/ patch-length 2))))
        material pec
-       priority 20)
+       priority 20
+       mesh-edges metal)
 
 ;; The feed spans from ground to patch. Position the turtle at its center.
 (move down (/ substrate-height 2)
@@ -70,8 +72,11 @@
 
 (define result
   (openems-sweep 800 1050
+                 #:cells-per-wavelength 30
+                 #:minimum-dielectric-cells 6
+                 #:max-timesteps 250000
                  #:steps 101
-                 #:end-criteria 1e-4
+                 #:end-criteria 1e-5
                  #:keep-artifacts? #t))
 
 (show-return-loss-sweep result)

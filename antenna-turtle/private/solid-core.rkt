@@ -85,7 +85,7 @@
   (name material solid priority coordinates placement-transform)
   #:transparent)
 (struct planar-sheet
-  (name material points normal priority placement-transform)
+  (name material points normal priority placement-transform mesh-edges)
   #:transparent)
 (struct lumped-port
   (name impedance center direction transverse-u transverse-v
@@ -211,7 +211,8 @@
 
 (define (add-sheet name material points
                    #:priority [priority #f]
-                   #:coordinates [coordinates 'local])
+                   #:coordinates [coordinates 'local]
+                   #:mesh-edges [mesh-edges 'exact])
   (geometry-name 'add-sheet name)
   (validate-material 'add-sheet material)
   (unless (memq (em-material-kind material) '(pec conducting-sheet))
@@ -219,6 +220,8 @@
      'add-sheet "sheet material must be PEC or a conducting-sheet material"
      "material" material))
   (validate-priority 'add-sheet priority)
+  (unless (memq mesh-edges '(exact metal))
+    (raise-argument-error 'add-sheet "(or/c 'exact 'metal)" mesh-edges))
   (unless (and (list? points) (>= (length points) 3))
     (raise-argument-error 'add-sheet "list of at least three 2D points" points))
   (when (used-name? name)
@@ -232,7 +235,7 @@
   (define sheet
     (planar-sheet name material world-points
                   (transform-vector placement '(0 0 1))
-                  priority placement))
+                  priority placement mesh-edges))
   (define scene (current-solid-scene))
   (set-solid-scene-sheets!
    scene (append (solid-scene-sheets scene) (list sheet)))

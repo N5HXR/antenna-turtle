@@ -124,9 +124,11 @@
   (define placed-sheet
     (sheet reflector
       points outline
-      material pec))
+      material pec
+      mesh-edges metal))
   (check-equal? (length (planar-sheet-points placed-sheet)) 4)
   (check-equal? (planar-sheet-normal placed-sheet) (point3 0 0 1))
+  (check-equal? (planar-sheet-mesh-edges placed-sheet) 'metal)
 
   (define placed-port (port forward priority 17))
   (check-equal? (lumped-port-name placed-port) "port-1")

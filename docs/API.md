@@ -848,6 +848,11 @@ conductors use `(sheet name points ... material ... priority ...)`, where
 `points` is a local-XY polygon. `pec` gives a zero-thickness perfect conductor;
 `conducting-sheet-material` supplies finite conductivity and thickness. The
 sheet follows the complete turtle frame, including arbitrary rotation.
+`mesh-edges exact` is the compatibility default and puts mesh planes on its
+geometric bounds. `mesh-edges metal` applies the openEMS 1/3--2/3 treatment to
+an axis-aligned rectangular metal sheet: each in-plane edge is represented by
+a line one-third of the local edge resolution inside and another two-thirds
+outside. Other polygons and rotated sheets reject that treatment explicitly.
 
 Port `priority` is optional. By default, the OpenEMS exporter chooses an
 integer priority between touching dielectric and conductor geometry, following
@@ -873,6 +878,8 @@ priorities. The mesh wavelength is reduced by the largest dielectric
  800 1050
  #:steps 101
  #:cells-per-wavelength 20
+ #:minimum-dielectric-cells 4
+ #:metal-edge-resolution #f ; defaults to half the wavelength cell limit
  #:mesh-grading 1.4
  #:padding-wavelengths 0.5
  #:max-timesteps 100000
@@ -902,8 +909,19 @@ excited in an independent FDTD run while all other ports remain present,
 unexcited, and terminated in that reference impedance.
 
 The mesh settings are deliberately explicit numerical controls, not promises
-of cross-backend equivalence. The generated Octave driver reports exact mesh
-dimensions and cell count before starting OpenEMS. The default `#:timeout #f`
+of cross-backend equivalence. `#:cells-per-wavelength` controls the global
+wavelength-based maximum cell dimension. `#:minimum-dielectric-cells` inserts
+evenly spaced critical coordinates across a dielectric extent when that global
+limit would otherwise produce fewer cells; its default is 4. The effective
+value and resulting critical coordinates are retained in the manifest. The
+optional `#:metal-edge-resolution` is an absolute distance in metres used by
+all sheets marked `mesh-edges metal`; `#f` follows the official patch tutorial
+and uses half the wavelength-based maximum cell size. Metal-edge constraints
+are generated before `SmoothMeshLines`. If a shifted line would create a
+near-coincident sliver, the exporter reuses an existing line at that edge or
+falls back to the exact geometric edge, with a warning. The
+generated Octave driver reports exact mesh dimensions and cell count before
+starting OpenEMS. The default `#:timeout #f`
 allows long simulations to finish and remains interruptible with Ctrl-C.
 By default a non-modal progress window follows the timestep, solver speed, and
 residual-energy reports written to `octave.stdout`. Its **Cancel simulation**

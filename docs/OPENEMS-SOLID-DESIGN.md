@@ -32,8 +32,9 @@ physical scene contains three tagged geometry representations:
 1. **Volume bodies** contain an owned, transformed Manifold solid, a material,
    and an optional CSXCAD priority.
 2. **Planar sheets** contain a polygon, conducting material, and optional
-   priority. A zero-volume sheet is not represented as a fictitious Manifold
-   solid.
+   priority. Axis-aligned rectangular sheets may additionally request exact or
+   1/3--2/3 metal-edge mesh treatment. A zero-volume sheet is not represented
+   as a fictitious Manifold solid.
 3. **Wire networks** remain centerlines. The OpenEMS exporter derives capsule
    unions from a snapshot of the wire graph.
 
@@ -248,6 +249,10 @@ The proof of concept uses a conservative critical-coordinate mesh:
 
 - lock port faces, body extrema, material boundaries, and simulation bounds;
 - refine locally around the feed;
+- guarantee a configurable minimum number of cells across electrically thin
+  dielectric extents (`#:minimum-dielectric-cells`, default 4);
+- apply opt-in 1/3--2/3 refinement around eligible planar metal edges before
+  smoothing, without forcing the same policy on substrate-sized ground planes;
 - cap field cells by the shortest wavelength, including dielectric wavelength;
 - smooth the transition with a bounded adjacent-cell growth ratio; and
 - estimate and report the cell count before running.
