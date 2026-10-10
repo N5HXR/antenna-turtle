@@ -58,5 +58,24 @@ compatibility and tooling API.
 ~(reflect direction body ...)~ executes the body once and mirrors its new wire
 geometry across the corresponding local plane. Reflected feeds are suppressed,
 plane vertices are shared, and wholly in-plane edges are not duplicated.
-* TODO add a time series graph to the OpenEMS Simulation Progress window
+* DONE add a time series graph to the OpenEMS Simulation Progress window
 It should show every residual energy point as they are emitted from the Octave stdout.  This way, the user can see not just what the most recent figure was, but what the trend is.  It should occupy the full width of the window (patterned after the Microsoft file copy progress graph?), put 0dB at the top, and dynamically scale the vertical and horizontal axes to show all of the data from the progress cleanly.
+
+* TODO Add planar turtle-path extrusion
+Inside a future path context, constrain turtle movement to the local XY plane,
+reject any Z displacement, close the traced outline, and extrude it along
+turtle up. This is intentionally separate from the first solid-primitives API.
+
+* DONE Add STL manufacturing-geometry import
+Read binary and ASCII triangle meshes into Manifold, then place them through
+the ordinary material, precedence, anchor, turtle-frame, and scaling pipeline.
+
+* TODO Add further manufacturing-geometry importers
+Later importers should consider extruded DXF outlines and PCB artwork such as
+Gerber files without coupling their parsers to either OpenEMS or a future
+Palace backend.
+
+* TODO Add planar and distributed ports
+The first solid backend uses axis-aligned lumped ports. Waveguide, microstrip,
+and other distributed structures need explicit planar port geometry and modal
+configuration in a later multiport milestone.

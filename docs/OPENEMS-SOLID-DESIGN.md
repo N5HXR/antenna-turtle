@@ -197,7 +197,8 @@ the retained `openEMS_stats.txt` records which limit ended the run.
 ```
 
 The runnable references are `examples/openems-dipole.rkt`, the lossless
-substrate/sheet model `examples/openems-patch.rkt`, the two-port diagnostic
+substrate/sheet models `examples/openems-patch.rkt` and
+`examples/openems-patch-dsl.rkt`, the two-port diagnostic
 `examples/openems-two-port-microstrip.rkt`, the distributed-filter showcase
 `examples/openems-interdigital-bandpass.rkt`, and the shared-wire NEC2C/OpenEMS
 comparison `examples/openems-wire-yagi.rkt`. OpenEMS results feed

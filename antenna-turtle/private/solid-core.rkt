@@ -3,13 +3,16 @@
 (require racket/list
          racket/math
          (prefix-in m: manifold)
-         "core.rkt")
+         "core.rkt"
+         "solid-placement.rkt")
 
 (provide
  (struct-out em-material)
  pec
  dielectric
+ make-dielectric
  conducting-sheet-material
+ material-default-precedence
 
  (struct-out solid-body)
  (struct-out planar-sheet)
@@ -69,6 +72,10 @@
   (positive-real 'dielectric mu-r "relative permeability")
   (em-material name 'dielectric epsilon-r mu-r 0 0 #f))
 
+;; Public DSL syntax delegates here while the keyword-compatible `dielectric`
+;; procedure remains available to low-level clients.
+(define make-dielectric dielectric)
+
 (define (conducting-sheet-material
          #:name [name 'conducting-sheet]
          #:conductivity [conductivity 0]
@@ -78,6 +85,13 @@
    'conducting-sheet-material conductivity "electric conductivity")
   (nonnegative-real 'conducting-sheet-material thickness "sheet thickness")
   (em-material name 'conducting-sheet #f #f conductivity 0 thickness))
+
+(define (material-default-precedence material)
+  (validate-material 'material-default-precedence material)
+  (case (em-material-kind material)
+    [(dielectric) 10]
+    [(pec conducting-sheet) 20]
+    [else 10]))
 
 ;; A scene owns the transformed Manifold handles stored in its bodies. The
 ;; caller retains ownership of the source solid passed to add-body.
@@ -117,6 +131,15 @@
     [else
      (raise-argument-error who "(or/c 'local 'world)" coordinates)]))
 
+(define (effective-precedence who priority precedence)
+  (when (and priority precedence)
+    (raise-arguments-error
+     who "use either priority or precedence, not both"
+     "priority" priority "precedence" precedence))
+  (define value (or precedence priority))
+  (validate-priority who value)
+  value)
+
 (define (geometry-name who value)
   (unless (or (symbol? value)
               (and (string? value) (not (string=? value ""))))
@@ -141,13 +164,13 @@
 
 (define (add-body name material geometry
                   #:priority [priority #f]
+                  #:precedence [precedence #f]
                   #:coordinates [coordinates 'local]
                   #:anchor [anchor 'origin])
   (geometry-name 'add-body name)
   (validate-material 'add-body material)
-  (validate-priority 'add-body priority)
-  (unless (memq anchor '(origin center))
-    (raise-argument-error 'add-body "(or/c 'origin 'center)" anchor))
+  (define effective-priority
+    (effective-precedence 'add-body priority precedence))
   (unless (m:solid? geometry)
     (raise-argument-error 'add-body "solid? from manifold" geometry))
   (when (m:solid-closed? geometry)
@@ -156,61 +179,30 @@
   (when (used-name? name)
     (raise-arguments-error 'add-body "geometry names must be unique"
                            "name" name))
-  (define placement (scene-transform 'add-body coordinates))
+  (define placement
+    (scale-transform (scene-transform 'add-body coordinates)
+                     (current-geometry-scale)))
+  (define anchor-point (solid-anchor-point 'add-body geometry anchor))
   (define effective-placement
-    (if (eq? anchor 'origin)
-        placement
-        (let ()
-          (define-values (minimum maximum) (m:solid-bounds geometry))
-          (define center
-            (list (/ (+ (m:point3-x minimum) (m:point3-x maximum)) 2)
-                  (/ (+ (m:point3-y minimum) (m:point3-y maximum)) 2)
-                  (/ (+ (m:point3-z minimum) (m:point3-z maximum)) 2)))
-          (for/list ([row (in-list placement)])
-            (append (take row 3)
-                    (list (- (fourth row)
-                             (for/sum ([coefficient (in-list (take row 3))]
-                                       [coordinate (in-list center)])
-                               (* coefficient coordinate)))))))))
+    (for/list ([row (in-list placement)])
+      (append (take row 3)
+              (list (- (fourth row)
+                       (for/sum ([coefficient (in-list (take row 3))]
+                                 [coordinate (in-list anchor-point)])
+                         (* coefficient coordinate)))))))
   ;; transform always returns a distinct native handle, including identity.
   (define owned-solid (m:transform geometry effective-placement))
   (define body
-    (solid-body name material owned-solid priority coordinates effective-placement))
+    (solid-body name material owned-solid effective-priority
+                coordinates effective-placement))
   (define scene (current-solid-scene))
   (set-solid-scene-bodies!
    scene (append (solid-scene-bodies scene) (list body)))
   body)
 
-(define (point-values who value count)
-  (define values
-    (cond
-      [(and (list? value) (= (length value) count)) value]
-      [(and (vector? value) (= (vector-length value) count))
-       (vector->list value)]
-      [else
-       (raise-argument-error
-        who (format "~a-element list or vector" count) value)]))
-  (for ([item (in-list values)])
-    (unless (finite-real? item)
-      (raise-argument-error who "finite real coordinates" value)))
-  values)
-
-(define (transform-vector matrix value)
-  (define coordinates (point-values 'transform-vector value 3))
-  (apply point3
-         (for/list ([row (in-list matrix)])
-           (for/sum ([coefficient (in-list (take row 3))]
-                     [coordinate (in-list coordinates)])
-             (* coefficient coordinate)))))
-
-(define (transform-point matrix value)
-  (define direction (transform-vector matrix value))
-  (point3 (+ (point3-x direction) (list-ref (first matrix) 3))
-          (+ (point3-y direction) (list-ref (second matrix) 3))
-          (+ (point3-z direction) (list-ref (third matrix) 3))))
-
 (define (add-sheet name material points
                    #:priority [priority #f]
+                   #:precedence [precedence #f]
                    #:coordinates [coordinates 'local]
                    #:mesh-edges [mesh-edges 'exact])
   (geometry-name 'add-sheet name)
@@ -219,7 +211,8 @@
     (raise-arguments-error
      'add-sheet "sheet material must be PEC or a conducting-sheet material"
      "material" material))
-  (validate-priority 'add-sheet priority)
+  (define effective-priority
+    (effective-precedence 'add-sheet priority precedence))
   (unless (memq mesh-edges '(exact metal))
     (raise-argument-error 'add-sheet "(or/c 'exact 'metal)" mesh-edges))
   (unless (and (list? points) (>= (length points) 3))
@@ -227,15 +220,23 @@
   (when (used-name? name)
     (raise-arguments-error 'add-sheet "geometry names must be unique"
                            "name" name))
-  (define placement (scene-transform 'add-sheet coordinates))
+  (define orientation (scene-transform 'add-sheet coordinates))
+  (define scale-factor (current-geometry-scale))
+  (define placement (scale-transform orientation scale-factor))
+  (define effective-material
+    (if (and (eq? (em-material-kind material) 'conducting-sheet)
+             (em-material-thickness material))
+        (struct-copy em-material material
+          [thickness (* scale-factor (em-material-thickness material))])
+        material))
   (define world-points
     (for/list ([point (in-list points)])
       (define xy (point-values 'add-sheet point 2))
       (transform-point placement (list (first xy) (second xy) 0))))
   (define sheet
-    (planar-sheet name material world-points
-                  (transform-vector placement '(0 0 1))
-                  priority placement mesh-edges))
+    (planar-sheet name effective-material world-points
+                  (transform-vector orientation '(0 0 1))
+                  effective-priority placement mesh-edges))
   (define scene (current-solid-scene))
   (set-solid-scene-sheets!
    scene (append (solid-scene-sheets scene) (list sheet)))
@@ -272,13 +273,16 @@
     (define candidate (format "port-~a" index))
     (if (member candidate used) (loop (add1 index)) candidate)))
 
+(define automatic-port-dimension (gensym 'automatic-port-dimension))
+
 (define (add-lumped-port direction
                          #:name [requested-name #f]
                          #:impedance [impedance (model-impedance)]
-                         #:gap [gap (/ (model-wavelength) 1000)]
-                         #:width [width (/ (model-wavelength) 1000)]
-                         #:depth [depth (/ (model-wavelength) 1000)]
-                         #:priority [priority #f])
+                         #:gap [gap automatic-port-dimension]
+                         #:width [width automatic-port-dimension]
+                         #:depth [depth automatic-port-dimension]
+                         #:priority [priority #f]
+                         #:precedence [precedence #f])
   (define local-direction (hash-ref direction-components direction #f))
   (unless local-direction
     (raise-argument-error
@@ -287,10 +291,22 @@
      direction))
   (when requested-name (geometry-name 'add-lumped-port requested-name))
   (positive-real 'add-lumped-port impedance "reference impedance")
-  (positive-real 'add-lumped-port gap "gap")
-  (nonnegative-real 'add-lumped-port width "width")
-  (nonnegative-real 'add-lumped-port depth "depth")
-  (validate-priority 'add-lumped-port priority)
+  (define effective-priority
+    (effective-precedence 'add-lumped-port priority precedence))
+  (define scale-factor (current-geometry-scale))
+  (define (effective-dimension value default description positive?)
+    (if (eq? value automatic-port-dimension)
+        default
+        (begin
+          ((if positive? positive-real nonnegative-real)
+           'add-lumped-port value description)
+          (* scale-factor value))))
+  (define effective-gap
+    (effective-dimension gap (/ (model-wavelength) 1000) "gap" #t))
+  (define effective-width
+    (effective-dimension width (/ (model-wavelength) 1000) "width" #f))
+  (define effective-depth
+    (effective-dimension depth (/ (model-wavelength) 1000) "depth" #f))
   (define scene (current-solid-scene))
   (define name (or requested-name (fresh-port-name scene)))
   (when (for/or ([port (in-list (solid-scene-ports scene))])
@@ -306,7 +322,8 @@
      (transform-vector placement local-direction)
      (transform-vector placement (first transverse))
      (transform-vector placement (second transverse))
-     gap width depth priority placement))
+     effective-gap effective-width effective-depth
+     effective-priority placement))
   (set-solid-scene-ports!
    scene (append (solid-scene-ports scene) (list port)))
   port)

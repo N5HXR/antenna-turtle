@@ -107,7 +107,9 @@
   (define placed
     (m:translate primitive `(,center-x ,center-y ,(/ substrate-height 2))))
   (m:solid-close! primitive)
-  (add-body name pec placed #:priority 20 #:coordinates 'world)
+  ;; This PEC wall deliberately meets the finite-conductivity copper sheets.
+  ;; Its higher priority gives CSXCAD deterministic ownership at the junction.
+  (add-body name pec placed #:priority 21 #:coordinates 'world)
   (m:solid-close! placed))
 
 (shorting-wall 'short-1 left-center (/ resonator-width 2))

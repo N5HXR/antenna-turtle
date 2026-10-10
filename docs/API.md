@@ -451,18 +451,23 @@ normalizes it internally. Vector magnitude has no effect.
 
 ### `(scale factor)`
 
-Multiplies the current movement scale by a positive factor. Wire diameter is
-unchanged.
+Multiplies the current movement and solid-geometry scale by a positive factor.
+Wire diameter is unchanged.
 
 ### `(scale-all factor)`
 
-Multiplies both movement scale and diameter scale by a positive factor.
+Multiplies movement, solid-geometry, and wire-diameter scale by a positive
+factor.
 
 ### `(with-scale factor body ...+)`
 
-Temporarily multiplies movement scale for the body, then restores the prior
-movement scale on every exit. It does not rewind position, orientation, wire
-state, other settings, or generated geometry.
+Temporarily multiplies movement and newly registered solid-geometry scale for
+the body, then restores the prior scale on every exit. This includes Manifold
+bodies, solid primitives, sheet coordinates and thickness, and explicit port
+dimensions. It does not change ordinary wire diameter; use `scale-all` for
+that. Automatic wavelength-derived port dimensions are already SI values and
+are not scaled a second time. The form does not rewind position, orientation,
+wire state, other settings, or generated geometry.
 
 Neither scaling form changes the global `maximum-segment-length` setting.
 
@@ -813,6 +818,54 @@ Like `show-model`, this window remains interactive during a blocking
 
 ## 13. Physical Solid Scene and OpenEMS
 
+The high-level solid constructors follow the turtle frame and use centered
+placement by default:
+
+```racket
+(define fr4 (dielectric name fr4 er 4.4))
+
+(with-scale millimeter
+  (with-material fr4
+    (cuboid substrate size '(150 150 1.6) anchor bottom))
+
+  (sheet rect ground size '(150 150) mesh-edges exact)
+
+  (from-here
+    (move up 1.6)
+    (sheet rect patch size '(89 70) mesh-edges metal))
+
+  (from-here
+    (move up 0.8 left -13)
+    (port up name feed gap 1.6 size '(2 2))))
+```
+
+`cuboid` dimensions are `(length width height)`, corresponding to turtle
+forward/back, left/right, and up/down. `sphere` takes `radius` or `diameter`.
+`cylinder` and `capsule` take `length` plus `radius` or `diameter`; their axes
+follow turtle up. A capsule's length is the cylindrical center-to-center
+length, and `anchor start` or `anchor end` selects the corresponding sphere
+center so consecutive capsules enmesh exactly.
+
+`anchor center` is the primitive default. A face name (`front`, `back`,
+`left`, `right`, `top`, or `bottom`) slides that bounding-box face onto the
+turtle. A list combines orthogonal faces, as in `anchor '(bottom left)`.
+Curved and imported geometry deliberately uses its bounding box for these
+anchors. The programmer remains responsible for whether that is meaningful.
+
+`(stl name path path-expression ...)` reads either binary or ASCII STL and
+places it through the same turtle, material, precedence, anchor, and
+`with-scale` pipeline. STL has no unit metadata; coordinates are interpreted
+as metres outside a scaling scope. `read-stl-solid` is the lower-level reader
+for callers that need to apply Manifold CSG before registering the result.
+
+`with-material` supplies a scoped default. Constructors choose backend-neutral
+default precedence values: dielectric 10 and PEC/conducting geometry 20.
+`precedence` overrides the default. OpenEMS maps precedence to CSXCAD priority;
+future backends may instead use it to resolve mesh-region ownership.
+
+The lower-level Manifold registration interface remains available for CSG and
+generated geometry:
+
 Import Manifold with a prefix, then register solids and an explicit port:
 
 ```racket
@@ -854,12 +907,45 @@ an axis-aligned rectangular metal sheet: each in-plane edge is represented by
 a line one-third of the local edge resolution inside and another two-thirds
 outside. Other polygons and rotated sheets reject that treatment explicitly.
 
-Port `priority` is optional. By default, the OpenEMS exporter chooses an
+Port `priority`/`precedence` is optional. By default, the OpenEMS exporter chooses an
 integer priority between touching dielectric and conductor geometry, following
 the usual `dielectric < port < conductor` ordering. An explicit value overrides
 that inference and is useful when a more complex overlap hierarchy requires
 manual control. The effective value and whether it was automatic or explicit
 are recorded in the simulation manifest.
+
+### `(simulate engine openems sweep '(start-mhz stop-mhz) profile profile-value ...)`
+
+`simulate` is the compact, data-only frontend to `openems-sweep`. It does not
+open plots. Operational settings are `octave`, `keep-artifacts`, `progress`,
+and `timeout`. Numerical policy lives in a reusable simulation profile:
+
+```racket
+(define result
+  (simulate engine openems
+            sweep '(800 1050)
+            profile draft
+            keep-artifacts #t))
+
+(define convergence
+  (derive-simulation-profile
+   standard
+   #:name 'convergence
+   #:cells-per-wavelength 40
+   #:minimum-dielectric-cells 8))
+```
+
+`draft` uses lambda/20, four cells through thin dielectrics, 100,000 maximum
+timesteps, and a -40 dB residual-energy threshold. `standard` uses lambda/30,
+six dielectric cells, 250,000 timesteps, and -50 dB. Both use 101 frequency
+samples, mesh grading 1.4, half-wavelength padding, automatic metal-edge
+resolution, and 24 segments around derived wire capsules.
+
+### `(radiation-pattern result keyword-arguments ...)`
+
+Runs or reuses NF2FF postprocessing for a completed simulation result. It is
+the high-level name for `openems-radiation-grid` and accepts the same frequency,
+excitation, angular resolution, Octave, reuse, and timeout keywords.
 
 ### `(openems-sweep start-mhz stop-mhz keyword-arguments ...)`
 
@@ -924,7 +1010,10 @@ generated Octave driver reports exact mesh dimensions and cell count before
 starting OpenEMS. The default `#:timeout #f`
 allows long simulations to finish and remains interruptible with Ctrl-C.
 By default a non-modal progress window follows the timestep, solver speed, and
-residual-energy reports written to `octave.stdout`. Its **Cancel simulation**
+residual-energy reports written to `octave.stdout`. A live history graph keeps
+0 dB at the top, includes the configured stop threshold, and expands its time
+and energy axes to retain every reported sample. Independent multiport
+excitations are drawn as separate line segments. Its **Cancel simulation**
 button terminates the complete Octave/OpenEMS process group, including all
 remaining excitations. Multiport progress reports the current excitation and
 aggregate completion. A cancelled call returns the corresponding result type

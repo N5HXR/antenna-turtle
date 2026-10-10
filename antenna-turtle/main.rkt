@@ -1,7 +1,11 @@
 #lang racket
 
-(require (except-in "private/core.rkt" feed)
-         "private/solid-core.rkt"
+(require (except-in "private/core.rkt" feed cylinder)
+         (except-in "private/solid-core.rkt" dielectric)
+         "private/solid-dsl.rkt"
+         "private/solid-primitives.rkt"
+         "private/simulation-profile.rkt"
+         "private/simulation-dsl.rkt"
          "private/solid-view.rkt"
          "private/openems.rkt"
          "private/export-nec2c.rkt"
@@ -26,6 +30,10 @@
  (all-from-out "private/nec2c.rkt")
  (all-from-out "private/nec2c-view.rkt")
  (all-from-out "private/solid-core.rkt")
+ (all-from-out "private/solid-dsl.rkt")
+ (all-from-out "private/solid-primitives.rkt")
+ (all-from-out "private/simulation-profile.rkt")
+ (all-from-out "private/simulation-dsl.rkt")
  (all-from-out "private/openems.rkt")
  wavelength
  half-wave
@@ -41,9 +49,6 @@
              register-model-reset-hook! current-turtle-affine-transform
              call-with-pen call-with-push)
  model
- body
- sheet
- port
  turn
  move
  point
@@ -438,172 +443,6 @@
               [(wire-diameter) #`(wire-diameter #,value)]
               [(impedance)     #`(model-impedance #,value)])))))
   #`(begin #,@forms))
-
-;; Register a Manifold solid in the physical scene. The procedural add-body
-;; operation remains available for generated names and other dynamic models;
-;; this form supplies the contextual, pair-wise DSL used by ordinary antenna
-;; descriptions.
-(define-syntax (body stx)
-  (syntax-parse stx
-    [(_ name:id setting ...)
-     (define pairs
-       (syntax-pairs
-        'body #'(_ setting ...)
-        (string-append
-         "expected setting/value pairs using geometry, material, priority, "
-         "coordinates, or anchor")))
-     (define seen (make-hasheq))
-     (define settings (make-hasheq))
-     (for ([pair (in-list pairs)])
-       (define key (syntax-e (car pair)))
-       (unless (memq key '(geometry material priority coordinates anchor))
-         (raise-syntax-error
-          'body
-          "expected geometry, material, priority, coordinates, or anchor"
-          stx (car pair)))
-       (when (hash-ref seen key #f)
-         (raise-syntax-error 'body "setting may be specified only once"
-                             stx (car pair)))
-       (hash-set! seen key #t)
-       (hash-set! settings key (cdr pair)))
-     (define geometry (hash-ref settings 'geometry #f))
-     (unless geometry
-       (raise-syntax-error 'body "geometry setting is required" stx))
-     (define material (hash-ref settings 'material #'pec))
-     (define priority (hash-ref settings 'priority #'#f))
-     (define anchor (hash-ref settings 'anchor #f))
-     (define coordinates (hash-ref settings 'coordinates #f))
-     (define coordinates-expression
-       (cond
-         [(not coordinates) #''local]
-         [(and (identifier? coordinates)
-               (memq (syntax-e coordinates) '(local world)))
-          #`'#,(syntax-e coordinates)]
-         [else
-          (raise-syntax-error
-           'body "coordinates must be local or world" stx coordinates)]))
-     (define anchor-expression
-       (cond
-         [(not anchor) #''origin]
-         [(and (identifier? anchor)
-               (memq (syntax-e anchor) '(origin center)))
-          #`'#,(syntax-e anchor)]
-         [else
-          (raise-syntax-error
-           'body "anchor must be origin or center" stx anchor)]))
-     #`(add-body '#,(syntax-e #'name) #,material #,geometry
-                 #:priority #,priority
-                 #:coordinates #,coordinates-expression
-                 #:anchor #,anchor-expression)]
-    [(_ . _)
-     (raise-syntax-error
-      'body "expected (body NAME setting value ...)" stx)]))
-
-;; A sheet is a closed two-dimensional polygon in the turtle's local XY
-;; plane. Local placement is the useful default; world coordinates remain an
-;; explicit escape hatch for generated geometry.
-(define-syntax (sheet stx)
-  (syntax-parse stx
-    [(_ name:id setting ...)
-     (define pairs
-       (syntax-pairs
-        'sheet #'(_ setting ...)
-        (string-append
-         "expected setting/value pairs using points, material, priority, "
-         "coordinates, or mesh-edges")))
-     (define seen (make-hasheq))
-     (define settings (make-hasheq))
-     (for ([pair (in-list pairs)])
-       (define key (syntax-e (car pair)))
-       (unless (memq key '(points material priority coordinates mesh-edges))
-         (raise-syntax-error
-          'sheet
-          "expected points, material, priority, coordinates, or mesh-edges"
-          stx (car pair)))
-       (when (hash-ref seen key #f)
-         (raise-syntax-error 'sheet "setting may be specified only once"
-                             stx (car pair)))
-       (hash-set! seen key #t)
-       (hash-set! settings key (cdr pair)))
-     (define points (hash-ref settings 'points #f))
-     (unless points
-       (raise-syntax-error 'sheet "points setting is required" stx))
-     (define material (hash-ref settings 'material #'pec))
-     (define priority (hash-ref settings 'priority #'#f))
-     (define mesh-edges (hash-ref settings 'mesh-edges #f))
-     (define coordinates (hash-ref settings 'coordinates #f))
-     (define coordinates-expression
-       (cond
-         [(not coordinates) #''local]
-         [(and (identifier? coordinates)
-               (memq (syntax-e coordinates) '(local world)))
-          #`'#,(syntax-e coordinates)]
-         [else
-          (raise-syntax-error
-           'sheet "coordinates must be local or world" stx coordinates)]))
-     (define mesh-edges-expression
-       (cond
-         [(not mesh-edges) #''exact]
-         [(and (identifier? mesh-edges)
-               (memq (syntax-e mesh-edges) '(exact metal)))
-          #`'#,(syntax-e mesh-edges)]
-         [else
-          (raise-syntax-error
-           'sheet "mesh-edges must be exact or metal" stx mesh-edges)]))
-     #`(add-sheet '#,(syntax-e #'name) #,material #,points
-                  #:priority #,priority
-                  #:coordinates #,coordinates-expression
-                  #:mesh-edges #,mesh-edges-expression)]
-    [(_ . _)
-     (raise-syntax-error
-      'sheet "expected (sheet NAME setting value ...)" stx)]))
-
-;; Like spread, a port is centered on the turtle and selects one of its local
-;; axes without changing turtle state. The scene stores world coordinates;
-;; OpenEMS may later apply a second rigid transform for Yee-grid alignment.
-(define-syntax (port stx)
-  (syntax-parse stx
-    [(_ direction:id setting ...)
-     (move-direction-components #'direction stx)
-     (define pairs
-       (if (null? (syntax->list #'(setting ...)))
-           '()
-           (syntax-pairs
-            'port #'(_ setting ...)
-            (string-append
-             "expected setting/value pairs using name, impedance, gap, "
-             "width, depth, or priority"))))
-     (define seen (make-hasheq))
-     (define settings (make-hasheq))
-     (for ([pair (in-list pairs)])
-       (define key (syntax-e (car pair)))
-       (unless (memq key '(name impedance gap width depth priority))
-         (raise-syntax-error
-          'port "expected name, impedance, gap, width, depth, or priority"
-          stx (car pair)))
-       (when (hash-ref seen key #f)
-         (raise-syntax-error 'port "setting may be specified only once"
-                             stx (car pair)))
-       (hash-set! seen key #t)
-       (hash-set! settings key (cdr pair)))
-     (define keyword-arguments
-       (append
-        (if (hash-has-key? settings 'name)
-            (list #'#:name (hash-ref settings 'name)) '())
-        (if (hash-has-key? settings 'impedance)
-            (list #'#:impedance (hash-ref settings 'impedance)) '())
-        (if (hash-has-key? settings 'gap)
-            (list #'#:gap (hash-ref settings 'gap)) '())
-        (if (hash-has-key? settings 'width)
-            (list #'#:width (hash-ref settings 'width)) '())
-        (if (hash-has-key? settings 'depth)
-            (list #'#:depth (hash-ref settings 'depth)) '())
-        (if (hash-has-key? settings 'priority)
-            (list #'#:priority (hash-ref settings 'priority)) '())))
-     #`(add-lumped-port '#,(syntax-e #'direction) #,@keyword-arguments)]
-    [(_ . _)
-     (raise-syntax-error
-      'port "expected (port DIRECTION setting value ...)" stx)]))
 
 (define-syntax-rule (with-wire body ...)
   (call-with-wire (lambda () body ...)))

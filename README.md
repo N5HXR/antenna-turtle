@@ -23,6 +23,9 @@ the volume-body [`examples/openems-dipole.rkt`](examples/openems-dipole.rkt)
 and dielectric/sheet [`examples/openems-patch.rkt`](examples/openems-patch.rkt)
 references. [`examples/openems-wire-yagi.rkt`](examples/openems-wire-yagi.rkt)
 builds one ordinary wire Yagi and compares its NEC2C and OpenEMS patterns.
+[`examples/openems-patch-dsl.rkt`](examples/openems-patch-dsl.rkt) shows the
+turtle-oriented solid layer, scoped units/materials, simulation profiles, and
+data-only `simulate`/`radiation-pattern` workflow.
 For multiport work, [`examples/openems-two-port-microstrip.rkt`](examples/openems-two-port-microstrip.rkt)
 is a compact diagnostic and
 [`examples/openems-interdigital-bandpass.rkt`](examples/openems-interdigital-bandpass.rkt)
@@ -691,6 +694,7 @@ The `examples` directory includes:
 - three-element Yagi
 - 45-degree end-fed half-wave with counterpoise
 - stacked square, octagonal, and 32-sided loops
+- OpenEMS volume, sheet, wire, two-port, and compact solid-DSL models
 
 NEC2C ground and height are model-level DSL settings. MMANA ground remains a
 saved target-application setting and is preserved when Turtle regenerates an

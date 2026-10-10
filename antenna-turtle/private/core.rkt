@@ -30,7 +30,7 @@
  ;; Extension support. These are consumed by geometry backends rather than
  ;; intended as surface DSL operations.
  register-model-reset-hook!
- current-turtle-affine-transform
+ current-turtle-affine-transform current-geometry-scale
 
  ;; Model settings.
  clear-wires
@@ -499,6 +499,12 @@
                                          (point3-y position)
                                          (point3-z position)))])
     (append row (list translation))))
+
+;; Solid-geometry backends use the same scoped factor as turtle movements.
+;; Keeping this accessor read-only prevents them from coupling to the private
+;; turtle-state representation or changing wire-diameter scaling semantics.
+(define (current-geometry-scale)
+  (turtle-state-movement-scale (current-turtle-state)))
 
 (define (exact-quarter-turn-sin-cos degrees)
   (and (exact? degrees)

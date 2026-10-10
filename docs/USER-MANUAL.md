@@ -522,8 +522,11 @@ form makes frequency correction concise:
 
 Resonant frequency varies approximately inversely with linear dimensions, so
 `observed-frequency / target-frequency` is a useful first correction. Physical
-wire diameter remains unchanged. Use `scale-all` only when diameter should
-scale with geometry too.
+wire diameter remains unchanged. Newly created solid bodies, sheets, their
+physical sheet thickness, and explicit port dimensions do scale, making the
+same idiom suitable for retuning a complete solid model. Automatic port sizes
+derived from wavelength remain physical SI values. Use `scale-all` only when
+ordinary wire diameter should scale with geometry too.
 
 The conversion helpers remove the unit arithmetic normally needed around this
 workflow:
@@ -626,7 +629,40 @@ for NEC2C. Use `#:wire-segments` to trade circular smoothness for triangle
 count. Plot3D viewers run in independent GUI eventspaces and remain responsive
 while `openems-sweep` blocks the calling evaluation thread.
 
-To place a Yagi element or another solid by its midpoint, either construct a
+The turtle-oriented solid layer normally avoids direct Manifold boilerplate:
+
+```racket
+(define foam (dielectric name foam er 1.15))
+
+(with-scale millimeter
+  (with-material foam
+    (cuboid substrate size '(150 150 1.6) anchor bottom))
+  (sheet rect ground size '(150 150))
+  (move up 1.6)
+  (sheet rect patch size '(89 70) mesh-edges metal))
+```
+
+Solids are centered at the turtle by default. `cuboid` uses length, width, and
+height in the turtle's forward, left, and up directions. `sphere`, `cylinder`,
+and `capsule` provide common volumes; cylinder and capsule axes follow turtle
+up. Face anchors move a bounding-box face to the turtle, and orthogonal faces
+can be combined, for example `anchor '(bottom left)`. A capsule's `start` and
+`end` anchors are the centers of its hemispherical ends, which makes chained
+capsules overlap cleanly.
+
+Imported STL geometry uses the same placement rules:
+
+```racket
+(with-scale millimeter
+  (stl enclosure path "enclosure.stl" anchor bottom))
+```
+
+STL files do not encode units. Antenna Turtle treats their raw coordinates as
+metres, so use `with-scale` when the producing CAD tool exported another unit.
+Both ASCII and binary STL are accepted. Use `read-stl-solid` when CSG should be
+applied to the imported Manifold solid before `body` registers it.
+
+To place a Yagi element or another arbitrary solid by its midpoint, either construct a
 centered Manifold primitive such as `(m:cylinder length radius #:center? #t)`
 or use `anchor center` in its `body` form. The latter works for arbitrary CSG
 results by placing the center of their bounding box on the current turtle.
@@ -649,6 +685,25 @@ plot functions:
 (show-smith-chart sweep)
 ```
 
+The compact simulation frontend separates solver policy from visualization:
+
+```racket
+(define result
+  (simulate engine openems
+            sweep '(800 1050)
+            profile draft))
+
+(show-return-loss-sweep result)
+(define pattern (radiation-pattern result))
+(show-radiation-pattern-opengl pattern #:palette 'electric)
+```
+
+`draft` selects lambda/20, four dielectric cells, 100,000 maximum timesteps,
+and -40 dB termination. `standard` selects lambda/30, six dielectric cells,
+250,000 timesteps, and -50 dB. Use `derive-simulation-profile` to define a
+project-specific profile while preserving all unspecified settings. See
+`examples/openems-patch-dsl.rkt` for a complete solid-DSL example.
+
 With two or more ports, `openems-sweep` performs one independent excitation
 per port and returns the complete S-matrix. Unlike the convenient one-port
 case, a multiport model is not rotated automatically: every port's direction,
@@ -669,7 +724,9 @@ OpenEMS runs can take minutes. The generated driver prints its exact mesh cell
 count, maximum timesteps, and residual-energy stop threshold before launching
 the FDTD engine. Antenna Turtle prints the artifact directory before launch,
 so you can inspect `simulation/model.xml` with AppCSXCAD while the solver is
-running. The progress window's **Cancel simulation** button stops both Octave
+running. The progress window plots every residual-energy report so the decay
+envelope and its threshold crossings remain visible during a long run. Its
+**Cancel simulation** button stops both Octave
 and its OpenEMS child and returns an empty sweep result. Simply closing the
 window still only hides it. Retain artifacts when you want them to remain
 available after the result is returned.
