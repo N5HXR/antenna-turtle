@@ -17,7 +17,7 @@
 
 (define energy-history-canvas%
   (class canvas%
-    (init-field target-energy-db maximum-timesteps)
+    (init-field target-energy-db)
     (define samples '())
     (define current-excitation-count 1)
     (super-new [min-height 150]
@@ -27,11 +27,9 @@
     (define/public (add-sample timestep energy-db excitation-index
                                excitation-count)
       (set! current-excitation-count excitation-count)
-      (define global-timestep
-        (+ (* (sub1 excitation-index) maximum-timesteps) timestep))
       ;; Keep newest first so adding a status sample remains constant-time.
       (set! samples
-            (cons (vector global-timestep energy-db excitation-index)
+            (cons (vector timestep energy-db excitation-index)
                   samples))
       (send this refresh))
     (define/override (on-paint)
@@ -65,13 +63,23 @@
       ;; threshold line never disappears into the canvas border.
       (define axis-min (* 10 (sub1 (floor (/ observed-min 10)))))
       (define safe-axis-min (if (zero? axis-min) -10 axis-min))
-      (define maximum-global-timestep
-        (max 1
-             (if (null? samples)
-                 1
-                 (vector-ref (first samples) 0))))
+      ;; Concatenate the observed portions of independent excitations.  Do not
+      ;; reserve maximum-timesteps for a run that stopped early, since that
+      ;; leaves a large empty region between its trace and the next one.
+      (define excitation-spans
+        (for/vector ([excitation-index
+                      (in-range 1 (add1 current-excitation-count))])
+          (for/fold ([maximum 0]) ([sample (in-list samples)]
+                                   #:when (= (vector-ref sample 2)
+                                             excitation-index))
+            (max maximum (vector-ref sample 0)))))
+      (define (excitation-offset excitation-index)
+        (for/sum ([index (in-range 0 (sub1 excitation-index))])
+          (vector-ref excitation-spans index)))
+      (define maximum-observed-timestep
+        (max 1 (for/sum ([span (in-vector excitation-spans)]) span)))
       (define (screen-x timestep)
-        (+ left (* plot-width (/ timestep maximum-global-timestep))))
+        (+ left (* plot-width (/ timestep maximum-observed-timestep))))
       (define (screen-y energy-db)
         (+ top (* plot-height (/ (- (min 0 energy-db))
                                  (- safe-axis-min)))))
@@ -93,7 +101,9 @@
           (for/list ([sample (in-list (reverse samples))]
                      #:when (= (vector-ref sample 2) excitation-index))
             (make-object point%
-                         (screen-x (vector-ref sample 0))
+                         (screen-x
+                          (+ (excitation-offset excitation-index)
+                             (vector-ref sample 0)))
                          (screen-y (vector-ref sample 1)))))
         (when (pair? points)
           (if (pair? (rest points))
@@ -107,8 +117,8 @@
       (send dc draw-text "0" left (+ bottom 3))
       (define right-label
         (if (> current-excitation-count 1)
-            (format "~a total timesteps" maximum-global-timestep)
-            (format "~a timesteps" maximum-global-timestep)))
+            (format "~a observed timesteps" maximum-observed-timestep)
+            (format "~a timesteps" maximum-observed-timestep)))
       (define-values (label-width _label-height _descent _space)
         (send dc get-text-extent right-label))
       (send dc draw-text right-label (- right label-width) (+ bottom 3)))))
@@ -168,8 +178,7 @@
          (define energy-history
            (new energy-history-canvas%
                 [parent root]
-                [target-energy-db target-energy-db]
-                [maximum-timesteps maximum-timesteps]))
+                [target-energy-db target-energy-db]))
          (new message%
               [parent root]
               [label (format "Artifacts: ~a" artifact-directory-text)]

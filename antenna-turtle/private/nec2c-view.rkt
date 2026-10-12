@@ -605,7 +605,7 @@
                    #:x-min [x-min #f] #:x-max [x-max #f]
                    #:y-min [y-min #f] #:y-max [y-max #f]
                    #:aspect-ratio [aspect-ratio #f]
-                   #:legend-anchor [legend-anchor 'top-left]
+                   #:legend-anchor [legend-anchor 'bottom-right]
                    #:axes? [axes? #t]
                    #:cursor-rule? [cursor-rule? #t]
                    #:theme [theme 'light])

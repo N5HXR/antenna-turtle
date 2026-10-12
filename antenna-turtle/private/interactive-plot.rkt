@@ -108,7 +108,7 @@
                                #:y-min [y-min #f]
                                #:y-max [y-max #f]
                                #:aspect-ratio [aspect-ratio #f]
-                               #:legend-anchor [legend-anchor 'top-left]
+                               #:legend-anchor [legend-anchor 'bottom-right]
                                #:axes? [axes? #t]
                                #:cursor-rule? [cursor-rule? #t]
                                #:theme [theme 'light])
@@ -129,6 +129,7 @@
   (define (make-snip requested-width requested-height)
     (parameterize ([plot-background background]
                    [plot-foreground foreground]
+                   [plot-legend-font-size (* 0.6 (plot-font-size))]
                    [plot-x-axis? axes?]
                    [plot-y-axis? axes?]
                    [plot-x-far-axis? axes?]

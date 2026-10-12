@@ -63,6 +63,28 @@
   (check-point~= maximum '(1 1.5 0.5))
   (clear-bodies))
 
+(test-case "lossy dielectrics and finite conductors preserve physical intent"
+  (reset-model!)
+  (define fr4
+    (dielectric name fr4 er 4.4 loss-tangent 0.02 loss-frequency 435))
+  (check-equal? (material-loss-value (em-material-loss-spec fr4)) 0.02)
+  (check-equal? (material-loss-reference-frequency
+                 (em-material-loss-spec fr4))
+                435)
+  (define custom-metal
+    (conductor name plated-metal conductivity 2.4e7))
+  (define placed
+    (with-scale 0.001
+      (cuboid shield size '(20 10 2) material custom-metal
+              metal-thickness 0.5)))
+  (check-equal? (em-material-kind (solid-body-material placed)) 'conductor)
+  (check-= (solid-body-metal-thickness placed) 0.0005 1e-15)
+  (define trace
+    (with-scale 0.001
+      (sheet rect trace size '(10 1) material copper thickness 0.035)))
+  (check-= (planar-sheet-thickness trace) 0.000035 1e-15)
+  (clear-bodies))
+
 (test-case "solid cylinders and spheres follow the turtle up axis"
   (reset-model!)
   (define cylinder-body

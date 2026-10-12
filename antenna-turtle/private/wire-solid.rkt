@@ -167,13 +167,14 @@
           (solid-body
            (fresh-wire-name (solid-scene-bodies original)
                             (solid-scene-sheets original))
-           pec solid 20 'world identity-transform))
+           pec solid 20 'world identity-transform #f))
         (define combined
           (solid-scene
            (append (solid-scene-bodies original) (list body))
            (solid-scene-sheets original)
            (append (solid-scene-ports original)
-                   (if derived-port (list derived-port) '()))))
+                   (if derived-port (list derived-port) '()))
+           (solid-scene-components original)))
         (define derivation
           (wire-solid-derivation
            body derived-port (length edges)

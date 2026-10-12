@@ -61,6 +61,33 @@ plane vertices are shared, and wholly in-plane edges are not duplicated.
 * DONE add a time series graph to the OpenEMS Simulation Progress window
 It should show every residual energy point as they are emitted from the Octave stdout.  This way, the user can see not just what the most recent figure was, but what the trend is.  It should occupy the full width of the window (patterned after the Microsoft file copy progress graph?), put 0dB at the top, and dynamically scale the vertical and horizontal axes to show all of the data from the progress cleanly.
 
+* DONE Add explicit critical-coordinate mesh constraints
+~(mesh-point)~ locks all three Yee-grid coordinates at the turtle, while
+~(mesh-plane xy|xz|yz)~ locks the coordinate normal to that global plane.
+Constraints transform with the model, survive mesh smoothing, appear in the
+manifest, and reject a plane made oblique by automatic one-port rotation.
+
+* DONE Add ideal OpenEMS lumped circuit elements
+~(lumped-element ...)~ places a turtle-oriented, axis-aligned two-terminal R,
+L, C, or series/parallel RLC region. Spatial dimensions scale with geometry;
+electrical values remain SI. The exporter validates conductor contact where it
+can, locks every region face into the mesh, records the element in the
+manifest, and targets OpenEMS 0.37 / CSXCAD 0.7 or newer. Reference examples
+cover a one-port resistive load and a two-port hybrid bandpass network.
+
+* DONE Add OpenEMS narrowband material loss
+Support dielectric loss tangent referenced to the model or an explicit
+frequency, built-in room-temperature metal conductivities, geometry-owned
+sheet thickness, and Yee-aligned conducting boundaries for rectilinear solid
+bodies. Preserve lossless examples and add a lossy filter companion.
+
+* DONE Add OpenEMS aggregate power-budget reporting
+Retain absolute port powers, integrate model-frequency dielectric loss with a
+raw-SAR dump, probe resistive lumped elements, and combine those measurements
+with lazily cached NF2FF radiated power. Report watts, percent, and dB relative
+to incident power. Treat conducting-sheet loss as a conservation remainder
+that explicitly includes numerical closure error.
+
 * TODO Add planar turtle-path extrusion
 Inside a future path context, constrain turtle movement to the local XY plane,
 reject any Z displacement, close the traced outline, and extrude it along
@@ -69,6 +96,51 @@ turtle up. This is intentionally separate from the first solid-primitives API.
 * DONE Add STL manufacturing-geometry import
 Read binary and ASCII triangle meshes into Manifold, then place them through
 the ordinary material, precedence, anchor, turtle-frame, and scaling pipeline.
+
+* TODO Close out Revision 1 solid/OpenEMS support before merging
+The implementation is feature-complete in substance.  Keep the
+~feature/openems-solid-modeling~ branch open for a short hands-on soak period
+before merging so solid-modeling bugs and awkward API details can be found in
+real models.
+
+** TODO Exercise the solid-modeling API for several days
+Build and simulate varied solid, sheet, capsule, STL, one-port, and multiport
+models.  Record reproducible bugs and API friction here rather than expanding
+the Revision 1 scope opportunistically.
+
+** TODO Commit the Emacs editor integration
+Finish and commit the font-lock and indentation updates for the solid DSL,
+simulation forms, profiles, and contextual setting names, together with their
+editor test.
+
+** TODO Warn when wire-only exporters ignore explicit physical geometry
+NEC2C and MMANA should warn when registered solid bodies or planar sheets are
+ignored.  Derived capsule representations of ordinary Turtle wires should not
+warn because those wires are already represented by the wire graph.
+
+** TODO Reconcile the NF2FF recording documentation
+Revision 1 records broadband time-domain near fields, which supports model,
+arbitrary in-band, and best-match frequency postprocessing without rerunning
+FDTD.  Mark optional frequency-domain recording as deferred unless practical
+testing uncovers a compelling Revision 1 need for it.
+
+** TODO Mark the OpenEMS solid design as implemented
+Update ~docs/OPENEMS-SOLID-DESIGN.md~ from an accepted/staged design to a
+Revision 1 implementation record.  Keep Appendix A mesh simplification,
+distributed ports, ferrite/dispersive materials, turtle-path extrusion,
+additional manufacturing importers, Palace, solid-based MATLAB export, and
+mixed-reference-impedance multiport normalization explicitly deferred.
+
+** TODO Record final validation evidence
+Run the opt-in dipole NEC2C/OpenEMS integration test and mesh-convergence test
+when convenient, retain or summarize their results, and rerun the ordinary
+test suite.  These long solver runs are release evidence rather than routine
+unit tests.
+
+** TODO Review soak-period findings and decide whether to merge
+Fix Revision 1 defects found during hands-on modeling, rerun the relevant
+tests, verify the branch is clean and documented, and then merge only if no
+release-blocking issues remain.
 
 * TODO Add further manufacturing-geometry importers
 Later importers should consider extruded DXF outlines and PCB artwork such as
@@ -79,3 +151,13 @@ Palace backend.
 The first solid backend uses axis-aligned lumped ports. Waveguide, microstrip,
 and other distributed structures need explicit planar port geometry and modal
 configuration in a later multiport milestone.
+
+* TODO Add anchors for ports and lumped elements
+Allow ~port~ and ~lumped-element~ regions to use the same turtle-relative
+~anchor~ vocabulary as solid primitives.  Anchors should place a selected
+bounding-box face, edge, or corner at the turtle without changing the
+feature's electrical terminal axis.  In particular, ~anchor bottom~ should
+make it easy to place a component flush on a conductor sheet without manually
+offsetting its center by half its height.  Define and test contact, overlap,
+scaling, and model-to-solver rotation behavior before enabling this in a
+future revision.

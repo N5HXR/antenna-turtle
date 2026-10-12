@@ -37,25 +37,26 @@
 (define (effective-precedence material requested)
   (or requested (material-default-precedence material)))
 
-(define (register-temporary name source material precedence anchor)
+(define (register-temporary name source material precedence anchor metal-thickness)
   (dynamic-wind
     void
     (lambda ()
       (add-body name material source
                 #:precedence (effective-precedence material precedence)
-                #:anchor anchor))
+                #:anchor anchor #:metal-thickness metal-thickness))
     (lambda () (unless (m:solid-closed? source) (m:solid-close! source)))))
 
 (define (add-cuboid name length width height
                     #:material [material (current-solid-material)]
                     #:precedence [precedence #f]
+                    #:metal-thickness [metal-thickness #f]
                     #:anchor [anchor 'center])
   (positive-finite 'cuboid length "length")
   (positive-finite 'cuboid width "width")
   (positive-finite 'cuboid height "height")
   (register-temporary
    name (m:cube length width height #:center? #t)
-   material precedence anchor))
+   material precedence anchor metal-thickness))
 
 (define (dimension-list who value count)
   (define dimensions
@@ -71,14 +72,17 @@
 (define (add-cuboid/size name size
                          #:material [material (current-solid-material)]
                          #:precedence [precedence #f]
+                         #:metal-thickness [metal-thickness #f]
                          #:anchor [anchor 'center])
   (define dimensions (dimension-list 'cuboid size 3))
   (add-cuboid name (first dimensions) (second dimensions) (third dimensions)
-               #:material material #:precedence precedence #:anchor anchor))
+               #:material material #:precedence precedence
+               #:metal-thickness metal-thickness #:anchor anchor))
 
 (define (add-solid-sphere name radius
                           #:material [material (current-solid-material)]
                           #:precedence [precedence #f]
+                          #:metal-thickness [metal-thickness #f]
                           #:anchor [anchor 'center]
                           #:segments [segments #f])
   (positive-finite 'sphere radius "radius")
@@ -86,11 +90,12 @@
     (if segments
         (m:sphere radius #:segments segments)
         (m:sphere radius)))
-  (register-temporary name source material precedence anchor))
+  (register-temporary name source material precedence anchor metal-thickness))
 
 (define (add-solid-cylinder name length diameter
                             #:material [material (current-solid-material)]
                             #:precedence [precedence #f]
+                            #:metal-thickness [metal-thickness #f]
                             #:anchor [anchor 'center]
                             #:segments [segments #f])
   (positive-finite 'cylinder length "length")
@@ -100,11 +105,12 @@
         (m:cylinder length (/ diameter 2)
                     #:segments segments #:center? #t)
         (m:cylinder length (/ diameter 2) #:center? #t)))
-  (register-temporary name source material precedence anchor))
+  (register-temporary name source material precedence anchor metal-thickness))
 
 (define (add-solid-capsule name length diameter
                            #:material [material (current-solid-material)]
                            #:precedence [precedence #f]
+                           #:metal-thickness [metal-thickness #f]
                            #:anchor [anchor 'center]
                            #:segments [segments #f])
   (positive-finite 'capsule length "cylindrical length")
@@ -120,11 +126,12 @@
       [(start) start]
       [(end) end]
       [else anchor]))
-  (register-temporary name source material precedence effective-anchor))
+  (register-temporary name source material precedence effective-anchor metal-thickness))
 
 (define (add-rect-sheet name length width
                         #:material [material (current-solid-material)]
                         #:precedence [precedence #f]
+                        #:thickness [thickness #f]
                         #:mesh-edges [mesh-edges 'exact])
   (positive-finite 'sheet length "length")
   (positive-finite 'sheet width "width")
@@ -137,13 +144,16 @@
          (list half-length half-width)
          (list (- half-length) half-width))
    #:precedence (effective-precedence material precedence)
+   #:thickness thickness
    #:mesh-edges mesh-edges))
 
 (define (add-rect-sheet/size name size
                              #:material [material (current-solid-material)]
                              #:precedence [precedence #f]
+                             #:thickness [thickness #f]
                              #:mesh-edges [mesh-edges 'exact])
   (define dimensions (dimension-list 'sheet size 2))
   (add-rect-sheet name (first dimensions) (second dimensions)
                   #:material material #:precedence precedence
+                  #:thickness thickness
                   #:mesh-edges mesh-edges))

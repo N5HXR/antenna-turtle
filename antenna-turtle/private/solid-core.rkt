@@ -4,42 +4,33 @@
          racket/math
          (prefix-in m: manifold)
          "core.rkt"
+         "material.rkt"
+         "mesh-constraint.rkt"
+         "lumped-component.rkt"
          "solid-placement.rkt")
 
 (provide
- (struct-out em-material)
- pec
- dielectric
- make-dielectric
- conducting-sheet-material
- material-default-precedence
+ (all-from-out "material.rkt")
+ (all-from-out "mesh-constraint.rkt")
 
  (struct-out solid-body)
  (struct-out planar-sheet)
  (struct-out lumped-port)
+ (struct-out lumped-component)
  (struct-out solid-scene)
  current-solid-scene
  model-bodies
  model-sheets
  model-ports
+ model-components
  add-body
  add-sheet
  add-lumped-port
+ add-lumped-element
  lumped-port-start
  lumped-port-stop
  clear-bodies
  validate-solid-scene!)
-
-;; Materials deliberately retain electric and magnetic fields that the first
-;; OpenEMS implementation will not yet consume. This keeps loss, dispersion,
-;; and isotropic magnetic materials from requiring a replacement data model.
-(struct em-material
-  (name kind relative-permittivity relative-permeability
-        electric-conductivity magnetic-conductivity thickness)
-  #:transparent)
-
-(define pec
-  (em-material 'pec 'pec #f #f #f #f 0))
 
 (define (finite-real? value)
   (and (real? value) (rational? value)))
@@ -58,57 +49,22 @@
      description value))
   value)
 
-(define (material-name who value)
-  (unless (or (symbol? value)
-              (and (string? value) (not (string=? value ""))))
-    (raise-argument-error who "(or/c symbol? non-empty-string?)" value))
-  value)
-
-(define (dielectric #:name [name 'dielectric]
-                    #:relative-permittivity epsilon-r
-                    #:relative-permeability [mu-r 1])
-  (material-name 'dielectric name)
-  (positive-real 'dielectric epsilon-r "relative permittivity")
-  (positive-real 'dielectric mu-r "relative permeability")
-  (em-material name 'dielectric epsilon-r mu-r 0 0 #f))
-
-;; Public DSL syntax delegates here while the keyword-compatible `dielectric`
-;; procedure remains available to low-level clients.
-(define make-dielectric dielectric)
-
-(define (conducting-sheet-material
-         #:name [name 'conducting-sheet]
-         #:conductivity [conductivity 0]
-         #:thickness [thickness 0])
-  (material-name 'conducting-sheet-material name)
-  (nonnegative-real
-   'conducting-sheet-material conductivity "electric conductivity")
-  (nonnegative-real 'conducting-sheet-material thickness "sheet thickness")
-  (em-material name 'conducting-sheet #f #f conductivity 0 thickness))
-
-(define (material-default-precedence material)
-  (validate-material 'material-default-precedence material)
-  (case (em-material-kind material)
-    [(dielectric) 10]
-    [(pec conducting-sheet) 20]
-    [else 10]))
-
 ;; A scene owns the transformed Manifold handles stored in its bodies. The
 ;; caller retains ownership of the source solid passed to add-body.
 (struct solid-body
-  (name material solid priority coordinates placement-transform)
+  (name material solid priority coordinates placement-transform metal-thickness)
   #:transparent)
 (struct planar-sheet
-  (name material points normal priority placement-transform mesh-edges)
+  (name material points normal priority placement-transform mesh-edges thickness)
   #:transparent)
 (struct lumped-port
   (name impedance center direction transverse-u transverse-v
         gap width depth priority placement-transform)
   #:transparent)
-(struct solid-scene (bodies sheets ports) #:mutable #:transparent)
+(struct solid-scene (bodies sheets ports components) #:mutable #:transparent)
 
 (define current-solid-scene
-  (make-parameter (solid-scene '() '() '())))
+  (make-parameter (solid-scene '() '() '() '())))
 
 (define (model-bodies [scene (current-solid-scene)])
   (solid-scene-bodies scene))
@@ -118,6 +74,9 @@
 
 (define (model-ports [scene (current-solid-scene)])
   (solid-scene-ports scene))
+
+(define (model-components [scene (current-solid-scene)])
+  (solid-scene-components scene))
 
 (define identity-transform
   '((1 0 0 0)
@@ -160,17 +119,29 @@
   (or (for/or ([body (in-list (solid-scene-bodies scene))])
         (equal? name (solid-body-name body)))
       (for/or ([sheet (in-list (solid-scene-sheets scene))])
-        (equal? name (planar-sheet-name sheet)))))
+        (equal? name (planar-sheet-name sheet)))
+      (for/or ([port (in-list (solid-scene-ports scene))])
+        (equal? name (lumped-port-name port)))
+      (for/or ([component (in-list (solid-scene-components scene))])
+        (equal? name (lumped-component-name component)))))
 
 (define (add-body name material geometry
                   #:priority [priority #f]
                   #:precedence [precedence #f]
                   #:coordinates [coordinates 'local]
-                  #:anchor [anchor 'origin])
+                  #:anchor [anchor 'origin]
+                  #:metal-thickness [metal-thickness #f])
   (geometry-name 'add-body name)
   (validate-material 'add-body material)
   (define effective-priority
     (effective-precedence 'add-body priority precedence))
+  (when metal-thickness
+    (positive-real 'add-body metal-thickness "metal thickness"))
+  (when (and (eq? (em-material-kind material) 'conductor)
+             (not metal-thickness))
+    (raise-arguments-error
+     'add-body "finite-conductivity bodies require metal-thickness"
+     "material" material))
   (unless (m:solid? geometry)
     (raise-argument-error 'add-body "solid? from manifold" geometry))
   (when (m:solid-closed? geometry)
@@ -194,7 +165,9 @@
   (define owned-solid (m:transform geometry effective-placement))
   (define body
     (solid-body name material owned-solid effective-priority
-                coordinates effective-placement))
+                coordinates effective-placement
+                (and metal-thickness
+                     (* (current-geometry-scale) metal-thickness))))
   (define scene (current-solid-scene))
   (set-solid-scene-bodies!
    scene (append (solid-scene-bodies scene) (list body)))
@@ -204,12 +177,13 @@
                    #:priority [priority #f]
                    #:precedence [precedence #f]
                    #:coordinates [coordinates 'local]
-                   #:mesh-edges [mesh-edges 'exact])
+                   #:mesh-edges [mesh-edges 'exact]
+                   #:thickness [thickness #f])
   (geometry-name 'add-sheet name)
   (validate-material 'add-sheet material)
-  (unless (memq (em-material-kind material) '(pec conducting-sheet))
+  (unless (memq (em-material-kind material) '(pec conductor conducting-sheet))
     (raise-arguments-error
-     'add-sheet "sheet material must be PEC or a conducting-sheet material"
+     'add-sheet "sheet material must be PEC or a conductor"
      "material" material))
   (define effective-priority
     (effective-precedence 'add-sheet priority precedence))
@@ -223,11 +197,25 @@
   (define orientation (scene-transform 'add-sheet coordinates))
   (define scale-factor (current-geometry-scale))
   (define placement (scale-transform orientation scale-factor))
+  (when thickness (nonnegative-real 'add-sheet thickness "sheet thickness"))
+  (define source-thickness
+    (or thickness
+        (and (eq? (em-material-kind material) 'conducting-sheet)
+             (em-material-thickness material))))
+  (when (and (eq? (em-material-kind material) 'conductor)
+             (not source-thickness))
+    (raise-arguments-error
+     'add-sheet "finite-conductivity sheets require an explicit thickness"
+     "material" material))
+  (define effective-thickness
+    (and source-thickness (* scale-factor source-thickness)))
+  ;; Preserve the historical material accessor for compatibility while also
+  ;; storing thickness on the placed sheet, where new conductor materials need
+  ;; it to live.
   (define effective-material
     (if (and (eq? (em-material-kind material) 'conducting-sheet)
-             (em-material-thickness material))
-        (struct-copy em-material material
-          [thickness (* scale-factor (em-material-thickness material))])
+             effective-thickness)
+        (struct-copy em-material material [thickness effective-thickness])
         material))
   (define world-points
     (for/list ([point (in-list points)])
@@ -236,7 +224,7 @@
   (define sheet
     (planar-sheet name effective-material world-points
                   (transform-vector orientation '(0 0 1))
-                  effective-priority placement mesh-edges))
+                  effective-priority placement mesh-edges effective-thickness))
   (define scene (current-solid-scene))
   (set-solid-scene-sheets!
    scene (append (solid-scene-sheets scene) (list sheet)))
@@ -309,9 +297,8 @@
     (effective-dimension depth (/ (model-wavelength) 1000) "depth" #f))
   (define scene (current-solid-scene))
   (define name (or requested-name (fresh-port-name scene)))
-  (when (for/or ([port (in-list (solid-scene-ports scene))])
-          (equal? name (lumped-port-name port)))
-    (raise-arguments-error 'add-lumped-port "port names must be unique"
+  (when (used-name? name scene)
+    (raise-arguments-error 'add-lumped-port "model feature names must be unique"
                            "name" name))
   (define placement (current-turtle-affine-transform 'add-lumped-port))
   (define transverse (hash-ref transverse-components direction))
@@ -327,6 +314,65 @@
   (set-solid-scene-ports!
    scene (append (solid-scene-ports scene) (list port)))
   port)
+
+(define (add-lumped-element direction
+                            #:name name
+                            #:resistance [resistance #f]
+                            #:inductance [inductance #f]
+                            #:capacitance [capacitance #f]
+                            #:topology [topology #f]
+                            #:caps [caps #t]
+                            #:gap gap
+                            #:width width
+                            #:depth depth
+                            #:priority [priority #f]
+                            #:precedence [precedence #f])
+  (define local-direction (hash-ref direction-components direction #f))
+  (unless local-direction
+    (raise-argument-error 'add-lumped-element "turtle direction" direction))
+  (geometry-name 'add-lumped-element name)
+  (define electrical-values (filter values (list resistance inductance capacitance)))
+  (when (null? electrical-values)
+    (raise-arguments-error 'add-lumped-element
+                           "at least one electrical value is required"
+                           "resistance" resistance
+                           "inductance" inductance
+                           "capacitance" capacitance))
+  (for ([value (in-list electrical-values)])
+    (positive-real 'add-lumped-element value "electrical value"))
+  (unless (or (not topology) (memq topology '(series parallel)))
+    (raise-argument-error 'add-lumped-element
+                          "(or/c #f 'series 'parallel)" topology))
+  (when (and (> (length electrical-values) 1) (not topology))
+    (raise-arguments-error 'add-lumped-element
+                           "topology is required when multiple electrical values are present"
+                           "topology" topology))
+  (unless (boolean? caps)
+    (raise-argument-error 'add-lumped-element "boolean?" caps))
+  (positive-real 'add-lumped-element gap "gap")
+  (positive-real 'add-lumped-element width "width")
+  (positive-real 'add-lumped-element depth "depth")
+  (define scene (current-solid-scene))
+  (when (used-name? name scene)
+    (raise-arguments-error 'add-lumped-element
+                           "model feature names must be unique" "name" name))
+  (define effective-priority
+    (effective-precedence 'add-lumped-element priority precedence))
+  (define scale-factor (current-geometry-scale))
+  (define placement (current-turtle-affine-transform 'add-lumped-element))
+  (define transverse (hash-ref transverse-components direction))
+  (define component
+    (lumped-component
+     name resistance inductance capacitance (or topology 'parallel) caps
+     (transform-point placement '(0 0 0))
+     (transform-vector placement local-direction)
+     (transform-vector placement (first transverse))
+     (transform-vector placement (second transverse))
+     (* scale-factor gap) (* scale-factor width) (* scale-factor depth)
+     effective-priority placement))
+  (set-solid-scene-components!
+   scene (append (solid-scene-components scene) (list component)))
+  component)
 
 (define (point+scaled point vector scale)
   (point3 (+ (point3-x point) (* scale (point3-x vector)))
@@ -443,7 +489,8 @@
     (define solid (solid-body-solid body))
     (unless (m:solid-closed? solid) (m:solid-close! solid)))
   ;; Ports and sheets are subordinate to the physical bodies they touch.
-  (current-solid-scene (solid-scene '() '() '()))
+  (current-solid-scene (solid-scene '() '() '() '()))
+  (clear-mesh-constraints)
   (void))
 
 (register-model-reset-hook! clear-bodies)

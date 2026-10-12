@@ -33,6 +33,12 @@ centimeter centimeters
 millimeter millimeters
 inch inches
 foot feet
+
+ohm ohms kiloohm kiloohms megaohm megaohms
+henry henries millihenry millihenries microhenry microhenries
+nanohenry nanohenries
+farad farads millifarad millifarads microfarad microfarads
+nanofarad nanofarads picofarad picofarads
 ```
 
 Examples:
@@ -863,6 +869,30 @@ default precedence values: dielectric 10 and PEC/conducting geometry 20.
 `precedence` overrides the default. OpenEMS maps precedence to CSXCAD priority;
 future backends may instead use it to resolve mesh-region ownership.
 
+### `(mesh-point)` and `(mesh-plane xy|xz|yz)`
+
+Registers hard rectilinear-mesh constraints at the turtle's current global
+position. `mesh-point` requires X, Y, and Z mesh coordinates through that
+point. `mesh-plane xy` requires its global Z coordinate, `mesh-plane xz`
+requires its global Y coordinate, and `mesh-plane yz` requires its global X
+coordinate. The constraint is captured immediately; `from-here` restores the
+turtle state but does not remove it. An enclosing `with-scale` affects the
+movement used to reach the point and does not scale the captured coordinate a
+second time.
+
+OpenEMS transforms constraints with the rest of the scene and supplies them to
+`SmoothMeshLines` before automatic metal-edge refinement. A point remains
+valid under any rigid transform. A plane whose global normal becomes oblique
+to the solver's Yee grid after automatic one-port alignment is an error.
+Manual coordinates take precedence when automatic metal-edge lines conflict,
+and the generated driver verifies that smoothing retained every requested
+coordinate before starting FDTD. Closely spaced manual constraints are honored
+and can therefore reduce the global Courant timestep substantially.
+
+Constraints do not expand the simulation domain and must fall within its
+automatically padded bounds. They are recorded in the reproducibility manifest
+and are cleared by `clear-bodies` and `reset-model!`.
+
 The lower-level Manifold registration interface remains available for CSG and
 generated geometry:
 
@@ -895,12 +925,33 @@ primitives such as `m:cylinder` and `m:cube` also accept `#:center? #t` when
 constructor-level centering is preferable. `clear-bodies` closes and clears
 registered bodies, sheets, and their subordinate ports.
 
-Lossless dielectric volumes use `(dielectric #:name name
-#:relative-permittivity epsilon-r [#:relative-permeability 1])`. Planar
-conductors use `(sheet name points ... material ... priority ...)`, where
-`points` is a local-XY polygon. `pec` gives a zero-thickness perfect conductor;
-`conducting-sheet-material` supplies finite conductivity and thickness. The
-sheet follows the complete turtle frame, including arbitrary rotation.
+Dielectric volumes use `(dielectric name substrate er 4.4)` or the equivalent
+keyword constructor. Add `loss-tangent 0.02` to derive OpenEMS `Kappa` at the
+model frequency, or add `loss-frequency 435` to select another reference in
+MHz. This is a constant-conductivity, narrowband approximation; the manifest
+records the original tangent, reference frequency, derived conductivity, and
+effective tangent at both sweep endpoints. `conductivity` may be supplied
+directly instead, but not together with `loss-tangent`.
+
+`silver`, `copper`, `gold`, `aluminum`, `brass`, and nonmagnetic nominal
+`steel` are reusable finite-conductivity materials. Custom materials use
+`(conductor name alloy conductivity 2.4e7)`. Geometry supplies its physical
+thickness: `(sheet rect trace size '(20 2) material copper thickness 0.035)`
+inside a millimeter scale. `conducting-sheet-material` remains as a compatible
+constructor for older code that stores a default thickness on the material.
+The sheet follows the complete turtle frame, including arbitrary rotation.
+
+Finite-conductivity volume bodies use `material copper metal-thickness ...`.
+Revision 1 accepts only solids whose triangulated boundary facets align with
+the Yee grid after the model-to-solver transform; each boundary triangle is
+exported as a conducting-sheet polygon, and every distinct surface plane is a
+required mesh coordinate. When physical metal exceeds OpenEMS's recommended
+500-micrometer sheet thickness, the backend uses ten skin depths as the
+numerical thickness and records both values in the manifest; this keeps the
+narrowband surface model inside the recommended range without changing model
+geometry.
+Non-axis-aligned facets raise an error before the solver starts. PEC volume
+bodies retain arbitrary STL geometry.
 `mesh-edges exact` is the compatibility default and puts mesh planes on its
 geometric bounds. `mesh-edges metal` applies the openEMS 1/3--2/3 treatment to
 an axis-aligned rectangular metal sheet: each in-plane edge is represented by
@@ -913,6 +964,41 @@ the usual `dielectric < port < conductor` ordering. An explicit value overrides
 that inference and is useful when a more complex overlap hierarchy requires
 manual control. The effective value and whether it was automatic or explicit
 are recorded in the simulation manifest.
+
+### `(lumped-element direction setting value ...)`
+
+Places an ideal two-terminal OpenEMS R, L, C, or compound RLC region centered
+on the turtle. `direction` is its terminal axis. `name`, `gap`, and either
+`size '(width depth)` or both `width` and `depth` are required, as is at least
+one of `resistance`, `inductance`, and `capacitance`:
+
+```racket
+(with-scale millimeters
+  (lumped-element forward
+    name coupling-network
+    resistance {0.4 * ohms}
+    inductance {1.2 * nanohenries}
+    capacitance {2.2 * picofarads}
+    topology series
+    caps #t
+    gap 1
+    size '(3 0.035)))
+```
+
+When multiple electrical values are supplied, `topology series` or `topology
+parallel` is required. A topology on a pure R, L, or C is harmless. `caps`
+defaults to `#t`; specify `#f` explicitly to disable OpenEMS terminal caps.
+
+Spatial dimensions follow `with-scale`; electrical quantities remain SI. All
+six region faces become required mesh coordinates. The backend rejects a
+component with a terminal face that provably does not touch conductive solid
+or sheet geometry and requires its transformed frame to align with the Yee
+grid. `precedence` overrides the normal automatic `dielectric < lumped feature
+< conductor` choice. `clear-bodies` also clears lumped elements.
+
+Export requires OpenEMS 0.37 / CSXCAD 0.7 or newer. Upstream installations
+under `/usr/local` are found automatically; set `OPENEMS_ROOT` for another
+installation prefix.
 
 ### `(simulate engine openems sweep '(start-mhz stop-mhz) profile profile-value ...)`
 
@@ -947,11 +1033,42 @@ Runs or reuses NF2FF postprocessing for a completed simulation result. It is
 the high-level name for `openems-radiation-grid` and accepts the same frequency,
 excitation, angular resolution, Octave, reuse, and timeout keywords.
 
+### `(power-budget result keyword-arguments ...)`
+
+Returns an `openems-power-budget` at the model frequency. The accepted input
+power is divided into power delivered to passive output ports, NF2FF radiated
+power, volumetric dielectric heat, resistive lumped-element heat, and a final
+conducting-sheet/numerical remainder. Port powers come directly from
+`calcPort`; the dielectric subtotal comes from an OpenEMS raw-SAR dump and
+`CalcSAR`. Ideal capacitors and inductors dissipate no average power.
+
+```racket
+(define budget
+  (power-budget result #:excitation 'input))
+(display-power-budget budget)
+;; Or retain the formatted report without printing it:
+(define report-text (format-power-budget budget))
+```
+
+Optional keywords are `#:frequency`, `#:excitation`, `#:theta-step`,
+`#:phi-step`, `#:octave`, `#:reuse?`, and `#:timeout`. Revision 1 records
+material-loss fields only at `model-frequency`, so an explicit frequency must
+equal that value. NF2FF postprocessing is performed lazily and cached just as
+it is for `radiation-pattern`.
+
+Raw watts reflect OpenEMS's solver excitation amplitude; percentage and dB
+columns are normalized to incident power. The final conductor category also
+contains PML, discretization, and numerical closure error because conducting
+sheets use a surface-loss model not represented in the volumetric loss dump.
+Use mesh convergence to judge that remainder before treating it as measured
+copper or aluminum heat.
+
 ### `(openems-sweep start-mhz stop-mhz keyword-arguments ...)`
 
-The current executable slice supports ordinary Turtle wires, PEC and
-nondispersive lossless dielectric volume bodies, planar PEC/conducting sheets,
-and one or more derived or explicit lumped ports. One-port runs return an
+The current executable slice supports ordinary Turtle wires, PEC and lossy or
+lossless nondispersive dielectric volume bodies, planar PEC/conducting sheets,
+rectilinear finite-conductivity body boundaries, and one or more derived or
+explicit lumped ports. One-port runs return an
 `openems-sweep-result`; multiport runs return an `openems-multiport-result`
 containing the complete complex S-matrix and active input impedance for every
 excitation and requested frequency. Materials that

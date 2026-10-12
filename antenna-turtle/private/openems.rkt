@@ -16,6 +16,7 @@
          "core.rkt"
          "nec2c.rkt"
          "network.rkt"
+         "openems-material.rkt"
          "solid-core.rkt"
          "wire-solid.rkt")
 
@@ -69,11 +70,19 @@
 (struct exn:fail:openems exn:fail (run-info) #:transparent)
 
 (struct exported-body
-  (name filename material priority minimum maximum sha1 triangles)
+  (name filename material priority minimum maximum sha1 triangles
+        metal-thickness surface-facets)
+  #:transparent)
+
+(struct exported-facet (points-2d transform plane-axis plane-coordinate)
   #:transparent)
 
 (struct exported-sheet
-  (name material priority points-2d transform minimum maximum mesh-edges)
+  (name material priority points-2d transform minimum maximum mesh-edges thickness)
+  #:transparent)
+
+(struct exported-mesh-constraint
+  (kind plane user-point solver-point axes)
   #:transparent)
 
 (define octave-executable
@@ -84,6 +93,24 @@
        (raise-argument-error 'octave-executable "(or/c #f path-string?)" value))
      value)))
 
+;; Distribution packages commonly register openEMS as Octave packages, while
+;; upstream installs (including update_openEMS.sh) install ordinary .m files
+;; below PREFIX/share. Support both layouts and prefer an explicit root.
+(define (write-octave-openems-loader line)
+  (line "if exist('InitFDTD', 'file') ~~= 2")
+  (line "  openems_root = getenv('OPENEMS_ROOT');")
+  (line "  if isempty(openems_root), openems_root = '/usr/local'; end")
+  (line "  addpath([openems_root '/share/CSXCAD/matlab']);")
+  (line "  addpath([openems_root '/share/openEMS/matlab']);")
+  (line "  if exist([openems_root '/share/CTB/matlab'], 'dir'), addpath([openems_root '/share/CTB/matlab']); end")
+  (line "end")
+  (line "if exist('InitFDTD', 'file') ~~= 2")
+  (line "  try, pkg load openems; pkg load csxcad; catch, end")
+  (line "end")
+  (line "if exist('InitFDTD', 'file') ~~= 2 || exist('InitCSX', 'file') ~~= 2")
+  (line "  error('openEMS Octave interface not found; set OPENEMS_ROOT to its installation prefix');")
+  (line "end"))
+
 (define speed-of-light 299792458.0)
 (define default-maximum-timesteps 100000)
 (define default-end-criteria 1e-5)
@@ -93,7 +120,7 @@
 (define-runtime-path openems-progress-path "openems-progress.rkt")
 
 (define openems-progress-line-rx
-  #px"\\[@[[:space:]]+([^]]+)\\][[:space:]]+Timestep:[[:space:]]+([0-9]+).*Speed:[[:space:]]+([0-9.]+)[[:space:]]+MC/s.*Energy:.*\\([[:space:]]*([+-]?[0-9.]+)dB\\)")
+  #px"\\[@[[:space:]]+([^]]+)\\][[:space:]]+Timestep:[[:space:]]+([0-9]+).*Speed:[[:space:]]+([0-9.]+)[[:space:]]+MC/s.*Energy:.*\\([[:space:]]*([+-]?[[:space:]]*[0-9.]+)dB\\)")
 (define openems-excitation-line-rx
   #px"Antenna Turtle excitation ([0-9]+) of ([0-9]+)")
 
@@ -165,6 +192,17 @@
          (or (< (abs value) 1e-8)
              (< (abs (- (abs value) 1)) 1e-8)))))
 
+(define (signed-axis-index values)
+  (define nonzero
+    (for/list ([value (in-list values)] [axis (in-naturals)]
+               #:when (> (abs value) 1e-8))
+      axis))
+  (and (= (length nonzero) 1)
+       (for/and ([value (in-list values)])
+         (or (< (abs value) 1e-8)
+             (< (abs (- (abs value) 1)) 1e-8)))
+       (first nonzero)))
+
 (define (validate-multiport-alignment! ports)
   (define reference-impedances
     (remove-duplicates (map lumped-port-impedance ports) =))
@@ -207,6 +245,76 @@
    (lumped-port-depth port)
    (lumped-port-priority port)
    (lumped-port-placement-transform port)))
+
+(define (transform-component component transform)
+  (lumped-component
+   (lumped-component-name component)
+   (lumped-component-resistance component)
+   (lumped-component-inductance component)
+   (lumped-component-capacitance component)
+   (lumped-component-topology component)
+   (lumped-component-caps component)
+   (apply point3 (transform-point transform (lumped-component-center component)))
+   (apply point3 (transform-vector transform (lumped-component-direction component)))
+   (apply point3 (transform-vector transform (lumped-component-transverse-u component)))
+   (apply point3 (transform-vector transform (lumped-component-transverse-v component)))
+   (lumped-component-gap component)
+   (lumped-component-width component)
+   (lumped-component-depth component)
+   (lumped-component-priority component)
+   (lumped-component-placement-transform component)))
+
+(define (validate-component-alignment! components)
+  (for ([component (in-list components)])
+    (unless (and (signed-axis? (lumped-component-direction component))
+                 (signed-axis? (lumped-component-transverse-u component))
+                 (signed-axis? (lumped-component-transverse-v component)))
+      (raise-user-error
+       'openems-sweep
+       (string-append
+        "lumped element ~a is not aligned with the OpenEMS Yee grid after "
+        "the model-to-solver transform; align its turtle frame with the grid")
+       (lumped-component-name component)))))
+
+(define (transform-mesh-constraint constraint transform)
+  (define user-point (point->list (mesh-constraint-point constraint)))
+  (define solver-point
+    (transform-point transform (mesh-constraint-point constraint)))
+  (case (mesh-constraint-kind constraint)
+    [(point)
+     (exported-mesh-constraint
+      'point #f user-point solver-point '(0 1 2))]
+    [(plane)
+     (define solver-normal
+       (transform-vector transform (mesh-constraint-normal constraint)))
+     (define axis (signed-axis-index solver-normal))
+     (unless axis
+       (raise-user-error
+        'openems-sweep
+        (string-append
+         "mesh plane ~a at ~a is not aligned with the OpenEMS Yee grid after "
+         "the model-to-solver rotation; use mesh-point, align the port/model, "
+         "or remove the plane constraint")
+        (mesh-constraint-plane constraint)
+        user-point))
+     (exported-mesh-constraint
+      'plane (mesh-constraint-plane constraint)
+      user-point solver-point (list axis))]
+    [else
+     (error 'openems-sweep "unknown mesh constraint kind: ~e"
+            (mesh-constraint-kind constraint))]))
+
+(define (mesh-constraint-manifest constraint)
+  (hash 'kind (symbol->string (exported-mesh-constraint-kind constraint))
+        'plane (or (and (exported-mesh-constraint-plane constraint)
+                        (symbol->string
+                         (exported-mesh-constraint-plane constraint)))
+                   'null)
+        'user_point_m
+        (map exact->inexact (exported-mesh-constraint-user-point constraint))
+        'solver_point_m
+        (map exact->inexact (exported-mesh-constraint-solver-point constraint))
+        'solver_axes (exported-mesh-constraint-axes constraint)))
 
 (define (inverse-rigid-transform transform)
   (define rotation (map (lambda (row) (take row 3)) transform))
@@ -263,37 +371,145 @@
 (define (file-sha1 path)
   (call-with-input-file path sha1))
 
-(define (material-manifest material)
+(define (material-manifest material start-mhz stop-mhz)
+  (define model-frequency-mhz (model-frequency))
+  (define loss (em-material-loss-spec material))
   (hash 'name (format "~a" (em-material-name material))
         'kind (format "~a" (em-material-kind material))
         'relative_permittivity (or (em-material-relative-permittivity material) 'null)
         'relative_permeability (or (em-material-relative-permeability material) 'null)
-        'electric_conductivity_s_per_m (or (em-material-electric-conductivity material) 'null)
+        'electric_conductivity_s_per_m
+        (if (eq? (em-material-kind material) 'dielectric)
+            (dielectric-effective-conductivity material model-frequency-mhz)
+            (or (em-material-electric-conductivity material) 'null))
         'magnetic_conductivity (or (em-material-magnetic-conductivity material) 'null)
-        'thickness_m (or (em-material-thickness material) 'null)))
+        'thickness_m (or (em-material-thickness material) 'null)
+        'loss_tangent (if loss (material-loss-value loss) 'null)
+        'loss_reference_frequency_mhz
+        (or (dielectric-reference-frequency-mhz material model-frequency-mhz) 'null)
+        'effective_loss_tangent_at_sweep_start
+        (if loss
+            (dielectric-effective-loss-tangent material start-mhz model-frequency-mhz)
+            'null)
+        'effective_loss_tangent_at_sweep_stop
+        (if loss
+            (dielectric-effective-loss-tangent material stop-mhz model-frequency-mhz)
+            'null)))
 
-(define (body-manifest body)
-  (hash 'representation "volume-stl"
+(define (body-manifest body start-mhz stop-mhz)
+  (hash 'representation
+        (if (eq? (em-material-kind (exported-body-material body)) 'conductor)
+            "rectilinear-conducting-boundary"
+            "volume-stl")
         'name (format "~a" (exported-body-name body))
-        'file (exported-body-filename body)
-        'sha1 (exported-body-sha1 body)
+        'file (or (exported-body-filename body) 'null)
+        'sha1 (or (exported-body-sha1 body) 'null)
         'priority (exported-body-priority body)
-        'material (material-manifest (exported-body-material body))
+        'material (material-manifest (exported-body-material body) start-mhz stop-mhz)
         'minimum (map exact->inexact (exported-body-minimum body))
         'maximum (map exact->inexact (exported-body-maximum body))
-        'triangle_count (exported-body-triangles body)))
+        'triangle_count (exported-body-triangles body)
+        'metal_thickness_m (or (exported-body-metal-thickness body) 'null)
+        'effective_metal_thickness_m
+        (if (exported-body-metal-thickness body)
+            (conductor-effective-sheet-thickness
+             (exported-body-material body)
+             (exported-body-metal-thickness body)
+             (model-frequency))
+            'null)
+        'surface_facet_count (length (exported-body-surface-facets body))))
 
-(define (sheet-manifest sheet)
+(define (axis-aligned-surface-facets who name solid)
+  (define mesh (m:solid->mesh solid))
+  (define vertices (m:mesh-vertices mesh))
+  (for/list ([face (in-vector (m:mesh-triangles mesh))])
+    (define points
+      (for/list ([index (in-list (list (m:triangle-a face)
+                                       (m:triangle-b face)
+                                       (m:triangle-c face)))])
+        (m-point->list (vector-ref vertices index))))
+    (define scale
+      (max 1 (for*/fold ([maximum 0]) ([point (in-list points)]
+                                       [coordinate (in-list point)])
+               (max maximum (abs coordinate)))))
+    (define flat-axes
+      (for/list ([axis (in-range 3)]
+                 #:when
+                 (<= (- (apply max (map (lambda (p) (list-ref p axis)) points))
+                        (apply min (map (lambda (p) (list-ref p axis)) points)))
+                     (* 1e-9 scale)))
+        axis))
+    (unless (= (length flat-axes) 1)
+      (raise-arguments-error
+       who
+       "finite-conductivity bodies require every boundary facet to align with the Yee grid"
+       "body" name "triangle" points))
+    (define normal-axis (first flat-axes))
+    (define in-plane-axes (remove normal-axis '(0 1 2)))
+    (define origin (first points))
+    (define u
+      (for/list ([axis (in-range 3)])
+        (if (= axis (first in-plane-axes)) 1 0)))
+    (define v
+      (for/list ([axis (in-range 3)])
+        (if (= axis (second in-plane-axes)) 1 0)))
+    (define n
+      (for/list ([axis (in-range 3)])
+        (if (= axis normal-axis) 1 0)))
+    (define transform
+      (for/list ([axis (in-range 3)])
+        (list (list-ref u axis) (list-ref v axis) (list-ref n axis)
+              (list-ref origin axis))))
+    (define points-2d
+      (for/list ([point (in-list points)])
+        (list (- (list-ref point (first in-plane-axes))
+                 (list-ref origin (first in-plane-axes)))
+              (- (list-ref point (second in-plane-axes))
+                 (list-ref origin (second in-plane-axes))))))
+    (exported-facet points-2d transform normal-axis
+                    (list-ref origin normal-axis))))
+
+(define (sheet-manifest sheet start-mhz stop-mhz)
   (hash 'representation "planar-polygon"
         'name (format "~a" (exported-sheet-name sheet))
         'priority (exported-sheet-priority sheet)
-        'material (material-manifest (exported-sheet-material sheet))
+        'material (material-manifest (exported-sheet-material sheet) start-mhz stop-mhz)
+        'thickness_m (or (exported-sheet-thickness sheet) 'null)
+        'effective_thickness_m
+        (if (and (exported-sheet-thickness sheet)
+                 (memq (em-material-kind (exported-sheet-material sheet))
+                        '(conductor conducting-sheet)))
+            (conductor-effective-sheet-thickness
+             (exported-sheet-material sheet)
+             (exported-sheet-thickness sheet)
+             (model-frequency))
+            'null)
         'points_2d (map (lambda (point) (map exact->inexact point))
                         (exported-sheet-points-2d sheet))
         'local_to_solver_transform (matrix->lists (exported-sheet-transform sheet))
         'minimum (map exact->inexact (exported-sheet-minimum sheet))
         'maximum (map exact->inexact (exported-sheet-maximum sheet))
         'mesh_edges (symbol->string (exported-sheet-mesh-edges sheet))))
+
+(define (component-manifest component priority)
+  (define-values (minimum maximum) (component-bounds component))
+  (hash 'representation "lumped-element"
+        'name (format "~a" (lumped-component-name component))
+        'resistance_ohms (or (lumped-component-resistance component) 'null)
+        'inductance_henries (or (lumped-component-inductance component) 'null)
+        'capacitance_farads (or (lumped-component-capacitance component) 'null)
+        'topology (symbol->string (lumped-component-topology component))
+        'caps (lumped-component-caps component)
+        'gap_m (lumped-component-gap component)
+        'width_m (lumped-component-width component)
+        'depth_m (lumped-component-depth component)
+        'minimum_m (map exact->inexact minimum)
+        'maximum_m (map exact->inexact maximum)
+        'direction (map exact->inexact
+                        (point->list (lumped-component-direction component)))
+        'priority priority
+        'priority_source
+        (if (lumped-component-priority component) "explicit" "automatic")))
 
 (define (json-safe value)
   (cond
@@ -318,19 +534,23 @@
 (define (transform-and-export-bodies directory transform)
   (for/list ([body (in-list (model-bodies))]
              [index (in-naturals 1)])
-    (unless (memq (em-material-kind (solid-body-material body)) '(pec dielectric))
+    (unless (memq (em-material-kind (solid-body-material body))
+                  '(pec dielectric conductor))
       (raise-arguments-error
        'openems-sweep
-       "OpenEMS volume bodies must use PEC or lossless dielectric material"
+       "OpenEMS volume bodies must use PEC, dielectric, or conductor material"
        "body" (solid-body-name body)
        "material" (solid-body-material body)))
     (define transformed (m:transform (solid-body-solid body) transform))
     (dynamic-wind
       void
       (lambda ()
-        (define filename (format "body-~a.stl" index))
-        (define path (build-path directory filename))
-        (m:write-stl transformed path #:name (sanitize-label (solid-body-name body)))
+        (define conductor?
+          (eq? (em-material-kind (solid-body-material body)) 'conductor))
+        (define filename (and (not conductor?) (format "body-~a.stl" index)))
+        (define path (and filename (build-path directory filename)))
+        (unless conductor?
+          (m:write-stl transformed path #:name (sanitize-label (solid-body-name body))))
         (define-values (minimum maximum) (m:solid-bounds transformed))
         (exported-body
          (solid-body-name body)
@@ -339,8 +559,13 @@
          (or (solid-body-priority body) 10)
          (m-point->list minimum)
          (m-point->list maximum)
-         (file-sha1 path)
-         (m:solid-num-triangles transformed)))
+         (and path (file-sha1 path))
+         (m:solid-num-triangles transformed)
+         (solid-body-metal-thickness body)
+         (if conductor?
+             (axis-aligned-surface-facets
+              'openems-sweep (solid-body-name body) transformed)
+             '())))
       (lambda () (m:solid-close! transformed)))))
 
 (define (list-subtract first second)
@@ -376,7 +601,8 @@
                     (planar-sheet-material sheet)
                     (or (planar-sheet-priority sheet) 10)
                     points-2d local-to-solver minimum maximum
-                    (planar-sheet-mesh-edges sheet))))
+                    (planar-sheet-mesh-edges sheet)
+                    (planar-sheet-thickness sheet))))
 
 (define (geometry-minimum geometry)
   (if (exported-body? geometry)
@@ -398,23 +624,25 @@
       (exported-body-priority geometry)
       (exported-sheet-priority geometry)))
 
-(define (bounds-intersect? geometry minimum maximum)
+(define (bounds-intersect? geometry minimum maximum [relative-tolerance 1e-12])
   (for/and ([low (in-list (geometry-minimum geometry))]
             [high (in-list (geometry-maximum geometry))]
             [other-low (in-list minimum)]
             [other-high (in-list maximum)])
-    (and (<= low other-high) (<= other-low high))))
+    (define tolerance
+      (* relative-tolerance
+         (max 1 (abs low) (abs high) (abs other-low) (abs other-high))))
+    (and (<= low (+ other-high tolerance))
+         (<= other-low (+ high tolerance)))))
 
-(define (port-bounds port)
-  (define center (point->list (lumped-port-center port)))
+(define (oriented-box-bounds center-point direction-point u-point v-point
+                             gap width depth)
+  (define center (point->list center-point))
   (define axes
-    (list (point->list (lumped-port-transverse-u port))
-          (point->list (lumped-port-transverse-v port))
-          (point->list (lumped-port-direction port))))
+    (list (point->list u-point) (point->list v-point)
+          (point->list direction-point)))
   (define half-extents
-    (list (/ (lumped-port-width port) 2)
-          (/ (lumped-port-depth port) 2)
-          (/ (lumped-port-gap port) 2)))
+    (list (/ width 2) (/ depth 2) (/ gap 2)))
   (define corners
     (for*/list ([u-sign (in-list '(-1 1))]
                 [v-sign (in-list '(-1 1))]
@@ -429,6 +657,20 @@
             (apply min (map (lambda (corner) (list-ref corner axis)) corners)))
           (for/list ([axis (in-range 3)])
             (apply max (map (lambda (corner) (list-ref corner axis)) corners)))))
+
+(define (port-bounds port)
+  (oriented-box-bounds
+   (lumped-port-center port) (lumped-port-direction port)
+   (lumped-port-transverse-u port) (lumped-port-transverse-v port)
+   (lumped-port-gap port) (lumped-port-width port) (lumped-port-depth port)))
+
+(define (component-bounds component)
+  (oriented-box-bounds
+   (lumped-component-center component) (lumped-component-direction component)
+   (lumped-component-transverse-u component)
+   (lumped-component-transverse-v component)
+   (lumped-component-gap component) (lumped-component-width component)
+   (lumped-component-depth component)))
 
 (define (derive-port-priority geometry port)
   ;; A lumped port must replace dielectric inside its box, while the metal at
@@ -450,7 +692,7 @@
      (define conductor-priorities
        (for/list ([item (in-list touching)]
                   #:when (memq (em-material-kind (geometry-material item))
-                               '(pec conducting-sheet)))
+                               '(pec conductor conducting-sheet)))
          (geometry-priority item)))
      (cond
        [(and (pair? dielectric-priorities) (pair? conductor-priorities))
@@ -469,6 +711,64 @@
        [(pair? dielectric-priorities) (add1 (apply max dielectric-priorities))]
        [else 10]))))
 
+(define (derive-component-priority geometry component)
+  (or
+   (lumped-component-priority component)
+   (let ()
+     (define-values (minimum maximum) (component-bounds component))
+     (define touching
+       (filter (lambda (item) (bounds-intersect? item minimum maximum)) geometry))
+     (define dielectric-priorities
+       (for/list ([item (in-list touching)]
+                  #:when (eq? (em-material-kind (geometry-material item))
+                              'dielectric))
+         (geometry-priority item)))
+     (define conductor-priorities
+       (for/list ([item (in-list touching)]
+                  #:when (memq (em-material-kind (geometry-material item))
+                               '(pec conductor conducting-sheet)))
+         (geometry-priority item)))
+     (cond
+       [(and (pair? dielectric-priorities) (pair? conductor-priorities))
+        (define dielectric-priority (apply max dielectric-priorities))
+        (define conductor-priority (apply min conductor-priorities))
+        (unless (>= (- conductor-priority dielectric-priority) 2)
+          (raise-user-error
+           'openems-sweep
+           (string-append
+            "geometry touching lumped element ~a must leave an integer "
+            "priority between dielectric and conductor priorities")
+           (lumped-component-name component)))
+        (quotient (+ dielectric-priority conductor-priority) 2)]
+       [(pair? conductor-priorities) (sub1 (apply min conductor-priorities))]
+       [(pair? dielectric-priorities) (add1 (apply max dielectric-priorities))]
+       [else 10]))))
+
+(define (validate-component-contacts! geometry components)
+  ;; Bounding boxes can prove that a terminal is disconnected. A positive
+  ;; bounding-box match for an arbitrary STL is only a candidate, so OpenEMS
+  ;; remains the final authority for more intricate contact geometry.
+  (for ([component (in-list components)])
+    (define axis
+      (signed-axis-index (point->list (lumped-component-direction component))))
+    (define-values (minimum maximum) (component-bounds component))
+    (for ([face (in-list (list (list-ref minimum axis)
+                               (list-ref maximum axis)))])
+      (define terminal-min (list-set minimum axis (- face 1e-12)))
+      (define terminal-max (list-set maximum axis (+ face 1e-12)))
+      (define conductors
+        (filter
+         (lambda (item)
+           (and (memq (em-material-kind (geometry-material item))
+                      '(pec conductor conducting-sheet))
+                (bounds-intersect? item terminal-min terminal-max)))
+         geometry))
+      (when (null? conductors)
+        (raise-user-error
+         'openems-sweep
+         "lumped element ~a has a terminal that does not touch conductive geometry"
+         (lumped-component-name component))))))
+
 (define (axis-values geometry accessor axis)
   (for/list ([item (in-list geometry)])
     (list-ref (accessor item) axis)))
@@ -483,7 +783,7 @@
 
 (define (metal-sheet-plane-axis sheet)
   (unless (memq (em-material-kind (exported-sheet-material sheet))
-                '(pec conducting-sheet))
+                '(pec conductor conducting-sheet))
     (raise-arguments-error
      'openems-sweep
      "metal edge treatment requires a PEC or conducting sheet"
@@ -544,6 +844,12 @@
         (if (= axis normal-axis)
             (list (list-ref (exported-sheet-minimum item) axis))
             '())]
+       [(and (exported-body? item)
+             (eq? (em-material-kind (exported-body-material item)) 'conductor))
+        (remove-duplicates
+         (for/list ([facet (in-list (exported-body-surface-facets item))]
+                    #:when (= axis (exported-facet-plane-axis facet)))
+           (exported-facet-plane-coordinate facet)))]
        [else
         (list (list-ref (geometry-minimum item) axis)
               (list-ref (geometry-maximum item) axis))]))))
@@ -620,7 +926,12 @@
                      (/ index minimum-dielectric-cells))))
          '()))))
 
-(define (critical-axis-values geometry ports axis domain-min domain-max
+(define (mesh-constraint-axis-values constraints axis)
+  (for/list ([constraint (in-list constraints)]
+             #:when (member axis (exported-mesh-constraint-axes constraint)))
+    (list-ref (exported-mesh-constraint-solver-point constraint) axis)))
+
+(define (critical-axis-values geometry ports components constraints axis domain-min domain-max
                               max-resolution minimum-dielectric-cells
                               metal-edge-resolution)
   (define port-values
@@ -628,9 +939,17 @@
      (for/list ([port (in-list ports)])
        (define-values (minimum maximum) (port-bounds port))
        (list (list-ref minimum axis) (list-ref maximum axis)))))
+  (define component-values
+    (append*
+     (for/list ([component (in-list components)])
+       (define-values (minimum maximum) (component-bounds component))
+       (list (list-ref minimum axis) (list-ref maximum axis)))))
+  (define user-values (mesh-constraint-axis-values constraints axis))
   (define fixed-values
     (append (list domain-min domain-max 0)
+            user-values
             port-values
+            component-values
             (ordinary-geometry-axis-values geometry axis)
             (dielectric-subdivision-values
              geometry axis max-resolution minimum-dielectric-cells)))
@@ -642,6 +961,22 @@
     =)
    <))
 
+(define (validate-mesh-constraint-domain! constraints domain-min domain-max)
+  (for ([constraint (in-list constraints)])
+    (define point (exported-mesh-constraint-solver-point constraint))
+    (for ([axis (in-list (exported-mesh-constraint-axes constraint))])
+      (define coordinate (list-ref point axis))
+      (unless (<= (list-ref domain-min axis) coordinate
+                  (list-ref domain-max axis))
+        (raise-arguments-error
+         'openems-sweep
+         "mesh constraint lies outside the automatically padded simulation domain"
+         "kind" (exported-mesh-constraint-kind constraint)
+         "plane" (or (exported-mesh-constraint-plane constraint) 'none)
+         "user point" (exported-mesh-constraint-user-point constraint)
+         "solver coordinate" coordinate
+         "solver axis" axis)))))
+
 (define (scene-bounds geometry)
   (values
    (for/list ([axis (in-range 3)])
@@ -650,23 +985,35 @@
      (apply max (axis-values geometry geometry-maximum axis)))))
 
 (define (write-octave-driver directory bodies sheets ports port-priorities
+                             components component-priorities
                              start-mhz stop-mhz steps
                              critical-x critical-y critical-z max-resolution
+                             required-x required-y required-z
                              mesh-grading maximum-timesteps end-criteria
                              geometry-minimum geometry-maximum wavelength-min)
   (define path (build-path directory "run-openems.m"))
   (define port-count (length ports))
+  (define budget-frequency-hz (* (model-frequency) 1e6))
+  (define lossy-dielectric?
+    (for/or ([body (in-list bodies)])
+      (and (eq? (em-material-kind (exported-body-material body)) 'dielectric)
+           (> (dielectric-effective-conductivity
+               (exported-body-material body) (model-frequency))
+              0))))
   (call-with-output-file path
     #:exists 'truncate/replace
     (lambda (out)
       (define (line format-string . values)
         (apply fprintf out (string-append format-string "\n") values))
-      (line "pkg load openems;")
-      (line "pkg load csxcad;")
+      (write-octave-openems-loader line)
+      (when (pair? components)
+        (line "lumped_source = fileread(which('AddLumpedElement'));")
+        (line "if isempty(regexp(lumped_source, 'LEtype', 'once')), error('Antenna Turtle lumped elements require openEMS 0.37/CSXCAD 0.7 or newer'); end"))
       (line "physical_constants;")
       (line "unit = 1.0;")
       (line "f_start = ~a;" (number-string (* start-mhz 1e6)))
       (line "f_stop = ~a;" (number-string (* stop-mhz 1e6)))
+      (line "budget_frequency = ~a;" (number-string budget-frequency-hz))
       ;; Exciting continuously from DC through f_stop avoids pathologically
       ;; long pulses for narrow sweeps while still recording every requested
       ;; postprocessing frequency in a single solver run.
@@ -684,6 +1031,16 @@
       (line "mesh.z = SmoothMeshLines(~a, ~a, ~a);"
             (octave-vector critical-z) (number-string max-resolution)
             (number-string mesh-grading))
+      ;; SmoothMeshLines should retain every supplied coordinate. Verify the
+      ;; user-authored hard constraints before spending time in FDTD.
+      (for ([axis-name (in-list '(x y z))]
+            [required (in-list (list required-x required-y required-z))])
+        (line "required_~a = ~a;" axis-name (octave-vector required))
+        (line "for required = required_~a" axis-name)
+        (line "  if min(abs(mesh.~a - required)) > 1e-9 * max(1, abs(required))" axis-name)
+        (line "    error('SmoothMeshLines did not retain a required ~a-axis mesh coordinate');" axis-name)
+        (line "  end")
+        (line "end"))
       ;; Match the dimensions and total reported by OpenEMS itself. Its FDTD
       ;; operator count uses the number of mesh lines on each Yee axis.
       (line "mesh_cells = numel(mesh.x) * numel(mesh.y) * numel(mesh.z);")
@@ -720,34 +1077,130 @@
         (for ([body (in-list bodies)] [index (in-naturals 1)])
           (define property (format "body_~a" index))
           (define material (exported-body-material body))
-          (line "copyfile('~a', [Sim_Path '/~a']);"
-                (exported-body-filename body) (exported-body-filename body))
           (case (em-material-kind material)
-            [(pec) (line "CSX = AddMetal(CSX, '~a');" property)]
+            [(pec)
+             (line "copyfile('~a', [Sim_Path '/~a']);"
+                   (exported-body-filename body) (exported-body-filename body))
+             (line "CSX = AddMetal(CSX, '~a');" property)
+             (line "CSX = ImportSTL(CSX, '~a', ~a, '~a');"
+                   property (exported-body-priority body)
+                   (exported-body-filename body))]
             [(dielectric)
+             (line "copyfile('~a', [Sim_Path '/~a']);"
+                   (exported-body-filename body) (exported-body-filename body))
              (line "CSX = AddMaterial(CSX, '~a');" property)
-             (line "CSX = SetMaterialProperty(CSX, '~a', 'Epsilon', ~a, 'Mue', ~a);"
+             ;; Density does not affect the electromagnetic solve.  A unit
+             ;; density makes the raw-SAR machinery usable as a volumetric
+             ;; dielectric power-loss integrator.
+             (line "CSX = SetMaterialProperty(CSX, '~a', 'Epsilon', ~a, 'Mue', ~a, 'Kappa', ~a, 'Density', 1);"
                    property
                    (number-string (em-material-relative-permittivity material))
-                   (number-string (em-material-relative-permeability material)))])
-          (line "CSX = ImportSTL(CSX, '~a', ~a, '~a');"
-                property (exported-body-priority body)
-                (exported-body-filename body)))
+                   (number-string (em-material-relative-permeability material))
+                   (number-string
+                    (dielectric-effective-conductivity material (model-frequency))))
+             (line "CSX = ImportSTL(CSX, '~a', ~a, '~a');"
+                   property (exported-body-priority body)
+                   (exported-body-filename body))]
+            [(conductor)
+             (line "CSX = AddConductingSheet(CSX, '~a', ~a, ~a);"
+                   property
+                   (number-string (em-material-electric-conductivity material))
+                   (number-string
+                    (conductor-effective-sheet-thickness
+                     material (exported-body-metal-thickness body)
+                     (model-frequency))))
+             (for ([facet (in-list (exported-body-surface-facets body))]
+                   [facet-index (in-naturals 1)])
+               (line "body_~a_facet_~a = ~a;" index facet-index
+                     (octave-point-matrix (exported-facet-points-2d facet)))
+               (line "CSX = AddPolygon(CSX, '~a', ~a, 2, 0, body_~a_facet_~a, 'Transform', {'Matrix', '~a'});"
+                     property (exported-body-priority body) index facet-index
+                     (csx-matrix-string (exported-facet-transform facet))))]))
         (for ([sheet (in-list sheets)] [index (in-naturals 1)])
           (define property (format "sheet_~a" index))
           (define material (exported-sheet-material sheet))
           (case (em-material-kind material)
             [(pec) (line "CSX = AddMetal(CSX, '~a');" property)]
-            [(conducting-sheet)
+            [(conductor conducting-sheet)
              (line "CSX = AddConductingSheet(CSX, '~a', ~a, ~a);"
                    property
                    (number-string (em-material-electric-conductivity material))
-                   (number-string (em-material-thickness material)))])
+                   (number-string
+                    (conductor-effective-sheet-thickness
+                     material (exported-sheet-thickness sheet)
+                     (model-frequency))))])
           (line "sheet_points_~a = ~a;" index
                 (octave-point-matrix (exported-sheet-points-2d sheet)))
           (line "CSX = AddPolygon(CSX, '~a', ~a, 2, 0, sheet_points_~a, 'Transform', {'Matrix', '~a'});"
                 property (exported-sheet-priority sheet) index
                 (csx-matrix-string (exported-sheet-transform sheet))))
+        (for ([component (in-list components)]
+              [priority (in-list component-priorities)]
+              [component-index (in-naturals 1)])
+          (define property (format "lumped_~a" component-index))
+          (define axis
+            (signed-axis-index
+             (point->list (lumped-component-direction component))))
+          (define-values (component-start component-stop)
+            (component-bounds component))
+          (define options
+            (string-append
+             (format ", 'Caps', ~a"
+                     (if (lumped-component-caps component) 1 0))
+             (if (lumped-component-resistance component)
+                 (format ", 'R', ~a"
+                         (number-string
+                          (lumped-component-resistance component))) "")
+             (if (lumped-component-inductance component)
+                 (format ", 'L', ~a"
+                         (number-string
+                          (lumped-component-inductance component))) "")
+             (if (lumped-component-capacitance component)
+                 (format ", 'C', ~a"
+                         (number-string
+                          (lumped-component-capacitance component))) "")
+             (format ", 'LEtype', ~a"
+                     (if (eq? (lumped-component-topology component) 'series)
+                         1 0))))
+          (line "CSX = AddLumpedElement(CSX, '~a', ~a~a);"
+                property axis options)
+          (line "CSX = AddBox(CSX, '~a', ~a, ~a, ~a);"
+                property priority (octave-vector component-start)
+                (octave-vector component-stop))
+          ;; Add non-material voltage/current probes around every component
+          ;; that contains a resistor.  Their aggregate real power is the
+          ;; lumped-element heat category; ideal L/C elements need no probe.
+          (when (lumped-component-resistance component)
+            (define direction-values
+              (point->list (lumped-component-direction component)))
+            (define direction-sign
+              (if (negative? (list-ref direction-values axis)) -1 1))
+            (line "component_u_start = 0.5*(~a + ~a);"
+                  (octave-vector component-start)
+                  (octave-vector component-stop))
+            (line "component_u_stop = component_u_start;")
+            (line "component_u_start(~a) = ~a;"
+                  (add1 axis) (number-string (list-ref component-start axis)))
+            (line "component_u_stop(~a) = ~a;"
+                  (add1 axis) (number-string (list-ref component-stop axis)))
+            (line "CSX = AddProbe(CSX, 'lumped_ut~a', 0, 'weight', -1);"
+                  component-index)
+            (line "CSX = AddBox(CSX, 'lumped_ut~a', ~a, component_u_start, component_u_stop);"
+                  component-index priority)
+            (line "component_i_start = ~a;"
+                  (octave-vector component-start))
+            (line "component_i_stop = ~a;"
+                  (octave-vector component-stop))
+            (line "component_i_start(~a) = 0.5*(~a + ~a);"
+                  (add1 axis)
+                  (number-string (list-ref component-start axis))
+                  (number-string (list-ref component-stop axis)))
+            (line "component_i_stop(~a) = component_i_start(~a);"
+                  (add1 axis) (add1 axis))
+            (line "CSX = AddProbe(CSX, 'lumped_it~a', 1, 'weight', ~a, 'NormDir', ~a);"
+                  component-index direction-sign axis)
+            (line "CSX = AddBox(CSX, 'lumped_it~a', ~a, component_i_start, component_i_stop);"
+                  component-index priority)))
         (line "port = {};")
         (for ([port (in-list ports)]
               [priority (in-list port-priorities)]
@@ -771,12 +1224,45 @@
         (line "nf2ff_resolution = ~a;" (number-string (/ wavelength-min 15)))
         (line "[CSX, nf2ff] = CreateNF2FFBox(CSX, 'nf2ff', nf2ff_start, nf2ff_stop, 'OptResolution', nf2ff_resolution);")
         (line "save([Sim_Path '/nf2ff-box.mat'], 'nf2ff', 'nf2ff_start', 'nf2ff_stop', 'nf2ff_resolution');")
+        (when lossy-dielectric?
+          (line "CSX = AddDump(CSX, 'dielectric_loss', 'DumpType', 29, 'Frequency', budget_frequency, 'FileType', 1, 'DumpMode', 2);")
+          (line "CSX = AddBox(CSX, 'dielectric_loss', 0, geometry_min, geometry_max);"))
         (line "WriteOpenEMS([Sim_Path '/' Sim_XML], FDTD, CSX);")
         (line "settings.LogFile = 'openems.log'; settings.Silent = 0;")
         (line "RunOpenEMS(Sim_Path, Sim_XML, '--dump-statistics', settings);")
         (for ([port-index (in-range 1 (add1 port-count))])
           (line "port{~a} = calcPort(port{~a}, Sim_Path, freq);"
                 port-index port-index))
+        ;; Preserve absolute port powers at the exact model frequency.  These
+        ;; are safer than deriving power solely from S-parameters and remain
+        ;; valid for passive output ports, whose accepted power is negative.
+        (line "all_port_power = [];")
+        (for ([port-index (in-range 1 (add1 port-count))])
+          (line "budget_port = calcPort(port{~a}, Sim_Path, budget_frequency);"
+                port-index)
+          (line "all_port_power = [all_port_power; budget_frequency, ~a, ~a, budget_port.P_inc(1), budget_port.P_ref(1), budget_port.P_acc(1)];"
+                port-index active-index))
+        (line "dlmwrite([Sim_Path '/port-power.csv'], all_port_power, 'precision', '%.17g');")
+        (line "all_lumped_power = [];")
+        (for ([component (in-list components)]
+              [component-index (in-naturals 1)]
+              #:when (lumped-component-resistance component))
+          (line "lumped_u = ReadUI('lumped_ut~a', Sim_Path, budget_frequency);"
+                component-index)
+          (line "lumped_i = ReadUI('lumped_it~a', Sim_Path, budget_frequency);"
+                component-index)
+          (line "lumped_power = 0.5*abs(real(lumped_u.FD{1}.val(1)*conj(lumped_i.FD{1}.val(1))));")
+          (line "all_lumped_power = [all_lumped_power; budget_frequency, ~a, ~a, lumped_power];"
+                component-index active-index))
+        (line "dlmwrite([Sim_Path '/lumped-power.csv'], all_lumped_power, 'precision', '%.17g');")
+        (if lossy-dielectric?
+            (begin
+              (line "CalcSAR([Sim_Path '/dielectric_loss.h5'], [Sim_Path '/dielectric_loss_local.h5'], 'mass', 0);")
+              (line "dielectric_power = ReadHDF5Attribute([Sim_Path '/dielectric_loss_local.h5'], '/FieldData/FD/f0', 'power');")
+              (line "dlmwrite([Sim_Path '/dielectric-power.csv'], [budget_frequency, ~a, dielectric_power], 'precision', '%.17g');"
+                    active-index))
+            (line "dlmwrite([Sim_Path '/dielectric-power.csv'], [budget_frequency, ~a, 0], 'precision', '%.17g');"
+                  active-index))
         (for ([output-index (in-range 1 (add1 port-count))])
           (line "s = port{~a}.uf.ref ./ port{~a}.uf.inc;"
                 output-index active-index)
@@ -1154,8 +1640,7 @@
     (lambda (out)
       (define (line format-string . values)
         (apply fprintf out (string-append format-string "\n") values))
-      (line "pkg load openems;")
-      (line "pkg load csxcad;")
+      (write-octave-openems-loader line)
       (line "load('~a/nf2ff-box.mat');" simulation-path)
       (line "frequency = ~a;" (number-string frequency-hz))
       (line "theta = (~a) * pi / 180;" (octave-vector theta-values))
@@ -1380,7 +1865,11 @@
                           (list-ref match 1)
                           (string->number (list-ref match 2))
                           (string->number (list-ref match 3))
-                          (string->number (list-ref match 4))
+                          (string->number
+                           (regexp-replace*
+                            #px"[[:space:]]"
+                            (list-ref match 4)
+                            ""))
                           next-excitation)
                     latest)
                 next-excitation))])
@@ -1588,6 +2077,10 @@
   ;; One-port models retain automatic convenience alignment. Multiport models
   ;; deliberately preserve user coordinates and must already be grid-aligned.
   (define transform (simulation-transform user-ports))
+  (define mesh-constraints
+    (map (lambda (constraint)
+           (transform-mesh-constraint constraint transform))
+         (model-mesh-constraints)))
   (define octave (resolve-octave requested-octave))
   (define directory
     (make-temporary-file "antenna-turtle-openems~a" 'directory))
@@ -1604,10 +2097,65 @@
   (define inverse-transform (inverse-rigid-transform transform))
   (define ports
     (map (lambda (port) (transform-port port transform)) user-ports))
+  (define components
+    (map (lambda (component) (transform-component component transform))
+         (model-components)))
+  (validate-component-alignment! components)
   (define bodies (transform-and-export-bodies directory transform))
   (define sheets (transform-and-export-sheets transform))
+  (for ([body (in-list bodies)]
+        #:when (em-material-loss-spec (exported-body-material body)))
+    (define material (exported-body-material body))
+    (printf
+     (string-append
+      "OpenEMS material notice: dielectric ~a uses loss tangent ~a at ~a MHz; "
+      "the backend models it as constant conductivity, so loss is a narrowband approximation.\n")
+     (em-material-name material)
+     (material-loss-value (em-material-loss-spec material))
+     (dielectric-reference-frequency-mhz material (model-frequency))))
+  (for ([item (in-list (append bodies sheets))])
+    (define material (geometry-material item))
+    (define physical-thickness
+      (cond [(exported-body? item) (exported-body-metal-thickness item)]
+            [else (exported-sheet-thickness item)]))
+    (when (and physical-thickness
+               (memq (em-material-kind material) '(conductor conducting-sheet)))
+      (define effective-thickness
+        (conductor-effective-sheet-thickness
+         material physical-thickness (model-frequency)))
+      (when (< effective-thickness physical-thickness)
+        (printf
+         (string-append
+          "OpenEMS material notice: conductor ~a is ~a m thick; using ~a m "
+          "(ten skin depths at ~a MHz) for the narrowband sheet model.\n")
+         (em-material-name material) physical-thickness effective-thickness
+         (model-frequency)))))
+  (flush-output)
   (define geometry (append bodies sheets))
-  (define-values (minimum maximum) (scene-bounds geometry))
+  (define dielectric-loss-accounting?
+    (for/or ([body (in-list bodies)])
+      (and (eq? (em-material-kind (exported-body-material body)) 'dielectric)
+           (> (dielectric-effective-conductivity
+               (exported-body-material body) (model-frequency))
+              0))))
+  (validate-component-contacts! geometry components)
+  (define-values (physical-minimum physical-maximum) (scene-bounds geometry))
+  (define component-minima
+    (for/list ([component (in-list components)])
+      (define-values (minimum _maximum) (component-bounds component)) minimum))
+  (define component-maxima
+    (for/list ([component (in-list components)])
+      (define-values (_minimum maximum) (component-bounds component)) maximum))
+  (define minimum
+    (for/list ([axis (in-range 3)])
+      (apply min (cons (list-ref physical-minimum axis)
+                       (map (lambda (bounds) (list-ref bounds axis))
+                            component-minima)))))
+  (define maximum
+    (for/list ([axis (in-range 3)])
+      (apply max (cons (list-ref physical-maximum axis)
+                       (map (lambda (bounds) (list-ref bounds axis))
+                            component-maxima)))))
   (define wavelength-min (/ speed-of-light (* stop-mhz 1e6)))
   (define maximum-index
     (sqrt
@@ -1630,23 +2178,31 @@
          (* 10 max-resolution)))
   (define domain-min (map (lambda (value) (- value padding)) minimum))
   (define domain-max (map (lambda (value) (+ value padding)) maximum))
+  (validate-mesh-constraint-domain! mesh-constraints domain-min domain-max)
   (define critical-x
-    (critical-axis-values geometry ports 0
+    (critical-axis-values geometry ports components mesh-constraints 0
                           (first domain-min) (first domain-max) max-resolution
                           minimum-dielectric-cells metal-edge-resolution))
   (define critical-y
-    (critical-axis-values geometry ports 1
+    (critical-axis-values geometry ports components mesh-constraints 1
                           (second domain-min) (second domain-max) max-resolution
                           minimum-dielectric-cells metal-edge-resolution))
   (define critical-z
-    (critical-axis-values geometry ports 2
+    (critical-axis-values geometry ports components mesh-constraints 2
                           (third domain-min) (third domain-max) max-resolution
                           minimum-dielectric-cells metal-edge-resolution))
   (define port-priorities
     (map (lambda (port) (derive-port-priority geometry port)) ports))
+  (define component-priorities
+    (map (lambda (component) (derive-component-priority geometry component))
+         components))
   (write-octave-driver directory bodies sheets ports port-priorities
+                       components component-priorities
                        start-mhz stop-mhz steps
                        critical-x critical-y critical-z max-resolution
+                       (mesh-constraint-axis-values mesh-constraints 0)
+                       (mesh-constraint-axis-values mesh-constraints 1)
+                       (mesh-constraint-axis-values mesh-constraints 2)
                        mesh-grading maximum-timesteps end-criteria
                        minimum maximum wavelength-min)
   (define initial-manifest
@@ -1663,7 +2219,14 @@
                   'steps steps)
      'user_to_solver_transform (matrix->lists transform)
      'solver_to_user_transform (matrix->lists inverse-transform)
-     'geometry (append (map body-manifest bodies) (map sheet-manifest sheets))
+     'geometry
+     (append (map (lambda (body) (body-manifest body start-mhz stop-mhz)) bodies)
+             (map (lambda (sheet) (sheet-manifest sheet start-mhz stop-mhz)) sheets))
+     'lumped_elements
+     (for/list ([component (in-list components)]
+                [priority (in-list component-priorities)])
+       (component-manifest component priority))
+     'mesh_constraints (map mesh-constraint-manifest mesh-constraints)
      'wire_conversion
      (if wire-derivation
          (hash 'representation "capsule-union"
@@ -1738,6 +2301,16 @@
                   'optimum_resolution_m (/ wavelength-min 15)
                   'postprocess_default_frequency_mhz
                   (exact->inexact (model-frequency)))
+     'power_accounting
+     (hash 'frequency_mhz (exact->inexact (model-frequency))
+           'port_power "port-power.csv"
+           'dielectric_power "dielectric-power.csv"
+           'lumped_power "lumped-power.csv"
+           'conductor_power "conservation remainder"
+           'dielectric_method
+           (if dielectric-loss-accounting?
+               "openEMS raw SAR / CalcSAR"
+               "zero"))
      'solver (hash 'octave_executable (path->string octave)
                    'driver "run-openems.m"
                    'excitation_center_hz 0.0

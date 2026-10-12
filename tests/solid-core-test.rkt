@@ -149,28 +149,94 @@
   (body radome geometry source)
   (sheet ground points '((0 0) (1 0) (0 1)))
   (port up name "feed")
+  (move forward 0.5)
+  (lumped-element up name load resistance (* 50 ohms)
+                  gap 0.1 size '(0.1 0.1))
+  (mesh-point)
+  (mesh-plane xy)
   (check-equal? (length (model-edges)) 1)
   (check-equal? (length (model-bodies)) 1)
   (check-equal? (length (model-sheets)) 1)
   (check-equal? (length (model-ports)) 1)
+  (check-equal? (length (model-components)) 1)
+  (check-true (lumped-component-caps (first (model-components))))
+  (check-equal? (length (model-mesh-constraints)) 2)
 
   (clear-bodies)
   (check-equal? (length (model-edges)) 1)
   (check-equal? (model-bodies) '())
   (check-equal? (model-sheets) '())
   (check-equal? (model-ports) '())
+  (check-equal? (model-components) '())
+  (check-equal? (model-mesh-constraints) '())
   (m:solid-close! source))
+
+(test-case "lumped elements scale geometry but retain SI electrical values"
+  (reset-model!)
+  (define element
+    (with-scale millimeters
+      (move forward 10)
+      (lumped-element up
+        name matching-network
+        resistance (* 50 ohms)
+        inductance (* 2.2 nanohenries)
+        capacitance (* 3.3 picofarads)
+        topology series
+        caps #f
+        gap 2
+        size '(3 4))))
+  (check-equal? (lumped-component-name element) 'matching-network)
+  (check-= (point3-x (lumped-component-center element)) 0.01 1e-15)
+  (check-= (point3-y (lumped-component-center element)) 0 1e-15)
+  (check-= (point3-z (lumped-component-center element)) 0 1e-15)
+  (check-= (lumped-component-gap element) 0.002 1e-15)
+  (check-= (lumped-component-width element) 0.003 1e-15)
+  (check-= (lumped-component-depth element) 0.004 1e-15)
+  (check-equal? (lumped-component-resistance element) 50)
+  (check-= (lumped-component-inductance element) 2.2e-9 1e-20)
+  (check-= (lumped-component-capacitance element) 3.3e-12 1e-22)
+  (check-equal? (lumped-component-topology element) 'series)
+  (check-false (lumped-component-caps element))
+  (check-exn
+   #rx"topology is required"
+   (lambda ()
+     (add-lumped-element 'up #:name 'invalid
+                         #:resistance 50 #:capacitance 1e-12
+                         #:gap 1 #:width 1 #:depth 1)))
+  (clear-bodies))
+
+(test-case "mesh constraints capture the current global turtle coordinate"
+  (reset-model!)
+  (with-scale 0.001
+    (move forward 20 left 30 up 40)
+    (mesh-point)
+    (mesh-plane xz))
+  (define constraints (model-mesh-constraints))
+  (define point-hint (first constraints))
+  (define plane-hint (second constraints))
+  (check-equal? (mesh-constraint-kind point-hint) 'point)
+  (check-equal? (mesh-constraint-point point-hint)
+                (point3 0.02 0.03 0.04))
+  (check-false (mesh-constraint-plane point-hint))
+  (check-equal? (mesh-constraint-kind plane-hint) 'plane)
+  (check-equal? (mesh-constraint-plane plane-hint) 'xz)
+  (check-equal? (mesh-constraint-normal plane-hint) (point3 0 1 0))
+  (check-equal? (mesh-constraint-point plane-hint)
+                (point3 0.02 0.03 0.04))
+  (clear-bodies))
 
 (test-case "reset-model clears both wire and physical geometry"
   (reset-model!)
   (define source (m:cube 1))
   (body block geometry source)
   (port right)
+  (mesh-plane yz)
   (with-wire (move up 1))
   (reset-model!)
   (check-equal? (model-edges) '())
   (check-equal? (model-bodies) '())
   (check-equal? (model-ports) '())
+  (check-equal? (model-mesh-constraints) '())
   (m:solid-close! source))
 
 (test-case "solid placement rejects nonlinear and repeated construction scopes"

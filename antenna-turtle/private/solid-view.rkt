@@ -17,6 +17,7 @@
 (define body-colors
   '((pec . "goldenrod")
     (dielectric . "lightblue")
+    (conductor . "peru")
     (conducting-sheet . "silver")))
 
 (define (m-point->vector point)
@@ -84,6 +85,32 @@
             (cons u (* u-sign half-width))
             (cons v (* v-sign half-depth)))))
 
+(define (component-corners component)
+  (define center (lumped-component-center component))
+  (define direction (lumped-component-direction component))
+  (define u (lumped-component-transverse-u component))
+  (define v (lumped-component-transverse-v component))
+  (define half-gap (/ (lumped-component-gap component) 2))
+  (define half-width (/ (lumped-component-width component) 2))
+  (define half-depth (/ (lumped-component-depth component) 2))
+  (for*/list ([direction-sign (in-list '(-1 1))]
+              [u-sign (in-list '(-1 1))]
+              [v-sign (in-list '(-1 1))])
+    (point+ center
+            (cons direction (* direction-sign half-gap))
+            (cons u (* u-sign half-width))
+            (cons v (* v-sign half-depth)))))
+
+(define (component-renderers component)
+  (define corners (component-corners component))
+  (for/list ([edge (in-list box-edge-indices)] [index (in-naturals)])
+    (lines3d
+     (for/list ([corner-index (in-list edge)])
+       (point->vector (list-ref corners corner-index)))
+     #:color "darkviolet" #:width 2
+     #:label (and (zero? index)
+                  (format "element: ~a" (lumped-component-name component))))))
+
 (define (port-renderers port)
   (define corners (port-corners port))
   (define center (lumped-port-center port))
@@ -116,7 +143,8 @@
   (append
    (map body-renderer (model-bodies))
    (map sheet-renderer (model-sheets))
-   (append* (map port-renderers (model-ports)))))
+   (append* (map port-renderers (model-ports)))
+   (append* (map component-renderers (model-components)))))
 
 (define (solid-model-cubic-bounds)
   (define extrema
@@ -129,7 +157,9 @@
       (for/list ([sheet (in-list (model-sheets))])
         (map point->vector (planar-sheet-points sheet)))
       (for/list ([port (in-list (model-ports))])
-        (map point->vector (port-corners port))))))
+        (map point->vector (port-corners port)))
+      (for/list ([component (in-list (model-components))])
+        (map point->vector (component-corners component))))))
   (define (coordinate index) (map (lambda (point) (vector-ref point index)) extrema))
   (define mins (for/list ([index (in-range 3)]) (apply min (coordinate index))))
   (define maxs (for/list ([index (in-range 3)]) (apply max (coordinate index))))

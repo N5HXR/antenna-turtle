@@ -140,6 +140,15 @@
   (call-with-output-file (build-path simulation-directory "port-results.csv")
     #:exists 'truncate/replace
     (lambda (out) (displayln "900000000,0,0,50,0,-inf.0" out)))
+  (call-with-output-file (build-path simulation-directory "port-power.csv")
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "900000000,1,1,1,0.1,0.9" out)))
+  (call-with-output-file (build-path simulation-directory "dielectric-power.csv")
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "900000000,1,0.1" out)))
+  (call-with-output-file (build-path simulation-directory "lumped-power.csv")
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "900000000,1,1,0.05" out)))
   (define run
     (openems-run-info mock-octave 0 0 "" "" artifacts manifest))
   (define result
@@ -170,6 +179,21 @@
                                 #:theta-step 180
                                 #:phi-step 360))
       (check-equal? (length (nec2c-pattern-grid-samples loaded-grid)) 2)
+      (define budget
+        (power-budget result
+                      #:frequency 900
+                      #:theta-step 180
+                      #:phi-step 360
+                      #:octave mock-octave))
+      (check-= (openems-power-budget-incident-power-w budget) 1 1e-12)
+      (check-= (openems-power-budget-radiated-power-w budget) 0.5 1e-12)
+      (check-= (openems-power-budget-dielectric-power-w budget) 0.1 1e-12)
+      (check-= (openems-power-budget-lumped-power-w budget) 0.05 1e-12)
+      (check-=
+       (openems-power-budget-conductor-and-unaccounted-power-w budget)
+       0.25 1e-12)
+      (check-regexp-match #rx"Conductors / numerical remainder"
+                          (format-power-budget budget))
       (openems-close! loaded)
       (check-true (directory-exists? directory)))
     (lambda () (openems-close! artifacts))))
@@ -203,7 +227,8 @@
   (reset-model!)
   (model frequency 915)
   (define substrate-material
-    (dielectric #:name 'substrate #:relative-permittivity 4.4))
+    (dielectric #:name 'substrate #:relative-permittivity 4.4
+                #:loss-tangent 0.02 #:loss-frequency 'model))
   (define copper
     (conducting-sheet-material #:name 'copper
                                #:conductivity 5.8e7
@@ -236,12 +261,35 @@
   (define driver (file->string (openems-artifacts-driver-path artifacts)))
   (check-regexp-match #rx"AddMaterial" driver)
   (check-regexp-match #rx"SetMaterialProperty" driver)
+  (check-regexp-match #rx"'Density', 1" driver)
+  (check-regexp-match #rx"'Kappa', 0\\.00[1-9]" driver)
+  (check-regexp-match #rx"AddDump\\(CSX, 'dielectric_loss'.*'DumpType', 29"
+                      driver)
+  (check-regexp-match #rx"CalcSAR" driver)
+  (check-regexp-match #rx"port-power[.]csv" driver)
   (check-regexp-match #rx"AddConductingSheet" driver)
   (check-regexp-match #rx"AddPolygon" driver)
   (check-regexp-match #rx"'Matrix'" driver)
   (check-regexp-match #rx"AddLumpedPort\\(CSX, 15, 1," driver)
   (define manifest (openems-run-info-manifest run))
   (check-equal? (length (hash-ref manifest 'geometry)) 2)
+  (define dielectric-manifest
+    (hash-ref (first (hash-ref manifest 'geometry)) 'material))
+  (check-equal? (hash-ref dielectric-manifest 'loss_tangent) 0.02)
+  (check-equal? (hash-ref dielectric-manifest 'loss_reference_frequency_mhz) 915)
+  (check-true
+   (> (hash-ref dielectric-manifest 'electric_conductivity_s_per_m) 0))
+  (check-= (hash-ref dielectric-manifest 'electric_conductivity_s_per_m)
+           (* 2 pi 915e6 8.8541878128e-12 4.4 0.02)
+           1e-14)
+  (check-= (hash-ref dielectric-manifest
+                     'effective_loss_tangent_at_sweep_start)
+           (* 0.02 (/ 915 850))
+           1e-12)
+  (check-= (hash-ref dielectric-manifest
+                     'effective_loss_tangent_at_sweep_stop)
+           (* 0.02 (/ 915 950))
+           1e-12)
   (check-equal? (hash-ref (hash-ref manifest 'port) 'priority) 15)
   (check-equal? (hash-ref (hash-ref manifest 'port) 'priority_source)
                 "automatic")
@@ -263,6 +311,165 @@
   (openems-close! artifacts)
   (delete-file mock-octave)
   (m:solid-close! substrate)
+  (clear-bodies))
+
+(test-case "OpenEMS exports rectilinear conductor bodies as aligned boundary sheets"
+  (reset-model!)
+  (model frequency 435)
+  (define block (m:cube 0.04 0.03 0.01 #:center? #t))
+  (body shield geometry block material aluminum
+        metal-thickness 0.001 precedence 20 coordinates world)
+  (port up name feed gap 0.002 width 0.002 depth 0.002)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 400 470 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define artifacts
+    (openems-run-info-artifacts (exn:fail:openems-run-info failure)))
+  (define driver (file->string (openems-artifacts-driver-path artifacts)))
+  (check-regexp-match #rx"AddConductingSheet\\(CSX, 'body_1', 35000000" driver)
+  (check-equal? (length (regexp-match* #rx"body_1_facet_[0-9]+ =" driver)) 12)
+  (check-false (regexp-match? #rx"ImportSTL\\(CSX, 'body_1'" driver))
+  (define body-description
+    (first (hash-ref (openems-run-info-manifest
+                      (exn:fail:openems-run-info failure))
+                     'geometry)))
+  (check-equal? (hash-ref body-description 'representation)
+                "rectilinear-conducting-boundary")
+  (check-equal? (hash-ref body-description 'surface_facet_count) 12)
+  (check-equal? (hash-ref body-description 'metal_thickness_m) 0.001)
+  (check-true (< (hash-ref body-description 'effective_metal_thickness_m)
+                 0.001))
+  (openems-close! artifacts)
+  (delete-file mock-octave)
+  (m:solid-close! block)
+  (clear-bodies))
+
+(test-case "OpenEMS rejects oblique finite-conductivity body facets"
+  (reset-model!)
+  (model frequency 435)
+  (define block (m:cube 0.04 0.03 0.01 #:center? #t))
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  ;; Rotate the geometry itself to produce a genuinely oblique boundary.
+  (define rotated (m:rotate block 0 0 30))
+  (body shield geometry rotated material steel
+        metal-thickness 0.001 precedence 20 coordinates world)
+  (port up name feed gap 0.002 width 0.002 depth 0.002)
+  (check-exn
+   #rx"boundary facet to align with the Yee grid"
+   (lambda ()
+     (openems-sweep 400 470 #:octave mock-octave #:progress? #f)))
+  (delete-file mock-octave)
+  (m:solid-close! rotated)
+  (m:solid-close! block)
+  (clear-bodies))
+
+(test-case "OpenEMS exports an axis-aligned lumped RLC element"
+  (reset-model!)
+  (model frequency 435 impedance 50)
+  ;; Two conductor sheets meet the component's opposite Z terminal faces.
+  (sheet lower
+    points '((-0.01 -0.01) (0.01 -0.01) (0.01 0.01) (-0.01 0.01))
+    material pec priority 20)
+  (move up 0.002)
+  (sheet upper
+    points '((-0.01 -0.01) (0.01 -0.01) (0.01 0.01) (-0.01 0.01))
+    material pec priority 20)
+  (move down 0.001)
+  (lumped-element up
+    name matching-part
+    resistance (* 2 ohms)
+    inductance (* 4.7 nanohenries)
+    capacitance (* 8.2 picofarads)
+    topology series
+    caps #f
+    gap 0.002
+    size '(0.001 0.001))
+  (port up name feed gap 0.002 size '(0.0005 0.0005) priority 15)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 400 470 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define driver
+    (file->string
+     (openems-artifacts-driver-path (openems-run-info-artifacts run))))
+  (check-regexp-match #rx"AddLumpedElement" driver)
+  (check-regexp-match #rx"'Caps', 0" driver)
+  (check-regexp-match #rx"'R', 2" driver)
+  (check-regexp-match #rx"'L', 0[.]0000000047" driver)
+  (check-regexp-match #rx"'C', 0[.]0000000000082" driver)
+  (check-regexp-match #rx"'LEtype', 1" driver)
+  (check-regexp-match #rx"AddBox" driver)
+  (check-regexp-match #rx"AddProbe\\(CSX, 'lumped_ut1'" driver)
+  (check-regexp-match #rx"AddProbe\\(CSX, 'lumped_it1'" driver)
+  (check-regexp-match #rx"lumped-power[.]csv" driver)
+  (define manifest (openems-run-info-manifest run))
+  (check-equal? (length (hash-ref manifest 'lumped_elements)) 1)
+  (check-equal? (hash-ref (first (hash-ref manifest 'lumped_elements))
+                          'topology)
+                "series")
+  (define element-manifest (first (hash-ref manifest 'lumped_elements)))
+  (check-false (hash-ref element-manifest 'caps))
+  (define mesh (hash-ref manifest 'mesh))
+  (for ([boundary (in-list (append (hash-ref element-manifest 'minimum_m)
+                                   (hash-ref element-manifest 'maximum_m)))]
+        [axis (in-list '(x y z x y z))])
+    (check-not-false
+     (member boundary (hash-ref mesh (string->symbol (format "critical_~a" axis))))))
+  (openems-close! (openems-run-info-artifacts run))
+  (delete-file mock-octave)
+  (clear-bodies))
+
+(test-case "OpenEMS accepts a lumped element flush with conductor sheets"
+  (reset-model!)
+  (model frequency 435 impedance 50)
+  (with-scale millimeters
+    (move up 1.6)
+    (sheet left-terminal
+      points '((-10 -5) (-0.5 -5) (-0.5 5) (-10 5))
+      material pec priority 20)
+    (sheet right-terminal
+      points '((0.5 -5) (10 -5) (10 5) (0.5 5))
+      material pec priority 20)
+    ;; The one-millimeter-high component has its bottom face exactly on the
+    ;; z=1.6 mm sheets. Inexact scaling must not require artificial overlap.
+    (move up 0.5)
+    (lumped-element forward
+      name flush-capacitor
+      capacitance (* 2.2 picofarads)
+      gap 1
+      size '(3 1))
+    (port up name feed gap 1 size '(1 1) priority 15))
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 350 520 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (openems-close!
+   (openems-run-info-artifacts (exn:fail:openems-run-info failure)))
+  (delete-file mock-octave)
   (clear-bodies))
 
 (test-case "OpenEMS multiport export preserves coordinates and excites each port"
@@ -408,6 +615,64 @@
                (openems-sweep 850 950
                               #:octave mock-octave #:progress? #f)))
   (delete-file mock-octave)
+  (m:solid-close! block)
+  (clear-bodies))
+
+(test-case "OpenEMS locks user mesh points and planes into critical coordinates"
+  (reset-model!)
+  (model frequency 915)
+  (define block (m:cube 0.1 0.1 0.01 #:center? #t))
+  (body radiator geometry block)
+  (port up name 'feed gap 0.002 width 0.002 depth 0.002)
+  (move forward 0.012 left 0.013 up 0.014)
+  (mesh-point)
+  (mesh-plane xy)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 850 950 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define manifest (openems-run-info-manifest run))
+  (define driver
+    (file->string
+     (openems-artifacts-driver-path (openems-run-info-artifacts run))))
+  (check-regexp-match #rx"required_x = \\[0\\.012" driver)
+  (check-regexp-match #rx"did not retain a required x-axis" driver)
+  (define constraints (hash-ref manifest 'mesh_constraints))
+  (check-equal? (length constraints) 2)
+  (check-equal? (hash-ref (first constraints) 'kind) "point")
+  (check-equal? (hash-ref (first constraints) 'solver_axes) '(0 1 2))
+  (check-equal? (hash-ref (second constraints) 'kind) "plane")
+  (check-equal? (hash-ref (second constraints) 'plane) "xy")
+  (check-equal? (hash-ref (second constraints) 'solver_axes) '(2))
+  (define mesh (hash-ref manifest 'mesh))
+  (define (contains-near? values wanted)
+    (for/or ([value (in-list values)]) (< (abs (- value wanted)) 1e-10)))
+  (check-true (contains-near? (hash-ref mesh 'critical_x) 0.012))
+  (check-true (contains-near? (hash-ref mesh 'critical_y) 0.013))
+  (check-true (contains-near? (hash-ref mesh 'critical_z) 0.014))
+  (openems-close! (openems-run-info-artifacts run))
+  (delete-file mock-octave)
+  (m:solid-close! block)
+  (clear-bodies))
+
+(test-case "OpenEMS rejects a mesh plane made oblique by one-port rotation"
+  (reset-model!)
+  (model frequency 915)
+  (define block (m:cube 0.1 0.1 0.01 #:center? #t))
+  (body radiator geometry block)
+  (mesh-plane xy)
+  (turn down 17)
+  (port up name 'feed gap 0.002 width 0.002 depth 0.002)
+  (check-exn
+   #rx"mesh plane xy.*not aligned with the OpenEMS Yee grid"
+   (lambda () (openems-sweep 850 950 #:progress? #f)))
   (m:solid-close! block)
   (clear-bodies))
 

@@ -2,12 +2,13 @@
 
 (require (except-in "core.rkt" cylinder)
          (only-in "core.rkt" [cylinder turtle-cylinder-warp])
-         (except-in "solid-core.rkt" dielectric)
+         (except-in "solid-core.rkt" dielectric conductor)
+         (only-in "material.rkt" make-conductor)
          "solid-primitives.rkt"
          "stl-import.rkt"
          (for-syntax racket/base racket/list syntax/parse))
 
-(provide body sheet port dielectric with-material
+(provide body sheet port lumped-element dielectric conductor with-material mesh-plane
          cuboid sphere cylinder capsule stl read-stl-solid)
 
 (begin-for-syntax
@@ -66,6 +67,15 @@
 (define-syntax-rule (with-material material body ...)
   (call-with-solid-material material (lambda () body ...)))
 
+(define-syntax (mesh-plane stx)
+  (syntax-parse stx
+    [(_ plane:id)
+     (unless (memq (syntax-e #'plane) '(xy xz yz))
+       (raise-syntax-error 'mesh-plane "expected xy, xz, or yz" stx #'plane))
+     #`(add-mesh-plane '#,(syntax-e #'plane))]
+    [(_ . _)
+     (raise-syntax-error 'mesh-plane "expected (mesh-plane xy|xz|yz)" stx)]))
+
 ;; Accept both the existing keyword constructor and the concise material DSL.
 (define-syntax (dielectric stx)
   (syntax-parse stx
@@ -76,10 +86,12 @@
          (let* ([values
                  (settings
                   'dielectric stx #'(argument ...)
-                  '(name er ur relative-permittivity relative-permeability)
+                  '(name er ur relative-permittivity relative-permeability
+                         loss-tangent loss-frequency conductivity)
                   (string-append
                    "expected name, er, ur, relative-permittivity, or "
-                   "relative-permeability setting/value pairs"))]
+                   "relative-permeability, loss-tangent, loss-frequency, or "
+                   "conductivity setting/value pairs"))]
                 [epsilon
                  (or (hash-ref values 'er #f)
                      (hash-ref values 'relative-permittivity #f))]
@@ -93,17 +105,38 @@
            #`(make-dielectric
               #:name #,(name-expression name)
               #:relative-permittivity #,epsilon
-              #:relative-permeability #,mu)))]))
+              #:relative-permeability #,mu
+              #,@(optional-keyword values 'loss-tangent #'#:loss-tangent)
+              #,@(optional-keyword values 'loss-frequency #'#:loss-frequency)
+              #,@(optional-keyword values 'conductivity #'#:conductivity))))]))
+
+(define-syntax (conductor stx)
+  (syntax-parse stx
+    [(_ argument ...)
+     (define arguments (syntax->list #'(argument ...)))
+     (if (ormap keyword? (map syntax-e arguments))
+         #'(make-conductor argument ...)
+         (let ([values
+                (settings 'conductor stx #'(argument ...)
+                          '(name conductivity)
+                          "expected name or conductivity setting/value pairs")])
+           (define conductivity (hash-ref values 'conductivity #f))
+           (unless conductivity
+             (raise-syntax-error 'conductor "conductivity is required" stx))
+           (define name (hash-ref values 'name #''conductor))
+           #`(make-conductor #:name #,(name-expression name)
+                            #:conductivity #,conductivity)))]))
 
 (define-syntax (body stx)
   (syntax-parse stx
     [(_ name:id setting ...)
      (define values
        (settings 'body stx #'(setting ...)
-                 '(geometry material priority precedence coordinates anchor)
+                 '(geometry material priority precedence coordinates anchor
+                            metal-thickness)
                  (string-append
                   "expected geometry, material, priority, precedence, "
-                  "coordinates, or anchor setting/value pairs")))
+                  "coordinates, anchor, or metal-thickness setting/value pairs")))
      (define geometry (hash-ref values 'geometry #f))
      (unless geometry
        (raise-syntax-error 'body "geometry setting is required" stx))
@@ -115,6 +148,7 @@
         "coordinates must be local or world" #''local))
      #`(add-body '#,(syntax-e #'name) #,material #,geometry
                  #:coordinates #,coordinates
+                 #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
                  #,@(precedence-keywords values)
                  #,@(anchor-keywords values))]
     [(_ . _)
@@ -125,10 +159,10 @@
     [(_ (~datum rect) name:id setting ...)
      (define values
        (settings 'sheet stx #'(setting ...)
-                 '(size length width material precedence mesh-edges)
+                 '(size length width material precedence mesh-edges thickness)
                  (string-append
                   "expected size, length, width, material, "
-                  "precedence, or mesh-edges setting/value pairs")))
+                  "precedence, thickness, or mesh-edges setting/value pairs")))
      (define size (hash-ref values 'size #f))
      (define length (hash-ref values 'length #f))
      (define width (hash-ref values 'width #f))
@@ -146,16 +180,18 @@
             '#,(syntax-e #'name) #,size
             #,@(material-keywords values)
             #,@(optional-keyword values 'precedence #'#:precedence)
+            #,@(optional-keyword values 'thickness #'#:thickness)
             #:mesh-edges #,mesh)
          #`(add-rect-sheet
             '#,(syntax-e #'name) #,length #,width
             #,@(material-keywords values)
             #,@(optional-keyword values 'precedence #'#:precedence)
+            #,@(optional-keyword values 'thickness #'#:thickness)
             #:mesh-edges #,mesh))]
     [(_ name:id setting ...)
      (define values
        (settings 'sheet stx #'(setting ...)
-                 '(points material priority precedence coordinates mesh-edges)
+                 '(points material priority precedence coordinates mesh-edges thickness)
                  (string-append
                   "expected points, material, priority, precedence, "
                   "coordinates, or mesh-edges setting/value pairs")))
@@ -173,6 +209,7 @@
         "mesh-edges must be exact or metal" #''exact))
      #`(add-sheet '#,(syntax-e #'name) #,material #,points
                   #:coordinates #,coordinates #:mesh-edges #,mesh
+                  #,@(optional-keyword values 'thickness #'#:thickness)
                   #,@(precedence-keywords values))]
     [(_ . _)
      (raise-syntax-error 'sheet "expected a named sheet" stx)]))
@@ -214,12 +251,79 @@
     [(_ . _)
      (raise-syntax-error 'port "expected (port DIRECTION setting value ...)" stx)]))
 
+(define-syntax (lumped-element stx)
+  (syntax-parse stx
+    [(_ direction:id setting ...)
+     (unless (memq (syntax-e #'direction) valid-directions)
+       (raise-syntax-error 'lumped-element
+                           "expected a turtle direction" stx #'direction))
+     (define values
+       (settings
+        'lumped-element stx #'(setting ...)
+        '(name resistance inductance capacitance topology caps
+               gap width depth size priority precedence)
+        (string-append
+         "expected name, resistance, inductance, capacitance, topology, caps, "
+         "gap, width, depth, size, priority, or precedence setting/value pairs")))
+     (unless (hash-has-key? values 'name)
+       (raise-syntax-error 'lumped-element "name setting is required" stx))
+     (unless (hash-has-key? values 'gap)
+       (raise-syntax-error 'lumped-element "gap setting is required" stx))
+     (unless (ormap (lambda (key) (hash-has-key? values key))
+                    '(resistance inductance capacitance))
+       (raise-syntax-error 'lumped-element
+                           "an electrical value is required" stx))
+     (when (and (hash-has-key? values 'size)
+                (or (hash-has-key? values 'width)
+                    (hash-has-key? values 'depth)))
+       (raise-syntax-error 'lumped-element
+                           "use either size or width/depth" stx))
+     (unless (or (hash-has-key? values 'size)
+                 (and (hash-has-key? values 'width)
+                      (hash-has-key? values 'depth)))
+       (raise-syntax-error 'lumped-element
+                           "size or both width and depth are required" stx))
+     (define topology
+       (and (hash-has-key? values 'topology)
+            (literal-expression
+             (hash-ref values 'topology) '(series parallel)
+             'lumped-element stx "topology must be series or parallel")))
+     (define common
+       (append
+        (list #'#:name (name-expression (hash-ref values 'name))
+              #'#:gap (hash-ref values 'gap))
+        (optional-keyword values 'resistance #'#:resistance)
+        (optional-keyword values 'inductance #'#:inductance)
+        (optional-keyword values 'capacitance #'#:capacitance)
+        (if topology (list #'#:topology topology) '())
+        (optional-keyword values 'caps #'#:caps)
+        (precedence-keywords values)))
+     (if (hash-has-key? values 'size)
+         (let ([size (hash-ref values 'size)])
+           #`(let ([dimensions #,size])
+               (unless (and (list? dimensions) (= (length dimensions) 2))
+                 (raise-argument-error
+                  'lumped-element "two-element size list" dimensions))
+               (add-lumped-element
+                '#,(syntax-e #'direction)
+                #:width (first dimensions) #:depth (second dimensions)
+                #,@common)))
+         #`(add-lumped-element
+            '#,(syntax-e #'direction)
+            #:width #,(hash-ref values 'width)
+            #:depth #,(hash-ref values 'depth)
+            #,@common))]
+    [(_ . _)
+     (raise-syntax-error
+      'lumped-element
+      "expected (lumped-element DIRECTION setting value ...)" stx)]))
+
 (define-syntax (cuboid stx)
   (syntax-parse stx
     [(_ name:id setting ...)
      (define values
        (settings 'cuboid stx #'(setting ...)
-                 '(size length width height material precedence anchor)
+                 '(size length width height material precedence anchor metal-thickness)
                  (string-append
                   "expected size, length, width, height, material, "
                   "precedence, or anchor setting/value pairs")))
@@ -237,11 +341,13 @@
             '#,(syntax-e #'name) #,size
             #,@(material-keywords values)
             #,@(optional-keyword values 'precedence #'#:precedence)
+            #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
             #,@(anchor-keywords values #''center))
          #`(add-cuboid
             '#,(syntax-e #'name) #,length #,width #,height
             #,@(material-keywords values)
             #,@(optional-keyword values 'precedence #'#:precedence)
+            #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
             #,@(anchor-keywords values #''center)))]))
 
 (define-syntax (sphere stx)
@@ -249,7 +355,7 @@
     [(_ name:id setting ...)
      (define values
        (settings 'sphere stx #'(setting ...)
-                 '(radius diameter material precedence anchor segments)
+                 '(radius diameter material precedence anchor segments metal-thickness)
                  (string-append
                   "expected radius, diameter, material, precedence, anchor, "
                   "or segments setting/value pairs")))
@@ -261,13 +367,14 @@
         '#,(syntax-e #'name) #,(or radius #`(/ #,diameter 2))
         #,@(material-keywords values)
         #,@(optional-keyword values 'precedence #'#:precedence)
+        #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
         #,@(anchor-keywords values #''center)
         #,@(optional-keyword values 'segments #'#:segments))]))
 
 (define-for-syntax (axial-solid-call who target stx name settings-stx)
   (define values
     (settings who stx settings-stx
-              '(length diameter radius material precedence anchor segments)
+              '(length diameter radius material precedence anchor segments metal-thickness)
               (format "expected dimensions and ~a construction settings" who)))
   (define length (hash-ref values 'length #f))
   (define diameter (hash-ref values 'diameter #f))
@@ -279,6 +386,7 @@
      '#,(syntax-e name) #,length #,(or diameter #`(* 2 #,radius))
      #,@(material-keywords values)
      #,@(optional-keyword values 'precedence #'#:precedence)
+     #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
      #,@(anchor-keywords values #''center)
      #,@(optional-keyword values 'segments #'#:segments)))
 

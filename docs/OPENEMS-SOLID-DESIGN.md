@@ -20,8 +20,10 @@ model. The first useful backend must:
 - provide a solid viewer before simulation so geometry, ports, and bounds can
   be inspected.
 
-The backend depends on GNU Octave and the OpenEMS and CSXCAD Octave packages.
-It will not reproduce their XML, solver, or postprocessing implementation in
+The backend depends on GNU Octave and OpenEMS 0.37 / CSXCAD 0.7 or newer. It
+supports both distribution Octave packages and upstream prefix installations;
+`/usr/local` is the default prefix and `OPENEMS_ROOT` overrides it. The backend
+will not reproduce their XML, solver, or postprocessing implementation in
 Racket.
 
 ## Scene model
@@ -38,8 +40,9 @@ physical scene contains three tagged geometry representations:
 3. **Wire networks** remain centerlines. The OpenEMS exporter derives capsule
    unions from a snapshot of the wire graph.
 
-The scene additionally contains lumped ports. Ports are subordinate to the
-physical geometry: `clear-bodies` clears bodies, sheets, and explicit ports.
+The scene additionally contains lumped ports and ideal lumped R/L/C regions.
+Both are subordinate to physical geometry: `clear-bodies` clears bodies,
+sheets, explicit ports, and lumped elements.
 `clear-wires` clears centerlines and therefore removes their derived geometry
 and derived ports. `reset-model!` clears both domains.
 
@@ -142,12 +145,26 @@ port's complete local frame—direction, width, and depth—to align with global
 Cartesian axes. It reports an unaligned port as a model error rather than
 searching for a common rotation or silently snapping it.
 
+### Lumped circuit elements
+
+`lumped-element` places a cuboid two-terminal electrical region in the turtle
+frame. It supports ideal resistance, inductance, capacitance, and OpenEMS
+series or parallel compound RLC topology. Spatial dimensions participate in
+`with-scale`, while electrical values always remain SI. PEC terminal caps are
+enabled by default. Every face is a critical Yee-grid boundary, precedence is
+derived between dielectric and conductor geometry unless overridden, and
+definitely disconnected terminal faces fail preflight validation. This slice
+requires OpenEMS 0.37 / CSXCAD 0.7 and retains Touchstone two-port component
+substitution as future work.
+
 ## Materials and overlap
 
-The proof of concept supports PEC and nondispersive lossless dielectrics.
-Material data nevertheless reserve relative permeability and electric and
-magnetic loss fields so isotropic magnetic and dispersive materials do not
-require a replacement representation.
+The first loss revision supports PEC, constant-conductivity conductors, and
+nondispersive dielectrics. A dielectric loss tangent is converted to constant
+conductivity at the model frequency (or an explicit reference frequency), so
+its accuracy is intentionally narrowband. The manifest retains both the
+material intent and the derived value. Magnetic and dispersive materials
+remain future work.
 
 Ferrites are not merely lossy dielectrics. Future work may require complex,
 frequency-dependent, anisotropic, or gyrotropic permeability and is bounded by
@@ -176,8 +193,9 @@ machine-readable result tables. Failed runs retain their complete working
 directory. Successful network-only runs may clean up automatically.
 
 The current executable slice is `openems-sweep`. It accepts ordinary Turtle
-wire networks, PEC and lossless dielectric volume bodies, planar
-PEC/conducting sheets, and one or more derived or explicit lumped ports. Wire
+wire networks, PEC and lossy/lossless dielectric volume bodies, planar
+PEC/conducting sheets, Yee-aligned finite-conductivity body boundaries, and
+one or more derived or explicit lumped ports. Wire
 edges become one temporary union of Manifold capsules; the marked wire feed is
 cut from that union using the wavelength/radius policy above. It applies the
 one-port alignment transform (or validates global alignment for multiple
@@ -249,6 +267,8 @@ to gain/directivity; realized gain remains selectable.
 The proof of concept uses a conservative critical-coordinate mesh:
 
 - lock port faces, body extrema, material boundaries, and simulation bounds;
+- honor explicit turtle-placed mesh points and axis-aligned mesh planes as
+  hard coordinates, rejecting planes made oblique by solver rotation;
 - refine locally around the feed;
 - guarantee a configurable minimum number of cells across electrically thin
   dielectric extents (`#:minimum-dielectric-cells`, default 4);

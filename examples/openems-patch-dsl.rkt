@@ -7,10 +7,10 @@
        frequency 915
        impedance 50)
 
-(define substrate-size '(150 150 1.6))
+(define substrate-size '(198 154 1.6))
 (define patch-size '(99 77))
 (define substrate-height 1.6)
-(define feed-offset -16)
+(define feed-offset -15)
 
 (define fr4 (dielectric name lossless-fr4 er 4.4))
 

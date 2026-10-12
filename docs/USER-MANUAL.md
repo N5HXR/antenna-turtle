@@ -615,8 +615,8 @@ matters.
 
 For a physical Manifold scene or the OpenEMS interpretation of ordinary wire
 geometry, use `show-solid-model` instead. It displays actual triangulated
-volume surfaces, planar conducting sheets, and derived or explicit lumped
-ports as red boxes and polarity arrows:
+volume surfaces, planar conducting sheets, derived or explicit lumped ports
+as red boxes and polarity arrows, and ideal lumped-element regions in violet:
 
 ```racket
 (show-solid-model)
@@ -674,6 +674,43 @@ The default `mesh-edges exact` remains useful for substrate-sized ground planes
 and material boundaries. `#:metal-edge-resolution` on `openems-sweep` sets the
 pair's total spacing in metres; its default is half the wavelength-based cell
 limit.
+
+When the model itself reveals a critical coordinate that the automatic mesh
+cannot infer, register a hard constraint at the current turtle position:
+
+```racket
+(mesh-point)       ; require X, Y, and Z coordinates
+(mesh-plane xy)    ; require the current global Z coordinate
+(mesh-plane xz)    ; require the current global Y coordinate
+(mesh-plane yz)    ; require the current global X coordinate
+```
+
+These constraints survive `from-here`, are transformed with the model, and
+are recorded in the OpenEMS manifest. A plane that becomes oblique to the Yee
+grid after one-port alignment is rejected. Manual constraints are exact and
+may create very small cells, so use them sparingly: the smallest cell controls
+the FDTD Courant timestep. `clear-bodies` and `reset-model!` clear them.
+
+Ideal lumped R, L, C, and compound RLC regions use the same centered turtle
+placement idiom as ports:
+
+```racket
+(with-scale millimeters
+  (lumped-element forward
+    name input-coupling
+    capacitance {2.2 * picofarads}
+    gap 1
+    size '(3 0.035)))
+```
+
+The direction joins the two conductor terminals. `gap` is the terminal-face
+separation and `size` gives the two transverse dimensions. Physical dimensions
+scale with the surrounding geometry, but electrical unit constants remain SI.
+Use `topology series` or `topology parallel` when combining R, L, and C;
+terminal `caps` default to `#t`. The backend requires Yee-grid alignment,
+locks all six box faces into the mesh, and reports a provably disconnected
+terminal before starting OpenEMS. See `examples/openems-lumped-load.rkt` and
+`examples/openems-lumped-bandpass.rkt`.
 
 After an OpenEMS sweep, the returned value works with the ordinary network
 plot functions:
@@ -742,6 +779,52 @@ number of cells through electrically thin dielectric extents; the default is
 `examples/openems-two-port-microstrip.rkt` is a simple multiport diagnostic;
 `examples/openems-interdigital-bandpass.rkt` is a three-resonator distributed
 filter modeled from calculator dimensions.
+
+### Realistic material loss
+
+Use `loss-tangent` on a dielectric for the normal narrowband OpenEMS model:
+
+```racket
+(define fr4
+  (dielectric name fr4 er 4.4 loss-tangent 0.02))
+(sheet rect trace size '(40 3) material copper thickness 0.035)
+```
+
+The tangent defaults to the model frequency; `loss-frequency` overrides that
+reference in MHz. Antenna Turtle prints a reminder that this becomes constant
+conductivity and records the approximation in the artifact manifest. Built-in
+room-temperature conductors are `silver`, `copper`, `gold`, `aluminum`,
+`brass`, and a nominal nonmagnetic `steel`. A custom material uses
+`(conductor name custom conductivity 2.4e7)`. Physical sheet thickness belongs
+to the sheet and therefore follows `with-scale`.
+
+Rectilinear finite-conductivity bodies additionally require
+`metal-thickness`. Their boundary facets must remain aligned with the Yee grid;
+curved or oblique finite-conductivity bodies are rejected before simulation.
+For metal thicker than OpenEMS's recommended 500-micrometer sheet limit, the
+backend uses ten skin depths numerically while retaining both physical and
+effective values in the manifest. Use PEC for arbitrary STL geometry until a
+volumetric or dispersive conductor backend is added.
+
+### Power accounting
+
+Completed OpenEMS runs retain absolute port powers and, at the model
+frequency, the field data needed to integrate dielectric loss. Combine those
+measurements with the recorded NF2FF surface to print a normalized report:
+
+```racket
+(define budget (power-budget result #:excitation 'input))
+(display-power-budget budget)
+```
+
+The report shows reflected power, power delivered to other ports, radiation,
+dielectric heat, lumped-resistor heat, and a conductor/numerical remainder in
+watts, percent of incident power, and dB relative to incident power. Absolute
+watts follow the solver's arbitrary source amplitude; the ratios are normally
+the useful quantities. The conductor line is obtained by conservation and
+therefore also includes PML and numerical closure error. Loss data is selected
+before FDTD, so simulations made by an older harness must be rerun before they
+can produce this report.
 
 ## 6. Repetition and Layout Tables
 

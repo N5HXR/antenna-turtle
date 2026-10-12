@@ -1,13 +1,16 @@
 #lang racket
 
 (require (except-in "private/core.rkt" feed cylinder)
-         (except-in "private/solid-core.rkt" dielectric)
+         (except-in "private/solid-core.rkt" dielectric conductor)
          "private/solid-dsl.rkt"
          "private/solid-primitives.rkt"
+         "private/electrical-units.rkt"
+         "private/material-catalog.rkt"
          "private/simulation-profile.rkt"
          "private/simulation-dsl.rkt"
          "private/solid-view.rkt"
          "private/openems.rkt"
+         "private/openems-power.rkt"
          "private/export-nec2c.rkt"
          "private/export-mmana.rkt"
          "private/export-matlab.rkt"
@@ -32,9 +35,12 @@
  (all-from-out "private/solid-core.rkt")
  (all-from-out "private/solid-dsl.rkt")
  (all-from-out "private/solid-primitives.rkt")
+ (all-from-out "private/electrical-units.rkt")
+ (all-from-out "private/material-catalog.rkt")
  (all-from-out "private/simulation-profile.rkt")
  (all-from-out "private/simulation-dsl.rkt")
  (all-from-out "private/openems.rkt")
+ (all-from-out "private/openems-power.rkt")
  wavelength
  half-wave
  quarter-wave
