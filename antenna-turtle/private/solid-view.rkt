@@ -5,6 +5,7 @@
          plot/no-gui
          (prefix-in m: manifold)
          "core.rkt"
+         "plot-cursor.rkt"
          "solid-core.rkt"
          "wire-solid.rkt")
 
@@ -19,6 +20,10 @@
     (dielectric . "lightblue")
     (conductor . "peru")
     (conducting-sheet . "silver")))
+
+(define (material-color material)
+  (define kind (em-material-kind material))
+  (cond [(assq kind body-colors) => cdr] [else "lightgray"]))
 
 (define (m-point->vector point)
   (vector (m:point3-x point) (m:point3-y point) (m:point3-z point)))
@@ -40,7 +45,7 @@
   (define kind (em-material-kind (solid-body-material body)))
   (polygons3d
    (mesh-polygons (solid-body-solid body))
-   #:color (cond [(assq kind body-colors) => cdr] [else "lightgray"])
+   #:color (material-color (solid-body-material body))
    #:line-color "dimgray"
    #:line-width 0.35
    #:alpha (if (eq? kind 'dielectric) 0.45 0.9)
@@ -49,8 +54,9 @@
 (define (sheet-renderer sheet)
   (define kind (em-material-kind (planar-sheet-material sheet)))
   (polygons3d
-   (list (map point->vector (planar-sheet-points sheet)))
-   #:color (cond [(assq kind body-colors) => cdr] [else "silver"])
+   (for/list ([polygon (in-list (planar-sheet-polygons sheet))])
+     (map point->vector polygon))
+   #:color (material-color (planar-sheet-material sheet))
    #:line-color "gray"
    #:line-width 0.6
    #:alpha 0.9
@@ -155,7 +161,9 @@
           (m:solid-bounds (solid-body-solid body)))
         (list (m-point->vector minimum) (m-point->vector maximum)))
       (for/list ([sheet (in-list (model-sheets))])
-        (map point->vector (planar-sheet-points sheet)))
+        (append*
+         (for/list ([polygon (in-list (planar-sheet-polygons sheet))])
+           (map point->vector polygon))))
       (for/list ([port (in-list (model-ports))])
         (map point->vector (port-corners port)))
       (for/list ([component (in-list (model-components))])
@@ -172,7 +180,25 @@
           (for/list ([center (in-list centers)])
             (list (- center half-span) (+ center half-span))))))
 
-(define (show-solid-model/current width height aspect-ratio)
+(define (solid-model-legend-items)
+  (append
+   (for/list ([body (in-list (model-bodies))])
+     (plot-legend-item (format "~a" (solid-body-name body))
+                       (material-color (solid-body-material body))
+                       'solid 'box))
+   (for/list ([sheet (in-list (model-sheets))])
+     (plot-legend-item (format "~a" (planar-sheet-name sheet))
+                       (material-color (planar-sheet-material sheet))
+                       'solid 'box))
+   (for/list ([port (in-list (model-ports))])
+     (plot-legend-item (format "port: ~a" (lumped-port-name port))
+                       "firebrick" 'solid 'line))
+   (for/list ([component (in-list (model-components))])
+     (plot-legend-item
+      (format "element: ~a" (lumped-component-name component))
+      "darkviolet" 'solid 'line))))
+
+(define (show-solid-model/current width height aspect-ratio legend?)
   (unless (exact-positive-integer? width)
     (raise-argument-error 'show-solid-model "exact-positive-integer?" width))
   (unless (exact-positive-integer? height)
@@ -202,13 +228,16 @@
      #:y-min y-min #:y-max y-max
      #:z-min z-min #:z-max z-max
      #:width width #:height height
-     #:aspect-multiplier aspect-ratio)))
+     #:aspect-multiplier aspect-ratio
+     #:legend-items (solid-model-legend-items)
+     #:legend? legend?)))
 
 (define (show-solid-model #:width [width 900]
                           #:height [height 700]
                           #:aspect-ratio [aspect-ratio 1]
+                          #:legend? [legend? #t]
                           #:wire-segments [wire-segments 24])
   (call-with-derived-wire-scene
    (lambda (_derivation)
-     (show-solid-model/current width height aspect-ratio))
+     (show-solid-model/current width height aspect-ratio legend?))
    #:segments wire-segments))

@@ -1,14 +1,17 @@
 #lang racket
 
-(require (except-in "core.rkt" cylinder)
+(require (except-in "core.rkt" cylinder scale)
          (only-in "core.rkt" [cylinder turtle-cylinder-warp])
          (except-in "solid-core.rkt" dielectric conductor)
          (only-in "material.rkt" make-conductor)
          "solid-primitives.rkt"
+         "solid-csg.rkt"
+         "solid-csg-dsl.rkt"
          "stl-import.rkt"
          (for-syntax racket/base racket/list syntax/parse))
 
 (provide body sheet port lumped-element dielectric conductor with-material mesh-plane
+         (all-from-out "solid-csg-dsl.rkt")
          cuboid sphere cylinder capsule stl read-stl-solid)
 
 (begin-for-syntax
@@ -51,6 +54,15 @@
 
   (define (material-keywords settings)
     (optional-keyword settings 'material #'#:material))
+
+  (define (scene-only-settings? settings)
+    (ormap (lambda (key) (hash-has-key? settings key))
+           '(name material precedence metal-thickness)))
+
+  (define (requested-name-expression settings)
+    (if (hash-has-key? settings 'name)
+        (name-expression (hash-ref settings 'name))
+        #'#f))
 
   (define (anchor-keywords settings [default #f])
     (cond
@@ -129,40 +141,52 @@
 
 (define-syntax (body stx)
   (syntax-parse stx
-    [(_ name:id setting ...)
+    [(_ old-name:id setting ...)
+     #:when (not (memq (syntax-e #'old-name)
+                       '(name geometry material priority precedence coordinates
+                              anchor metal-thickness)))
+     (raise-syntax-error
+      'body "positional names are not supported; use name VALUE" stx #'old-name)]
+    [(_ setting ...)
      (define values
        (settings 'body stx #'(setting ...)
-                 '(geometry material priority precedence coordinates anchor
-                            metal-thickness)
-                 (string-append
-                  "expected geometry, material, priority, precedence, "
-                  "coordinates, anchor, or metal-thickness setting/value pairs")))
+                 '(name geometry material priority precedence coordinates
+                        anchor metal-thickness)
+                 "expected body setting/value pairs"))
      (define geometry (hash-ref values 'geometry #f))
      (unless geometry
        (raise-syntax-error 'body "geometry setting is required" stx))
-     (define material
-       (hash-ref values 'material #'(current-solid-material)))
+     (define material (hash-ref values 'material #'(current-solid-material)))
      (define coordinates
        (literal-expression
         (hash-ref values 'coordinates #f) '(local world) 'body stx
         "coordinates must be local or world" #''local))
-     #`(add-body '#,(syntax-e #'name) #,material #,geometry
+     #`(add-body #,(if (hash-has-key? values 'name)
+                       (name-expression (hash-ref values 'name))
+                       #'#f)
+                 #,material #,geometry
                  #:coordinates #,coordinates
                  #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
                  #,@(precedence-keywords values)
                  #,@(anchor-keywords values))]
     [(_ . _)
-     (raise-syntax-error 'body "expected (body NAME setting value ...)" stx)]))
+     (raise-syntax-error
+      'body "expected (body [name value] setting value ...)" stx)]))
 
 (define-syntax (sheet stx)
   (syntax-parse stx
-    [(_ (~datum rect) name:id setting ...)
+    [(_ (~datum rect) old-name:id setting ...)
+     #:when (not (memq (syntax-e #'old-name)
+                       '(name size length width material priority precedence
+                              mesh-edges thickness)))
+     (raise-syntax-error
+      'sheet "positional names are not supported; use name VALUE" stx #'old-name)]
+    [(_ (~datum rect) setting ...)
      (define values
        (settings 'sheet stx #'(setting ...)
-                 '(size length width material precedence mesh-edges thickness)
-                 (string-append
-                  "expected size, length, width, material, "
-                  "precedence, thickness, or mesh-edges setting/value pairs")))
+                 '(name size length width material priority precedence
+                        mesh-edges thickness)
+                 "expected sheet setting/value pairs"))
      (define size (hash-ref values 'size #f))
      (define length (hash-ref values 'length #f))
      (define width (hash-ref values 'width #f))
@@ -174,31 +198,38 @@
        (literal-expression
         (hash-ref values 'mesh-edges #f) '(exact metal) 'sheet stx
         "mesh-edges must be exact or metal" #''exact))
-     ;; Rebuild the call so optional keywords follow the positional arguments.
+     (define requested-name
+       (if (hash-has-key? values 'name)
+           (name-expression (hash-ref values 'name))
+           #'#f))
      (if size
          #`(add-rect-sheet/size
-            '#,(syntax-e #'name) #,size
+            #,requested-name #,size
             #,@(material-keywords values)
-            #,@(optional-keyword values 'precedence #'#:precedence)
+            #,@(precedence-keywords values)
             #,@(optional-keyword values 'thickness #'#:thickness)
             #:mesh-edges #,mesh)
          #`(add-rect-sheet
-            '#,(syntax-e #'name) #,length #,width
+            #,requested-name #,length #,width
             #,@(material-keywords values)
-            #,@(optional-keyword values 'precedence #'#:precedence)
+            #,@(precedence-keywords values)
             #,@(optional-keyword values 'thickness #'#:thickness)
             #:mesh-edges #,mesh))]
-    [(_ name:id setting ...)
+    [(_ old-name:id setting ...)
+     #:when (not (memq (syntax-e #'old-name)
+                       '(name points material priority precedence coordinates
+                              mesh-edges thickness)))
+     (raise-syntax-error
+      'sheet "positional names are not supported; use name VALUE" stx #'old-name)]
+    [(_ setting ...)
      (define values
        (settings 'sheet stx #'(setting ...)
-                 '(points material priority precedence coordinates mesh-edges thickness)
-                 (string-append
-                  "expected points, material, priority, precedence, "
-                  "coordinates, or mesh-edges setting/value pairs")))
+                 '(name points material priority precedence coordinates
+                        mesh-edges thickness)
+                 "expected sheet setting/value pairs"))
      (define points (hash-ref values 'points #f))
      (unless points (raise-syntax-error 'sheet "points setting is required" stx))
-     (define material
-       (hash-ref values 'material #'(current-solid-material)))
+     (define material (hash-ref values 'material #'(current-solid-material)))
      (define coordinates
        (literal-expression
         (hash-ref values 'coordinates #f) '(local world) 'sheet stx
@@ -207,12 +238,16 @@
        (literal-expression
         (hash-ref values 'mesh-edges #f) '(exact metal) 'sheet stx
         "mesh-edges must be exact or metal" #''exact))
-     #`(add-sheet '#,(syntax-e #'name) #,material #,points
+     #`(add-sheet #,(if (hash-has-key? values 'name)
+                        (name-expression (hash-ref values 'name))
+                        #'#f)
+                  #,material #,points
                   #:coordinates #,coordinates #:mesh-edges #,mesh
                   #,@(optional-keyword values 'thickness #'#:thickness)
                   #,@(precedence-keywords values))]
     [(_ . _)
-     (raise-syntax-error 'sheet "expected a named sheet" stx)]))
+     (raise-syntax-error
+      'sheet "expected (sheet [rect] [name value] setting value ...)" stx)]))
 
 (define-syntax (port stx)
   (syntax-parse stx
@@ -265,8 +300,6 @@
         (string-append
          "expected name, resistance, inductance, capacitance, topology, caps, "
          "gap, width, depth, size, priority, or precedence setting/value pairs")))
-     (unless (hash-has-key? values 'name)
-       (raise-syntax-error 'lumped-element "name setting is required" stx))
      (unless (hash-has-key? values 'gap)
        (raise-syntax-error 'lumped-element "gap setting is required" stx))
      (unless (ormap (lambda (key) (hash-has-key? values key))
@@ -290,8 +323,11 @@
              'lumped-element stx "topology must be series or parallel")))
      (define common
        (append
-        (list #'#:name (name-expression (hash-ref values 'name))
-              #'#:gap (hash-ref values 'gap))
+        (append
+         (if (hash-has-key? values 'name)
+             (list #'#:name (name-expression (hash-ref values 'name)))
+             '())
+         (list #'#:gap (hash-ref values 'gap)))
         (optional-keyword values 'resistance #'#:resistance)
         (optional-keyword values 'inductance #'#:inductance)
         (optional-keyword values 'capacitance #'#:capacitance)
@@ -320,13 +356,21 @@
 
 (define-syntax (cuboid stx)
   (syntax-parse stx
-    [(_ name:id setting ...)
+    [(_ old-name:id setting ...)
+     #:when (not (memq (syntax-e #'old-name)
+                       '(name size length width height material precedence
+                              anchor metal-thickness)))
+     (raise-syntax-error
+      'cuboid "positional names are not supported; use name VALUE" stx #'old-name)]
+    [(_ setting ...)
      (define values
        (settings 'cuboid stx #'(setting ...)
-                 '(size length width height material precedence anchor metal-thickness)
+                 '(name size length width height material precedence anchor
+                        metal-thickness)
                  (string-append
-                  "expected size, length, width, height, material, "
-                  "precedence, or anchor setting/value pairs")))
+                  "expected dimensions, material, precedence, anchor, or "
+                  "metal-thickness "
+                  "setting/value pairs")))
      (define size (hash-ref values 'size #f))
      (define length (hash-ref values 'length #f))
      (define width (hash-ref values 'width #f))
@@ -336,84 +380,150 @@
      (unless (or size (and length width height))
        (raise-syntax-error
         'cuboid "size or length, width, and height are required" stx))
-     (if size
-         #`(add-cuboid/size
-            '#,(syntax-e #'name) #,size
-            #,@(material-keywords values)
-            #,@(optional-keyword values 'precedence #'#:precedence)
-            #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
-            #,@(anchor-keywords values #''center))
-         #`(add-cuboid
-            '#,(syntax-e #'name) #,length #,width #,height
-            #,@(material-keywords values)
-            #,@(optional-keyword values 'precedence #'#:precedence)
-            #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
-            #,@(anchor-keywords values #''center)))]))
+     (define dimensions (or size #`(list #,length #,width #,height)))
+     #`(if (csg-context-active?)
+           #,(if (scene-only-settings? values)
+                 #'(error 'cuboid
+                          "name, material, precedence, and metal-thickness belong on the enclosing with-body")
+                 #`(csg-cuboid #,dimensions
+                               #,@(anchor-keywords values #''center)))
+           (add-cuboid/size #,(requested-name-expression values) #,dimensions
+                            #,@(material-keywords values)
+                            #,@(optional-keyword values 'precedence #'#:precedence)
+                            #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
+                            #,@(anchor-keywords values #''center)))]))
 
 (define-syntax (sphere stx)
   (syntax-parse stx
-    [(_ name:id setting ...)
+    [(_ old-name:id setting ...)
+     #:when (not (memq (syntax-e #'old-name)
+                       '(name radius diameter material precedence anchor
+                              segments metal-thickness)))
+     (raise-syntax-error
+      'sphere "positional names are not supported; use name VALUE" stx #'old-name)]
+    [(_ setting ...)
      (define values
        (settings 'sphere stx #'(setting ...)
-                 '(radius diameter material precedence anchor segments metal-thickness)
-                 (string-append
-                  "expected radius, diameter, material, precedence, anchor, "
-                  "or segments setting/value pairs")))
+                 '(name radius diameter material precedence anchor segments
+                          metal-thickness)
+                 "expected sphere setting/value pairs"))
      (define radius (hash-ref values 'radius #f))
      (define diameter (hash-ref values 'diameter #f))
      (unless (or (and radius (not diameter)) (and diameter (not radius)))
        (raise-syntax-error 'sphere "specify exactly one of radius or diameter" stx))
-     #`(add-solid-sphere
-        '#,(syntax-e #'name) #,(or radius #`(/ #,diameter 2))
-        #,@(material-keywords values)
-        #,@(optional-keyword values 'precedence #'#:precedence)
-        #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
-        #,@(anchor-keywords values #''center)
-        #,@(optional-keyword values 'segments #'#:segments))]))
-
-(define-for-syntax (axial-solid-call who target stx name settings-stx)
-  (define values
-    (settings who stx settings-stx
-              '(length diameter radius material precedence anchor segments metal-thickness)
-              (format "expected dimensions and ~a construction settings" who)))
-  (define length (hash-ref values 'length #f))
-  (define diameter (hash-ref values 'diameter #f))
-  (define radius (hash-ref values 'radius #f))
-  (unless length (raise-syntax-error who "length is required" stx))
-  (unless (or (and diameter (not radius)) (and radius (not diameter)))
-    (raise-syntax-error who "specify exactly one of diameter or radius" stx))
-  #`(#,target
-     '#,(syntax-e name) #,length #,(or diameter #`(* 2 #,radius))
-     #,@(material-keywords values)
-     #,@(optional-keyword values 'precedence #'#:precedence)
-     #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
-     #,@(anchor-keywords values #''center)
-     #,@(optional-keyword values 'segments #'#:segments)))
+     #`(if (csg-context-active?)
+           #,(if (scene-only-settings? values)
+                 #'(error 'sphere
+                          "name, material, precedence, and metal-thickness belong on the enclosing with-body")
+                 #`(csg-sphere
+                    #,(or radius #`(/ #,diameter 2))
+                    #,@(anchor-keywords values #''center)
+                    #,@(optional-keyword values 'segments #'#:segments)))
+           (add-solid-sphere
+            #,(requested-name-expression values)
+            #,(or radius #`(/ #,diameter 2))
+            #,@(material-keywords values)
+            #,@(optional-keyword values 'precedence #'#:precedence)
+            #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
+            #,@(anchor-keywords values #''center)
+            #,@(optional-keyword values 'segments #'#:segments)))]))
 
 (define-syntax (cylinder stx)
   (syntax-parse stx
     [(_ radius:expr) #'(turtle-cylinder-warp radius)]
-    [(_ name:id setting ...)
-     (axial-solid-call
-      'cylinder #'add-solid-cylinder stx #'name #'(setting ...))]))
+    [(_ old-name:id setting ...)
+     #:when (not (memq (syntax-e #'old-name)
+                       '(name length diameter radius material precedence anchor
+                              segments metal-thickness)))
+     (raise-syntax-error
+      'cylinder "positional names are not supported; use name VALUE" stx #'old-name)]
+    [(_ setting ...)
+     (define values
+       (settings 'cylinder stx #'(setting ...)
+                 '(name length diameter radius material precedence anchor segments
+                          metal-thickness)
+                 "expected cylinder setting/value pairs"))
+     (define length (hash-ref values 'length #f))
+     (define diameter (hash-ref values 'diameter #f))
+     (define radius (hash-ref values 'radius #f))
+     (unless length (raise-syntax-error 'cylinder "length is required" stx))
+     (unless (or (and diameter (not radius)) (and radius (not diameter)))
+       (raise-syntax-error 'cylinder "specify exactly one of diameter or radius" stx))
+     #`(if (csg-context-active?)
+           #,(if (scene-only-settings? values)
+                 #'(error 'cylinder
+                          "name, material, precedence, and metal-thickness belong on the enclosing with-body")
+                 #`(csg-cylinder
+                    #,length #,(or diameter #`(* 2 #,radius))
+                    #,@(anchor-keywords values #''center)
+                    #,@(optional-keyword values 'segments #'#:segments)))
+           (add-solid-cylinder
+            #,(requested-name-expression values)
+            #,length #,(or diameter #`(* 2 #,radius))
+            #,@(material-keywords values)
+            #,@(optional-keyword values 'precedence #'#:precedence)
+            #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
+            #,@(anchor-keywords values #''center)
+            #,@(optional-keyword values 'segments #'#:segments)))]))
 
 (define-syntax (capsule stx)
   (syntax-parse stx
-    [(_ name:id setting ...)
-     (axial-solid-call
-      'capsule #'add-solid-capsule stx #'name #'(setting ...))]))
+    [(_ old-name:id setting ...)
+     #:when (not (memq (syntax-e #'old-name)
+                       '(name length diameter radius material precedence anchor
+                              segments metal-thickness)))
+     (raise-syntax-error
+      'capsule "positional names are not supported; use name VALUE" stx #'old-name)]
+    [(_ setting ...)
+     (define values
+       (settings 'capsule stx #'(setting ...)
+                 '(name length diameter radius material precedence anchor segments
+                          metal-thickness)
+                 "expected capsule setting/value pairs"))
+     (define length (hash-ref values 'length #f))
+     (define diameter (hash-ref values 'diameter #f))
+     (define radius (hash-ref values 'radius #f))
+     (unless length (raise-syntax-error 'capsule "length is required" stx))
+     (unless (or (and diameter (not radius)) (and radius (not diameter)))
+       (raise-syntax-error 'capsule "specify exactly one of diameter or radius" stx))
+     #`(if (csg-context-active?)
+           #,(if (scene-only-settings? values)
+                 #'(error 'capsule
+                          "name, material, precedence, and metal-thickness belong on the enclosing with-body")
+                 #`(csg-capsule
+                    #,length #,(or diameter #`(* 2 #,radius))
+                    #,@(anchor-keywords values #''center)
+                    #,@(optional-keyword values 'segments #'#:segments)))
+           (add-solid-capsule
+            #,(requested-name-expression values)
+            #,length #,(or diameter #`(* 2 #,radius))
+            #,@(material-keywords values)
+            #,@(optional-keyword values 'precedence #'#:precedence)
+            #,@(optional-keyword values 'metal-thickness #'#:metal-thickness)
+            #,@(anchor-keywords values #''center)
+            #,@(optional-keyword values 'segments #'#:segments)))]))
 
 (define-syntax (stl stx)
   (syntax-parse stx
-    [(_ name:id setting ...)
+    [(_ old-name:id setting ...)
+     #:when (not (memq (syntax-e #'old-name)
+                       '(name path material precedence anchor)))
+     (raise-syntax-error
+      'stl "positional names are not supported; use name VALUE" stx #'old-name)]
+    [(_ setting ...)
      (define values
        (settings 'stl stx #'(setting ...)
-                 '(path material precedence anchor)
-                 "expected path, material, precedence, or anchor setting/value pairs"))
+                 '(name path material precedence anchor)
+                 "expected name, path, material, precedence, or anchor setting/value pairs"))
      (define path (hash-ref values 'path #f))
      (unless path (raise-syntax-error 'stl "path is required" stx))
-     #`(add-stl-body
-        '#,(syntax-e #'name) #,path
-        #,@(material-keywords values)
-        #,@(optional-keyword values 'precedence #'#:precedence)
-        #,@(anchor-keywords values #''center))]))
+     #`(if (csg-context-active?)
+           #,(if (scene-only-settings? values)
+                 #'(error 'stl
+                          "name, material, and precedence belong on the enclosing with-body")
+                 #`(csg-stl #,path
+                            #,@(anchor-keywords values #''center)))
+           (add-stl-body #,(requested-name-expression values) #,path
+                         #,@(material-keywords values)
+                         #,@(optional-keyword values 'precedence #'#:precedence)
+                         #,@(anchor-keywords values #''center)))]))

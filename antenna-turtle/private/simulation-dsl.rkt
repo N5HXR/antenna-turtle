@@ -21,6 +21,8 @@
    (simulation-profile-cells-per-wavelength profile)
    #:minimum-dielectric-cells
    (simulation-profile-minimum-dielectric-cells profile)
+   #:minimum-trace-cells
+   (simulation-profile-minimum-trace-cells profile)
    #:metal-edge-resolution
    (simulation-profile-metal-edge-resolution profile)
    #:mesh-grading (simulation-profile-mesh-grading profile)

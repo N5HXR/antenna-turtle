@@ -21,19 +21,19 @@
     (define trace-width 0.003)
     (define substrate
       (m:cube board-length width height #:center? #t))
-    (body substrate
+    (body name substrate
           geometry substrate
           material (dielectric #:name 'substrate
                                #:relative-permittivity 2.2)
           priority 10)
-    (sheet ground
+    (sheet name ground
            points `((,(- (/ board-length 2)) ,(- (/ width 2)))
                     (,(+ (/ board-length 2)) ,(- (/ width 2)))
                     (,(+ (/ board-length 2)) ,(+ (/ width 2)))
                     (,(- (/ board-length 2)) ,(+ (/ width 2))))
            material pec priority 20)
     (move up height)
-    (sheet trace
+    (sheet name trace
            points `((,(- (/ board-length 2)) ,(- (/ trace-width 2)))
                     (,(+ (/ board-length 2)) ,(- (/ trace-width 2)))
                     (,(+ (/ board-length 2)) ,(+ (/ trace-width 2)))

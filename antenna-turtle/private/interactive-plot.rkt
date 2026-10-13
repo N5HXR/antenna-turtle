@@ -7,18 +7,18 @@
 (require racket/class
          racket/gui/base
          mrlib/snip-canvas
-         pict
          plot
          plot/snip
-         "plot-cursor.rkt")
+         "plot-cursor.rkt"
+         "plot-window-controls.rkt")
 
 (provide show-interactive-plot)
 
 (define data-cursor-canvas%
   (class snip-canvas%
     (init parent make-snip)
-    (init-field series label-proc
-                cursor-rule? cursor-fill-color cursor-text-color)
+    (init-field series label-proc status-canvas
+                cursor-rule? cursor-fill-color)
 
     (define/private (update-data-cursor event)
       (define snip (send this get-snip))
@@ -45,29 +45,8 @@
             (define plot-point
               (vector (vector-ref selected-point 0)
                       (vector-ref selected-point 1)))
-            (define label (label-proc selected-series selected-point))
-            (define label-renderer
-              (if (and (list? label) (andmap string? label))
-                  (point-pict
-                   plot-point
-                   (colorize
-                    (apply vl-append
-                           2
-                           (for/list ([line (in-list label)])
-                             (text line null (plot-font-size))))
-                    cursor-text-color)
-                   #:anchor 'auto
-                   #:point-color (cursor-series-color selected-series)
-                   #:point-fill-color cursor-fill-color
-                   #:point-size 7)
-                  (point-label
-                   plot-point
-                   label
-                   #:anchor 'auto
-                   #:color cursor-text-color
-                   #:point-color (cursor-series-color selected-series)
-                   #:point-fill-color cursor-fill-color
-                   #:point-size 7)))
+            (send status-canvas set-content
+                  (label-proc selected-series selected-point))
             (send snip set-overlay-renderers
                   (append
                    (if cursor-rule?
@@ -76,7 +55,13 @@
                                #:color (cursor-series-color selected-series)
                                #:style 'dot))
                        '())
-                   (list label-renderer)))))))
+                   (list
+                    (points (list plot-point)
+                            #:sym 'circle5
+                            #:color (cursor-series-color selected-series)
+                            #:fill-color cursor-fill-color
+                            #:size 9
+                            #:line-width 2))))))))
 
     (define/override (on-event event)
       (define event-type (send event get-event-type))
@@ -109,12 +94,16 @@
                                #:y-max [y-max #f]
                                #:aspect-ratio [aspect-ratio #f]
                                #:legend-anchor [legend-anchor 'bottom-right]
+                               #:legend-items [legend-items '()]
+                               #:legend? [legend? #t]
                                #:axes? [axes? #t]
                                #:cursor-rule? [cursor-rule? #t]
                                #:theme [theme 'light])
   (unless (memq theme '(light dark))
     (raise-argument-error
      'show-interactive-plot "(or/c 'light 'dark)" theme))
+  (unless (boolean? legend?)
+    (raise-argument-error 'show-interactive-plot "boolean?" legend?))
   (define dark? (eq? theme 'dark))
   (define background (if dark? "black" "white"))
   (define foreground (if dark? "white" "black"))
@@ -124,8 +113,19 @@
     (new frame%
          [label (if title (format "Plot: ~a" title) "Plot")]
          [width (+ width 20)]
-         [height (+ height 48)]))
+         [height (+ height 92)]))
   (define root (new vertical-panel% [parent frame] [spacing 0]))
+  (define main
+    (new horizontal-panel%
+         [parent root]
+         [spacing 3]
+         [stretchable-width #t]
+         [stretchable-height #t]))
+  (define status
+    (new status-canvas%
+         [parent root]
+         [background background]
+         [foreground foreground]))
   (define (make-snip requested-width requested-height)
     (parameterize ([plot-background background]
                    [plot-foreground foreground]
@@ -145,18 +145,37 @@
                  #:y-min y-min
                  #:y-max y-max
                  #:aspect-ratio aspect-ratio
-                 #:legend-anchor legend-anchor)))
+                 ;; Legends live in a separate collapsible panel so neither
+                 ;; their size nor their visibility can cover plotted data.
+                 #:legend-anchor 'no-legend)))
   (new data-cursor-canvas%
-       [parent root]
+       [parent main]
        [make-snip make-snip]
        [series series]
        [label-proc label-proc]
+       [status-canvas status]
        [cursor-rule? cursor-rule?]
-       [cursor-fill-color background]
-       [cursor-text-color foreground])
-  (new message%
-       [parent root]
-       [label "left drag: zoom  |  left click: unzoom  |  right drag: inspect values"]
-       [stretchable-width #t])
+       [cursor-fill-color background])
+  (define legend-panel
+    (and (pair? legend-items)
+         (make-legend-panel main legend-items
+                            #:background background
+                            #:foreground foreground)))
+  (when legend-panel
+    (set-container-child-visible! main legend-panel legend?))
+  (define controls
+    (new horizontal-panel%
+         [parent root]
+         [alignment '(right center)]
+         [stretchable-height #f]))
+  (when legend-panel
+    (new check-box%
+         [parent controls]
+         [label "Show legend"]
+         [value legend?]
+         [callback
+          (lambda (control _event)
+            (set-container-child-visible!
+             main legend-panel (send control get-value)))]))
   (send frame show #t)
   (void))

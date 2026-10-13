@@ -11,12 +11,14 @@
          racket/gui/base
          racket/math
          racket/match
+         mrlib/snip-canvas
          plot/utils
          plot/private/common/draw
          plot/private/common/parameter-group
          plot/private/gui/lazy-snip-untyped
          plot/private/no-gui/plot3d-utils
-         plot/private/plot3d/plot-area)
+         plot/private/plot3d/plot-area
+         "plot-window-controls.rkt")
 
 (provide show-proportional-plot3d)
 
@@ -46,12 +48,14 @@
          #:y-label [y-label (plot-y-label)]
          #:z-label [z-label (plot-z-label)]
          #:aspect-multiplier [aspect-multiplier 1]
-         #:legend-anchor [legend-anchor (plot-legend-anchor)])
+         #:legend-anchor [_legend-anchor (plot-legend-anchor)]
+         #:legend-items [legend-items '()]
+         #:legend? [legend? #t])
   (parameterize ([plot-title title]
                  [plot-x-label x-label]
                  [plot-y-label y-label]
                  [plot-z-label z-label]
-                 [plot-legend-anchor legend-anchor])
+                 [plot-legend-anchor 'no-legend])
     (define saved-plot-parameters (plot-parameters))
     (define renderer-list (get-renderer-list renderer-tree))
     (define bounds-rect
@@ -125,9 +129,49 @@
        angle altitude area requested-width requested-height))
 
     (define frame
-      (make-snip-frame
-       make-snip width height
-       (if title (format "Plot: ~a" title) "Plot")))
+      (new frame%
+           [label (if title (format "Plot: ~a" title) "Plot")]
+           [width (+ width 20)]
+           [height (+ height 48)]))
+    (define root (new vertical-panel% [parent frame] [spacing 0]))
+    (define main
+      (new horizontal-panel%
+           [parent root]
+           [spacing 3]
+           [stretchable-width #t]
+           [stretchable-height #t]))
+    (new snip-canvas%
+         [parent main]
+         [make-snip make-snip]
+         [horiz-margin 5]
+         [vert-margin 5]
+         [horizontal-inset 5]
+         [vertical-inset 5])
+    (define legend-panel
+      (and (pair? legend-items)
+           (make-legend-panel main legend-items
+                              #:background (plot-background)
+                              #:foreground (plot-foreground))))
+    (when legend-panel
+      (set-container-child-visible! main legend-panel legend?))
+    (define controls
+      (new horizontal-panel%
+           [parent root]
+           [alignment '(left center)]
+           [stretchable-height #f]))
+    (new message%
+         [parent controls]
+         [label "left drag: rotate  |  wheel: zoom"]
+         [stretchable-width #t])
+    (when legend-panel
+      (new check-box%
+           [parent controls]
+           [label "Show legend"]
+           [value legend?]
+           [callback
+            (lambda (control _event)
+              (set-container-child-visible!
+               main legend-panel (send control get-value)))]))
     (send frame show #t)
     (void)))
 
@@ -145,7 +189,11 @@
          #:y-label [y-label (plot-y-label)]
          #:z-label [z-label (plot-z-label)]
          #:aspect-multiplier [aspect-multiplier 1]
-         #:legend-anchor [legend-anchor (plot-legend-anchor)])
+         #:legend-anchor [legend-anchor (plot-legend-anchor)]
+         #:legend-items [legend-items '()]
+         #:legend? [legend? #t])
+  (unless (boolean? legend?)
+    (raise-argument-error 'show-proportional-plot3d "boolean?" legend?))
   ;; A solver call commonly follows immediately after showing geometry and
   ;; synchronously blocks its caller.  Give each Plot3D frame an independent
   ;; handler thread so orbit, resize, repaint, and close events remain usable
@@ -173,7 +221,9 @@
                #:title title
                #:x-label x-label #:y-label y-label #:z-label z-label
                #:aspect-multiplier aspect-multiplier
-               #:legend-anchor legend-anchor))))
+               #:legend-anchor legend-anchor
+               #:legend-items legend-items
+               #:legend? legend?))))
          (channel-put ready #t)))
      #f))
   (define result (channel-get ready))

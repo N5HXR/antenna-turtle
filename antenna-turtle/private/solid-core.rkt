@@ -25,6 +25,7 @@
  model-components
  add-body
  add-sheet
+ add-sheet/world-polygons
  add-lumped-port
  add-lumped-element
  lumped-port-start
@@ -55,7 +56,8 @@
   (name material solid priority coordinates placement-transform metal-thickness)
   #:transparent)
 (struct planar-sheet
-  (name material points normal priority placement-transform mesh-edges thickness)
+  (name material points normal priority placement-transform mesh-edges thickness
+        polygons boundaries trace-width)
   #:transparent)
 (struct lumped-port
   (name impedance center direction transverse-u transverse-v
@@ -125,13 +127,26 @@
       (for/or ([component (in-list (solid-scene-components scene))])
         (equal? name (lumped-component-name component)))))
 
+(define (fresh-feature-name prefix [scene (current-solid-scene)])
+  ;; An omitted name is an identity, not a label. An uninterned symbol cannot
+  ;; collide with either another generated identity or a programmer's symbol.
+  (gensym prefix))
+
+(define (effective-feature-name who requested prefix [scene (current-solid-scene)])
+  (when requested (geometry-name who requested))
+  (define result (or requested (fresh-feature-name prefix scene)))
+  (when (used-name? result scene)
+    (raise-arguments-error who "explicit model feature names must be unique"
+                           "name" result))
+  result)
+
 (define (add-body name material geometry
                   #:priority [priority #f]
                   #:precedence [precedence #f]
                   #:coordinates [coordinates 'local]
                   #:anchor [anchor 'origin]
                   #:metal-thickness [metal-thickness #f])
-  (geometry-name 'add-body name)
+  (define effective-name (effective-feature-name 'add-body name 'body))
   (validate-material 'add-body material)
   (define effective-priority
     (effective-precedence 'add-body priority precedence))
@@ -147,9 +162,6 @@
   (when (m:solid-closed? geometry)
     (raise-arguments-error 'add-body "source solid has been closed"
                            "geometry" geometry))
-  (when (used-name? name)
-    (raise-arguments-error 'add-body "geometry names must be unique"
-                           "name" name))
   (define placement
     (scale-transform (scene-transform 'add-body coordinates)
                      (current-geometry-scale)))
@@ -164,7 +176,7 @@
   ;; transform always returns a distinct native handle, including identity.
   (define owned-solid (m:transform geometry effective-placement))
   (define body
-    (solid-body name material owned-solid effective-priority
+    (solid-body effective-name material owned-solid effective-priority
                 coordinates effective-placement
                 (and metal-thickness
                      (* (current-geometry-scale) metal-thickness))))
@@ -179,7 +191,7 @@
                    #:coordinates [coordinates 'local]
                    #:mesh-edges [mesh-edges 'exact]
                    #:thickness [thickness #f])
-  (geometry-name 'add-sheet name)
+  (define effective-name (effective-feature-name 'add-sheet name 'sheet))
   (validate-material 'add-sheet material)
   (unless (memq (em-material-kind material) '(pec conductor conducting-sheet))
     (raise-arguments-error
@@ -191,9 +203,6 @@
     (raise-argument-error 'add-sheet "(or/c 'exact 'metal)" mesh-edges))
   (unless (and (list? points) (>= (length points) 3))
     (raise-argument-error 'add-sheet "list of at least three 2D points" points))
-  (when (used-name? name)
-    (raise-arguments-error 'add-sheet "geometry names must be unique"
-                           "name" name))
   (define orientation (scene-transform 'add-sheet coordinates))
   (define scale-factor (current-geometry-scale))
   (define placement (scale-transform orientation scale-factor))
@@ -222,9 +231,71 @@
       (define xy (point-values 'add-sheet point 2))
       (transform-point placement (list (first xy) (second xy) 0))))
   (define sheet
-    (planar-sheet name effective-material world-points
+    (planar-sheet effective-name effective-material world-points
                   (transform-vector orientation '(0 0 1))
-                  effective-priority placement mesh-edges effective-thickness))
+                  effective-priority placement mesh-edges effective-thickness
+                  (list world-points) (list world-points) #f))
+  (define scene (current-solid-scene))
+  (set-solid-scene-sheets!
+   scene (append (solid-scene-sheets scene) (list sheet)))
+  sheet)
+
+(define (add-sheet/world-polygons name material polygons boundaries normal
+                                  #:priority [priority #f]
+                                  #:precedence [precedence #f]
+                                  #:mesh-edges [mesh-edges 'metal]
+                                  #:thickness [thickness #f]
+                                  #:trace-width [trace-width #f])
+  (define effective-name (effective-feature-name 'with-traces name 'trace))
+  (validate-material 'with-traces material)
+  (unless (memq (em-material-kind material) '(pec conductor conducting-sheet))
+    (raise-arguments-error 'with-traces
+                           "trace material must be PEC or a conductor"
+                           "material" material))
+  (unless (and (list? polygons) (pair? polygons)
+               (andmap (lambda (polygon)
+                         (and (list? polygon) (>= (length polygon) 3)
+                              (andmap point3? polygon)))
+                       polygons))
+    (raise-argument-error 'with-traces
+                          "nonempty list of point3 polygons" polygons))
+  (unless (and (list? boundaries) (pair? boundaries)
+               (andmap (lambda (boundary)
+                         (and (list? boundary) (>= (length boundary) 3)
+                              (andmap point3? boundary)))
+                       boundaries))
+    (raise-argument-error 'with-traces
+                          "nonempty list of point3 boundaries" boundaries))
+  (unless (point3? normal)
+    (raise-argument-error 'with-traces "point3? normal" normal))
+  (unless (memq mesh-edges '(exact metal))
+    (raise-argument-error 'with-traces "(or/c 'exact 'metal)" mesh-edges))
+  (define effective-priority
+    (effective-precedence 'with-traces priority precedence))
+  (define scale-factor (current-geometry-scale))
+  (when thickness (nonnegative-real 'with-traces thickness "trace thickness"))
+  (define source-thickness
+    (or thickness
+        (and (eq? (em-material-kind material) 'conducting-sheet)
+             (em-material-thickness material))))
+  (when (and (eq? (em-material-kind material) 'conductor)
+             (not source-thickness))
+    (raise-arguments-error 'with-traces
+                           "finite-conductivity traces require thickness"
+                           "material" material))
+  (define effective-thickness
+    (and source-thickness (* scale-factor source-thickness)))
+  (define effective-material
+    (if (and (eq? (em-material-kind material) 'conducting-sheet)
+             effective-thickness)
+        (struct-copy em-material material [thickness effective-thickness])
+        material))
+  (define sheet
+    ;; `points` remains the authoritative exterior outline for compatibility;
+    ;; `polygons` may be a triangulated fill for a concave trace.
+    (planar-sheet effective-name effective-material (first boundaries) normal
+                  effective-priority identity-transform mesh-edges
+                  effective-thickness polygons boundaries trace-width))
   (define scene (current-solid-scene))
   (set-solid-scene-sheets!
    scene (append (solid-scene-sheets scene) (list sheet)))
@@ -256,10 +327,7 @@
         'down (list '(1 0 0) '(0 1 0))))
 
 (define (fresh-port-name [scene (current-solid-scene)])
-  (define used (map lumped-port-name (solid-scene-ports scene)))
-  (let loop ([index 1])
-    (define candidate (format "port-~a" index))
-    (if (member candidate used) (loop (add1 index)) candidate)))
+  (fresh-feature-name 'port scene))
 
 (define automatic-port-dimension (gensym 'automatic-port-dimension))
 
@@ -296,10 +364,10 @@
   (define effective-depth
     (effective-dimension depth (/ (model-wavelength) 1000) "depth" #f))
   (define scene (current-solid-scene))
-  (define name (or requested-name (fresh-port-name scene)))
-  (when (used-name? name scene)
-    (raise-arguments-error 'add-lumped-port "model feature names must be unique"
-                           "name" name))
+  (define name
+    (if requested-name
+        (effective-feature-name 'add-lumped-port requested-name 'port scene)
+        (fresh-port-name scene)))
   (define placement (current-turtle-affine-transform 'add-lumped-port))
   (define transverse (hash-ref transverse-components direction))
   (define port
@@ -316,7 +384,7 @@
   port)
 
 (define (add-lumped-element direction
-                            #:name name
+                            #:name [requested-name #f]
                             #:resistance [resistance #f]
                             #:inductance [inductance #f]
                             #:capacitance [capacitance #f]
@@ -330,7 +398,6 @@
   (define local-direction (hash-ref direction-components direction #f))
   (unless local-direction
     (raise-argument-error 'add-lumped-element "turtle direction" direction))
-  (geometry-name 'add-lumped-element name)
   (define electrical-values (filter values (list resistance inductance capacitance)))
   (when (null? electrical-values)
     (raise-arguments-error 'add-lumped-element
@@ -353,9 +420,8 @@
   (positive-real 'add-lumped-element width "width")
   (positive-real 'add-lumped-element depth "depth")
   (define scene (current-solid-scene))
-  (when (used-name? name scene)
-    (raise-arguments-error 'add-lumped-element
-                           "model feature names must be unique" "name" name))
+  (define name
+    (effective-feature-name 'add-lumped-element requested-name 'element scene))
   (define effective-priority
     (effective-precedence 'add-lumped-element priority precedence))
   (define scale-factor (current-geometry-scale))
@@ -411,13 +477,14 @@
     [else (point3-z point)]))
 
 (define (sheet-bounds sheet)
+  (define all-points (append* (planar-sheet-polygons sheet)))
   (values
    (for/list ([axis (in-range 3)])
      (apply min (map (lambda (point) (point-axis point axis))
-                     (planar-sheet-points sheet))))
+                     all-points)))
    (for/list ([axis (in-range 3)])
      (apply max (map (lambda (point) (point-axis point axis))
-                     (planar-sheet-points sheet))))))
+                     all-points)))))
 
 (define (body-bounds body)
   (define-values (minimum maximum) (m:solid-bounds (solid-body-solid body)))

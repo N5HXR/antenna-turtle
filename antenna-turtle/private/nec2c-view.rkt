@@ -47,6 +47,14 @@
 (define (color-at index)
   (list-ref colors (modulo index (length colors))))
 
+(define (series-legend-items series-list [styles #f])
+  (for/list ([series (in-list series-list)] [index (in-naturals)])
+    (plot-legend-item
+     (cursor-series-label series)
+     (cursor-series-color series)
+     (if styles (list-ref styles (modulo index (length styles))) 'solid)
+     'line)))
+
 (define (normalize-network-sweep who result)
   (cond
     [(network-sweep? result) result]
@@ -606,6 +614,8 @@
                    #:y-min [y-min #f] #:y-max [y-max #f]
                    #:aspect-ratio [aspect-ratio #f]
                    #:legend-anchor [legend-anchor 'bottom-right]
+                   #:legend-items [legend-items (series-legend-items series)]
+                   #:legend? [legend? #t]
                    #:axes? [axes? #t]
                    #:cursor-rule? [cursor-rule? #t]
                    #:theme [theme 'light])
@@ -615,6 +625,8 @@
    #:x-min x-min #:x-max x-max #:y-min y-min #:y-max y-max
    #:aspect-ratio aspect-ratio
    #:legend-anchor legend-anchor
+   #:legend-items legend-items
+   #:legend? legend?
    #:axes? axes?
    #:cursor-rule? cursor-rule?
    #:theme theme))
@@ -634,12 +646,14 @@
 
 (define (sweep-label-proc value-name value-unit)
   (lambda (series point)
-    (format "~a | ~a MHz | ~a: ~a~a"
-            (cursor-series-label series)
-            (cursor-number (vector-ref point 0))
-            value-name
-            (cursor-number (vector-ref point 1))
-            value-unit)))
+    (list
+     (format "~a  |  ~a MHz"
+             (cursor-series-label series)
+             (cursor-number (vector-ref point 0)))
+     (format "~a: ~a~a"
+             value-name
+             (cursor-number (vector-ref point 1))
+             value-unit))))
 
 (define (s-parameter-series result part)
   (unless (openems-multiport-result? result)
@@ -706,34 +720,43 @@
 (define (s-parameter-phase-renderers result)
   (s-parameter-renderers result 'phase))
 
-(define (show-s-parameter-magnitude result)
+(define (show-s-parameter-magnitude result #:legend? [legend? #t])
   (define series (s-parameter-series result 'magnitude))
   (show-plot
    (s-parameter-magnitude-renderers result)
    series
    (sweep-label-proc "magnitude" " dB")
    #:title "OpenEMS S-parameter magnitude"
+   #:legend? legend?
    #:x-label "frequency (MHz)"
    #:y-label "S-parameter magnitude (dB)"))
 
-(define (show-s-parameter-phase result)
+(define (show-s-parameter-phase result #:legend? [legend? #t])
   (define series (s-parameter-series result 'phase))
   (show-plot
    (s-parameter-phase-renderers result)
    series
    (sweep-label-proc "phase" " degrees")
    #:title "OpenEMS S-parameter phase"
+   #:legend? legend?
    #:x-label "frequency (MHz)"
    #:y-label "unwrapped phase (degrees)"))
 
-(define (show-vswr-sweep result #:max-vswr [max-vswr #f])
+(define (show-vswr-sweep result #:max-vswr [max-vswr #f]
+                         #:legend? [legend? #t])
   (define normalized (normalize-network-sweep 'show-vswr-sweep result))
   (define backend (backend-title normalized))
+  (define series (vswr-cursor-series normalized max-vswr))
   (show-plot
    (vswr-sweep-renderers normalized #:max-vswr max-vswr)
-   (vswr-cursor-series normalized max-vswr)
+   series
    (sweep-label-proc "VSWR" ":1")
    #:title (format "~a VSWR sweep" backend)
+   #:legend-items
+   (append (series-legend-items series)
+           (list (plot-legend-item "2:1" "gray" 'short-dash 'line)
+                 (plot-legend-item "3:1" "darkgray" 'dot 'line)))
+   #:legend? legend?
    #:x-label "frequency (MHz)"
    #:y-label
    (format "VSWR (Z0 = ~a ohms)"
@@ -741,48 +764,59 @@
 
 (define (show-return-loss-sweep
          result
-         #:floor-db [floor-db #f])
+         #:floor-db [floor-db #f]
+         #:legend? [legend? #t])
   (define normalized (normalize-network-sweep 'show-return-loss-sweep result))
   (define backend (backend-title normalized))
+  (define series (return-loss-cursor-series normalized floor-db))
   (show-plot
    (return-loss-sweep-renderers
     normalized
     #:floor-db floor-db)
-   (return-loss-cursor-series normalized floor-db)
+   series
    (sweep-label-proc "S11" " dB")
    #:title (format "~a return-loss sweep" backend)
+   #:legend-items
+   (append (series-legend-items series)
+           (list (plot-legend-item "-10 dB" "gray" 'short-dash 'line)))
+   #:legend? legend?
    #:x-label "frequency (MHz)"
    #:y-label
    (format "return loss / S11 (dB, Z0 = ~a ohms)"
            (network-sweep-reference-impedance normalized))))
 
-(define (show-impedance-sweep result)
+(define (show-impedance-sweep result #:legend? [legend? #t])
   (define normalized (normalize-network-sweep 'show-impedance-sweep result))
   (define backend (backend-title normalized))
+  (define series (impedance-cursor-series normalized))
   (show-plot
    (impedance-sweep-renderers normalized)
-   (impedance-cursor-series normalized)
+   series
    (sweep-label-proc "impedance" " ohms")
    #:title (format "~a input impedance" backend)
+   #:legend-items (series-legend-items series '(solid short-dash))
+   #:legend? legend?
    #:x-label "frequency (MHz)"
    #:y-label "ohms"))
 
 (define (show-smith-chart result
                           #:markers? [markers? #t]
-                          #:theme [theme 'light])
+                          #:theme [theme 'light]
+                          #:legend? [legend? #t])
   (define normalized (normalize-network-sweep 'show-smith-chart result))
   (define backend (backend-title normalized))
   (validate-smith-options 'show-smith-chart markers? theme)
+  (define series (smith-cursor-series normalized))
   (show-plot
    (smith-chart-renderers normalized #:markers? markers? #:theme theme)
-   (smith-cursor-series normalized)
+   series
    (lambda (series point)
      (list
-      (format "~a @ ~a MHz | Z ~a ohms"
+      (format "~a  |  ~a MHz"
               (cursor-series-label series)
-              (cursor-number (vector-ref point 2))
-              (smith-impedance (vector-ref point 3) (vector-ref point 4)))
-      (format "S11 ~a dB | VSWR ~a:1"
+              (cursor-number (vector-ref point 2)))
+      (format "Z ~a ohms  |  S11 ~a dB  |  VSWR ~a:1"
+              (smith-impedance (vector-ref point 3) (vector-ref point 4))
               (cursor-number (vector-ref point 5))
               (cursor-number (vector-ref point 6)))))
    #:title
@@ -794,7 +828,17 @@
    #:x-min -1.08 #:x-max 1.08
    #:y-min -1.08 #:y-max 1.08
    #:aspect-ratio 1
-   #:legend-anchor 'outside-left-top
+   #:legend-items
+   (append
+    (list
+     (plot-legend-item "1.5:1 VSWR"
+                       (hash-ref (smith-theme theme) 'vswr-15)
+                       'short-dash 'line)
+     (plot-legend-item "2.0:1 VSWR"
+                       (hash-ref (smith-theme theme) 'vswr-20)
+                       'long-dash 'line))
+    (series-legend-items series))
+   #:legend? legend?
    #:axes? #f
    #:cursor-rule? #f
    #:theme theme))
@@ -802,23 +846,28 @@
 (define (show-radiation-cut pattern
                             #:component [component 'total]
                             #:floor-db [floor-db -40]
-                            #:normalize? [normalize? #t])
+                            #:normalize? [normalize? #t]
+                            #:legend? [legend? #t])
+  (define series
+    (list
+     (cursor-series
+      (symbol->string component)
+      (radiation-cut-cursor-points pattern component floor-db normalize?)
+      "steelblue")))
   (show-plot
    (radiation-cut-renderers pattern
                             #:component component
                             #:floor-db floor-db
                             #:normalize? normalize?)
-   (list
-    (cursor-series
-     (symbol->string component)
-     (radiation-cut-cursor-points pattern component floor-db normalize?)
-     "steelblue"))
+   series
    (lambda (series point)
-     (format "~a | angle: ~a degrees | gain: ~a dBi"
-             (cursor-series-label series)
-             (cursor-number (vector-ref point 2))
-             (cursor-number (vector-ref point 3))))
+     (list
+      (format "~a  |  angle ~a degrees"
+              (cursor-series-label series)
+              (cursor-number (vector-ref point 2)))
+      (format "gain: ~a dBi" (cursor-number (vector-ref point 3)))))
    #:title (format "NEC2C ~a pattern" (nec2c-pattern-kind pattern))
+   #:legend? legend?
    #:x-label #f
    #:y-label #f))
 
@@ -827,7 +876,8 @@
                                    #:floor-db [floor-db -40]
                                    #:normalize? [normalize? #t]
                                    #:mesh-step [mesh-step 5]
-                                   #:aspect-ratio [aspect-ratio 1])
+                                   #:aspect-ratio [aspect-ratio 1]
+                                   #:legend? [legend? #t])
   (unless (nec2c-pattern-grid? grid)
     (raise-argument-error
      'show-radiation-pattern-3d "nec2c-pattern-grid?" grid))
@@ -863,7 +913,10 @@
   (define arguments
     (sort
      (list (cons '#:aspect-multiplier aspect-ratio)
-           (cons '#:legend-anchor 'top-left)
+           (cons '#:legend-items
+                 (list (plot-legend-item (symbol->string component)
+                                         "steelblue" 'solid 'box)))
+           (cons '#:legend? legend?)
            (cons '#:title
                  (format "~a 3-D radiation pattern"
                          (radiation-backend-title grid)))

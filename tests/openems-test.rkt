@@ -234,9 +234,9 @@
                                #:conductivity 5.8e7
                                #:thickness 35e-6))
   (define substrate (m:cube 0.1 0.1 0.002))
-  (body substrate geometry substrate material substrate-material priority 10)
+  (body name substrate geometry substrate material substrate-material priority 10)
   (turn left 30)
-  (sheet ground
+  (sheet name ground
     points '((0 0) (0.1 0) (0.1 0.1) (0 0.1))
     material copper
     priority 20)
@@ -317,7 +317,7 @@
   (reset-model!)
   (model frequency 435)
   (define block (m:cube 0.04 0.03 0.01 #:center? #t))
-  (body shield geometry block material aluminum
+  (body name shield geometry block material aluminum
         metal-thickness 0.001 precedence 20 coordinates world)
   (port up name feed gap 0.002 width 0.002 depth 0.002)
   (define mock-octave (make-temporary-file "mock-octave~a"))
@@ -362,7 +362,7 @@
   (file-or-directory-permissions mock-octave #o755)
   ;; Rotate the geometry itself to produce a genuinely oblique boundary.
   (define rotated (m:rotate block 0 0 30))
-  (body shield geometry rotated material steel
+  (body name shield geometry rotated material steel
         metal-thickness 0.001 precedence 20 coordinates world)
   (port up name feed gap 0.002 width 0.002 depth 0.002)
   (check-exn
@@ -378,11 +378,11 @@
   (reset-model!)
   (model frequency 435 impedance 50)
   ;; Two conductor sheets meet the component's opposite Z terminal faces.
-  (sheet lower
+  (sheet name lower
     points '((-0.01 -0.01) (0.01 -0.01) (0.01 0.01) (-0.01 0.01))
     material pec priority 20)
   (move up 0.002)
-  (sheet upper
+  (sheet name upper
     points '((-0.01 -0.01) (0.01 -0.01) (0.01 0.01) (-0.01 0.01))
     material pec priority 20)
   (move down 0.001)
@@ -442,10 +442,10 @@
   (model frequency 435 impedance 50)
   (with-scale millimeters
     (move up 1.6)
-    (sheet left-terminal
+    (sheet name left-terminal
       points '((-10 -5) (-0.5 -5) (-0.5 5) (-10 5))
       material pec priority 20)
-    (sheet right-terminal
+    (sheet name right-terminal
       points '((0.5 -5) (10 -5) (10 5) (0.5 5))
       material pec priority 20)
     ;; The one-millimeter-high component has its bottom face exactly on the
@@ -476,7 +476,7 @@
   (reset-model!)
   (model frequency 915 impedance 50)
   (define block (m:cube 0.1 0.02 0.002 #:center? #t))
-  (body substrate geometry block
+  (body name substrate geometry block
         material (dielectric #:relative-permittivity 2.2)
         priority 10)
   (port up name 'input gap 0.002 width 0.002 depth 0.002 priority 15)
@@ -537,15 +537,15 @@
   (define substrate-material
     (dielectric #:name 'substrate #:relative-permittivity 4.4))
   (define substrate (m:cube 0.1 0.1 0.002 #:center? #t))
-  (body substrate geometry substrate material substrate-material priority 10)
+  (body name substrate geometry substrate material substrate-material priority 10)
   (from-here
     (move down 0.001)
-    (sheet ground
+    (sheet name ground
       points '((-0.05 -0.05) (0.05 -0.05) (0.05 0.05) (-0.05 0.05))
       material pec priority 20 mesh-edges exact))
   (from-here
     (move up 0.001)
-    (sheet patch
+    (sheet name patch
       points '((-0.02 -0.015) (0.02 -0.015) (0.02 0.015) (-0.02 0.015))
       material pec priority 20 mesh-edges metal))
   (port up name 'feed gap 0.002 width 0.002 depth 0.002)
@@ -597,11 +597,46 @@
   (m:solid-close! substrate)
   (clear-bodies))
 
+(test-case "OpenEMS refines oblique turtle traces by profile width"
+  (reset-model!)
+  (model frequency 915 impedance 50)
+  (with-scale millimeters
+    (with-traces 3
+      name curved-trace
+      (move forward 20)
+      (turn left 45)
+      (move forward 10))
+    (port up name feed gap 1 size '(3 3)))
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 850 950 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define mesh
+    (hash-ref (openems-run-info-manifest
+               (exn:fail:openems-run-info failure))
+              'mesh))
+  (check-equal? (hash-ref mesh 'minimum_trace_cells_across) 3)
+  (define x-lines (sort (hash-ref mesh 'critical_x) <))
+  (check-true
+   (for/or ([left (in-list x-lines)] [right (in-list (rest x-lines))])
+     (and (positive? (- right left))
+          (<= (- right left) 0.0010000001))))
+  (openems-close!
+   (openems-run-info-artifacts (exn:fail:openems-run-info failure)))
+  (delete-file mock-octave)
+  (clear-bodies))
+
 (test-case "OpenEMS rejects a rotated frame in a multiport model"
   (reset-model!)
   (model frequency 915)
   (define block (m:cube 0.1 0.02 0.002 #:center? #t))
-  (body substrate geometry block)
+  (body name substrate geometry block)
   (port up name 'aligned)
   (turn left 17)
   (port up name 'rotated)
@@ -622,7 +657,7 @@
   (reset-model!)
   (model frequency 915)
   (define block (m:cube 0.1 0.1 0.01 #:center? #t))
-  (body radiator geometry block)
+  (body name radiator geometry block)
   (port up name 'feed gap 0.002 width 0.002 depth 0.002)
   (move forward 0.012 left 0.013 up 0.014)
   (mesh-point)
@@ -662,11 +697,46 @@
   (m:solid-close! block)
   (clear-bodies))
 
+(test-case "OpenEMS coalesces roundoff-equivalent critical mesh coordinates"
+  (reset-model!)
+  (model frequency 915)
+  (define block (m:cube 0.1 0.1 0.01 #:center? #t))
+  (body name radiator geometry block)
+  (port up name 'feed gap 0.002 width 0.002 depth 0.002)
+  ;; The first pair differs only by accumulated floating-point noise.  The
+  ;; second pair is one nanometre apart and must remain distinct; this guards
+  ;; against accidentally adopting a wavelength-sized merge tolerance.
+  (from-here (move forward 0.012) (mesh-plane yz))
+  (from-here (move forward (+ 0.012 1e-17)) (mesh-plane yz))
+  (from-here (move forward 0.02) (mesh-plane yz))
+  (from-here (move forward (+ 0.02 1e-9)) (mesh-plane yz))
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 850 950 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define x-lines
+    (hash-ref (hash-ref (openems-run-info-manifest run) 'mesh) 'critical_x))
+  (define (lines-near wanted radius)
+    (filter (lambda (value) (< (abs (- value wanted)) radius)) x-lines))
+  (check-equal? (length (lines-near 0.012 1e-12)) 1)
+  (check-equal? (length (lines-near 0.02 2e-9)) 2)
+  (openems-close! (openems-run-info-artifacts run))
+  (delete-file mock-octave)
+  (m:solid-close! block)
+  (clear-bodies))
+
 (test-case "OpenEMS rejects a mesh plane made oblique by one-port rotation"
   (reset-model!)
   (model frequency 915)
   (define block (m:cube 0.1 0.1 0.01 #:center? #t))
-  (body radiator geometry block)
+  (body name radiator geometry block)
   (mesh-plane xy)
   (turn down 17)
   (port up name 'feed gap 0.002 width 0.002 depth 0.002)
@@ -680,7 +750,7 @@
   (reset-model!)
   (model frequency 915)
   (define block (m:cube 0.1 0.02 0.002 #:center? #t))
-  (body substrate geometry block)
+  (body name substrate geometry block)
   (port up name 'input impedance 50)
   (move forward 0.04)
   (port up name 'output impedance 75)

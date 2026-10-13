@@ -27,15 +27,15 @@
 ;  (cylinder-at-z (half gap) (* 2.1 arm-length) radius))
 
 (with-scale 0.88
-  (body lower material pec geometry lower-arm priority 20)
-  (body upper material pec geometry upper-arm priority 20)
+  (body name lower material pec geometry lower-arm priority 20)
+  (body name upper material pec geometry upper-arm priority 20)
 
   ;; The turtle is at the feed center. Local +Z is already the desired voltage
   ;; direction, so the backend's automatic solver transform is the identity.
   (port up name "feed" impedance 50 gap gap width gap depth gap)
 
   (move left quarter-wave)
-  (body ref material pec geometry reflector priority 20))
+  (body name ref material pec geometry reflector priority 20))
 
 ;; Scene registration owns transformed copies.
 (m:solid-close! lower-arm)

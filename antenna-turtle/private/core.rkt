@@ -31,6 +31,7 @@
  ;; intended as surface DSL operations.
  register-model-reset-hook!
  current-turtle-affine-transform current-geometry-scale
+ current-turtle-event-handler
 
  ;; Model settings.
  clear-wires
@@ -70,6 +71,7 @@
  edge-length
  edge-segment-count
  current-wire-diameter
+ current-wire-active?
  current-position)
 
 ;; Unit constants are exact rationals so dimensional arithmetic remains exact
@@ -131,6 +133,7 @@
 (define pending-feed-location (make-parameter #f))
 (define current-coordinate-warp (make-parameter #f))
 (define current-radial-iterations (make-parameter '()))
+(define current-turtle-event-handler (make-parameter #f))
 (define model-reset-hooks '())
 
 (define (register-model-reset-hook! hook)
@@ -548,6 +551,8 @@
 (define (turn-axis degrees x y z)
   (define state (current-turtle-state))
   (define local-rotation (axis-rotation-matrix degrees x y z))
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'turn degrees x y z))
   (current-turtle-state
    (struct-copy turtle-state state
      [orientation (mat*mat (turtle-state-orientation state)
@@ -583,6 +588,8 @@
     (raise-argument-error 'call-with-wire "(procedure-arity-includes/c 0)" thunk))
   (when (turtle-state-pen-down? (current-turtle-state))
     (error 'with-wire "wire is already on"))
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'with-wire))
   (dynamic-wind
     wire-on
     thunk
@@ -612,6 +619,8 @@
     (raise-argument-error 'call-from-here
                           "(procedure-arity-includes/c 0)"
                           thunk))
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'from-here))
   (dynamic-wind push thunk pop))
 
 (define call-with-push call-from-here)
@@ -778,6 +787,9 @@
   (* (turtle-state-base-diameter state)
      (turtle-state-diameter-scale state)))
 
+(define (current-wire-active?)
+  (turtle-state-pen-down? (current-turtle-state)))
+
 (define (current-position)
   (turtle-state-position (current-turtle-state)))
 
@@ -785,11 +797,15 @@
   (current-position))
 
 (define (push)
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'push))
   (current-turtle-stack
    (cons (current-turtle-state) (current-turtle-stack)))
   (void))
 
 (define (pop)
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'pop))
   (when (null? (current-turtle-stack))
     (error 'pop "turtle stack is empty"))
   (current-turtle-state (car (current-turtle-stack)))
@@ -1016,6 +1032,8 @@
 (define (perform-movement destination)
   (define state (current-turtle-state))
   (define source (turtle-state-position state))
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'move source destination))
   (define draws? (turtle-state-pen-down? state))
   (when (and (pending-feed-location) (not draws?))
     (error 'feed "the movement following feed occurred while the wire was off"))

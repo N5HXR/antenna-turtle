@@ -16,17 +16,17 @@
 
 (with-scale millimeters
   (with-material fr4
-    (cuboid substrate
+    (cuboid name substrate
       size substrate-size
       anchor bottom))
 
-  (sheet rect ground-plane
+  (sheet rect name ground-plane
     size (take substrate-size 2)
     mesh-edges exact)
 
   (from-here
     (move up substrate-height)
-    (sheet rect patch
+    (sheet rect name patch
       size patch-size
       mesh-edges metal))
 

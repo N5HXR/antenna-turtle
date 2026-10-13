@@ -22,12 +22,12 @@
 (define upper-arm
   (cylinder-at-z (/ gap 2) arm-length radius))
 
-(body lower
+(body name lower
   material pec
   geometry lower-arm
   priority 20)
 
-(body upper
+(body name upper
   material pec
   geometry upper-arm
   priority 20)

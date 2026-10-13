@@ -50,7 +50,7 @@
     "pen-up" "pen-down" "forward" "forwards"
     "back" "backward" "backwards" "move-nearest"
     "turn-x" "turn-y" "turn-z" "turn-axis"
-    "scale" "scale-all" "push" "pop"
+    "scale-all" "push" "pop"
     "clear-wires" "reset-model!" "validate-model!" "current-position"
     "current-wire-diameter" "current-antenna-model"
     "model-vertices" "model-edges" "wire-used" "edge-length"
@@ -64,6 +64,14 @@
     "material-default-precedence" "read-stl-solid" "mesh-point"
     "derive-simulation-profile" "radiation-pattern"
     "power-budget" "format-power-budget" "display-power-budget"
+    "measurement-frequencies" "measurement-frequency-range" "measurement-ports"
+    "impedance-at" "admittance-at" "resistance-at" "reactance-at"
+    "reflection-at" "s11-db-at" "return-loss-at" "vswr-at"
+    "s-parameter-at" "s-parameter-db-at" "s-parameter-phase-at"
+    "gain-at" "maximum-gain" "maximum-gain-direction"
+    "front-to-back-ratio" "front-to-side-ratio"
+    "axial-ratio-at" "polarization-tilt-at" "polarization-sense-at"
+    "e-field-at" "pattern-angular-resolution"
     "openems-sweep" "openems-load-artifacts" "openems-radiation-grid"
     "openems-sweep->network-sweep" "openems-close!"
     "openems-power-budget?" "openems-power-budget-frequency-mhz"
@@ -113,7 +121,9 @@
   '("model" "move" "point" "spread" "feed" "turn" "reflect"
     "radial-repeat"
     "with-wire" "with-points" "from-here" "with-scale" "with-warp"
-    "with-surface" "with-pen" "with-push" "with-material"
+    "with-surface" "with-pen" "with-push" "with-material" "with-body"
+    "with-traces"
+    "union" "difference" "intersect" "hull" "scale"
     "body" "sheet" "port" "lumped-element" "dielectric" "conductor" "mesh-plane"
     "cuboid" "sphere" "cylinder" "capsule" "stl" "simulate"
     "loop" "return" "return-from"))
@@ -145,20 +155,20 @@
     "radius" "diameter" "segments" "name" "er" "ur"
     "relative-permittivity" "relative-permeability" "loss-tangent"
     "loss-frequency" "conductivity" "thickness" "metal-thickness"
-    "gap" "depth" "path"
+    "gap" "depth" "path" "join" "miter-limit"
     "resistance" "inductance" "capacitance" "topology" "caps"
     "engine" "sweep" "profile" "octave" "keep-artifacts" "progress"
     "timeout"))
 
 (defconst antenna-turtle--pairwise-forms
-  '("body" "sheet" "port" "lumped-element" "dielectric" "conductor" "cuboid" "sphere" "cylinder"
+  '("body" "with-body" "with-traces" "sheet" "port" "lumped-element" "dielectric" "conductor" "cuboid" "sphere" "cylinder"
     "capsule" "stl" "simulate"))
 
 (defconst antenna-turtle--solid-values
   '("pec" "silver" "copper" "gold" "aluminum" "brass" "steel"
     "rect" "exact" "metal" "local" "world" "xy" "xz" "yz"
     "origin" "top" "bottom" "front" "draft" "standard" "openems"
-    "series" "parallel"))
+    "series" "parallel" "miter" "bevel"))
 
 (defconst antenna-turtle--feed-locations
   '("start" "center" "end"))
@@ -269,6 +279,13 @@ with INDENT-POINT first, so accept both documented conventions."
 (defconst antenna-turtle--indentation-rules
   '((with-scale . 1)
     (with-material . 1)
+    (with-body . 1)
+    (with-traces . 1)
+    (union . 0)
+    (difference . 0)
+    (intersect . 0)
+    (hull . 0)
+    (scale . 1)
     (with-warp . 1)
     (with-surface . 1)
     (radial-repeat . 1)

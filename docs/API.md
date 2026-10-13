@@ -782,7 +782,7 @@ model value or one-twentieth wavelength.
 
 ## 12. Geometry Viewer
 
-### `(show-model [model] [#:vertices? vertices?] [#:wire-color color] [#:width width] [#:height height] [#:aspect-ratio ratio])`
+### `(show-model [model] [#:vertices? vertices?] [#:wire-color color] [#:width width] [#:height height] [#:aspect-ratio ratio] [#:legend? #t])`
 
 Opens the current model in a separate interactive Plot3D window. The optional
 `model` defaults to `(current-antenna-model)`. Drag the plot to rotate it.
@@ -801,7 +801,9 @@ angle-dependent distortion of Plot3D's normal fit-to-window behavior. It
 renders DSL edges before solver subdivision and uses a fixed visible line
 width rather than physical conductor diameter. Plot3D windows use independent
 GUI eventspaces, so they remain interactive while a synchronous solver call is
-running. An empty model or an unused pending feed is an error.
+running. The legend occupies a separate side panel instead of covering the
+model; its **Show legend** checkbox collapses the panel. Pass `#:legend? #f`
+to start with it hidden. An empty model or an unused pending feed is an error.
 
 The command-line equivalent is:
 
@@ -809,7 +811,7 @@ The command-line equivalent is:
 raco antenna-turtle build model.rkt --view
 ```
 
-### `(show-solid-model [#:width 900] [#:height 700] [#:aspect-ratio 1] [#:wire-segments 24])`
+### `(show-solid-model [#:width 900] [#:height 700] [#:aspect-ratio 1] [#:legend? #t] [#:wire-segments 24])`
 
 Opens registered Manifold volume bodies, planar sheets, and any ordinary
 Turtle wire network in a proportion-preserving Plot3D window. Wires are shown
@@ -820,7 +822,8 @@ explicit lumped ports appear as red boxes with a polarity arrow. This is a
 geometry preflight viewer; the OpenEMS-generated `model.xml` remains the
 authoritative view of the final Yee mesh and CSXCAD properties.
 Like `show-model`, this window remains interactive during a blocking
-`openems-sweep` call.
+`openems-sweep` call. Its external legend can likewise be collapsed or hidden
+initially with `#:legend? #f`.
 
 ## 13. Physical Solid Scene and OpenEMS
 
@@ -832,13 +835,13 @@ placement by default:
 
 (with-scale millimeter
   (with-material fr4
-    (cuboid substrate size '(150 150 1.6) anchor bottom))
+    (cuboid name substrate size '(150 150 1.6) anchor bottom))
 
-  (sheet rect ground size '(150 150) mesh-edges exact)
+  (sheet rect name ground size '(150 150) mesh-edges exact)
 
   (from-here
     (move up 1.6)
-    (sheet rect patch size '(89 70) mesh-edges metal))
+    (sheet rect name patch size '(89 70) mesh-edges metal))
 
   (from-here
     (move up 0.8 left -13)
@@ -858,7 +861,7 @@ turtle. A list combines orthogonal faces, as in `anchor '(bottom left)`.
 Curved and imported geometry deliberately uses its bounding box for these
 anchors. The programmer remains responsible for whether that is meaningful.
 
-`(stl name path path-expression ...)` reads either binary or ASCII STL and
+`(stl name object-name path path-expression ...)` reads either binary or ASCII STL and
 places it through the same turtle, material, precedence, anchor, and
 `with-scale` pipeline. STL has no unit metadata; coordinates are interpreted
 as metres outside a scaling scope. `read-stl-solid` is the lower-level reader
@@ -868,6 +871,99 @@ for callers that need to apply Manifold CSG before registering the result.
 default precedence values: dielectric 10 and PEC/conducting geometry 20.
 `precedence` overrides the default. OpenEMS maps precedence to CSXCAD priority;
 future backends may instead use it to resolve mesh-region ownership.
+
+Names are optional on scene objects. Every explicit name uses the contextual
+`name value` pair; no constructor has a positional name. Omitting it assigns a
+fresh uninterned symbol with a descriptive prefix; supply an
+explicit name when code, plots, or measurements need a stable human-facing
+reference. This makes repeated geometry procedures safe without requiring
+their callers to manufacture names. A bare identifier is a concise literal
+label (`name feed`); strings and expressions such as
+`name (gensym 'fixture)` are also accepted.
+
+### Planar turtle traces: `(with-traces width settings ... body ...)`
+
+`with-traces` sweeps a constant-width conducting sheet along ordinary turtle
+movements. It is the planar-sheet counterpart to `with-wire`:
+
+```racket
+(with-scale millimeters
+  (with-traces 3
+    name resonator
+    material copper
+    thickness 0.035
+    (move forward 20)
+    (turn left 45)
+    (move forward 12)
+    (turn left 135)
+    (move forward 8)))
+```
+
+The path may turn through arbitrary angles, but all movement must remain in
+the globally aligned XY, XZ, or YZ plane in which the scope began. Leaving the
+plane, branching with `from-here` or `push`/`pop`, nesting `with-traces`, or
+mixing active wire construction into the scope is an error. Returning to the
+starting point creates a closed trace with an open center rather than filling
+the loop. Open paths have butt ends.
+
+Corners default to `join miter` with `miter-limit 4`; an excessively long
+miter falls back to a bevel. `join bevel` requests bevels directly. Other
+settings are `name`, `material`, `thickness`, `precedence`, and `priority`.
+One scope creates one sheet and has one width. Adjacent scopes are independent
+and are not joined automatically.
+
+OpenEMS examines the completed outline. A wholly axis-aligned orthogonal trace
+receives the normal 1/3-inside, 2/3-outside metal-edge treatment. An outline
+with oblique edges receives enough extra rectilinear coordinates to resolve
+the trace width; a mixed outline uses both strategies where applicable. The
+profile minimum is three cells across a trace for `draft` and five for
+`standard`. Oblique copper still has the unavoidable Yee-grid staircase, so
+mesh convergence remains important for tight bends and electrically narrow
+features.
+
+### CSG bodies: `with-body`, `union`, `difference`, `intersect`, and `hull`
+
+`with-body` collects unnamed solid primitives into one Manifold body and then
+registers that result in the solid scene. Settings precede the solid forms and
+use the same material, precedence, metal-thickness, and anchor vocabulary as
+ordinary bodies:
+
+```racket
+(with-scale millimeters
+  (with-body name shield
+    material aluminum
+    metal-thickness 2
+    precedence 100
+    anchor bottom
+    (difference
+      (cuboid size (list board-length board-width 12) anchor bottom)
+      (from-here
+        (move up 2)
+        (cuboid size (list (- board-length 4)
+                           (- board-width 4)
+                           10)
+                anchor bottom)))))
+```
+
+The primitives inside `with-body` are unnamed because only the completed body
+is added to the scene and shown in its legend. The available primitives are
+`cuboid`, `sphere`, `cylinder`, `capsule`, and `stl`; each retains its ordinary
+dimension, segment, and bounding-box anchor settings. Turtle movement and
+rotation place each primitive. The scope restores the turtle afterward, just
+like `from-here`.
+
+Top-level forms within `with-body` are unioned implicitly. An explicit `union`
+is useful when a group must occupy one operand position inside another Boolean
+operation. `difference` treats its first solid as the base and the remaining
+solids as cutters. `intersect` requires at least two solids. `hull` produces
+one convex hull around its children. Intermediate solids are temporary and do
+not become separate model objects.
+
+The ordinary one-argument `(scale factor)` operation remains stateful: it
+changes the scale of subsequent turtle movement and primitives. Within a body,
+`(scale factor solid-form ...)` instead uniformly scales the collected forms
+about the turtle's current point. Per-axis stretching is deliberately reserved
+for a future `stretch` operation.
 
 ### `(mesh-point)` and `(mesh-plane xy|xz|yz)`
 
@@ -901,7 +997,7 @@ Import Manifold with a prefix, then register solids and an explicit port:
 ```racket
 (require (prefix-in m: manifold))
 
-(body radiator
+(body name radiator
   material pec
   geometry shape
   priority 20
@@ -936,7 +1032,7 @@ directly instead, but not together with `loss-tangent`.
 `silver`, `copper`, `gold`, `aluminum`, `brass`, and nonmagnetic nominal
 `steel` are reusable finite-conductivity materials. Custom materials use
 `(conductor name alloy conductivity 2.4e7)`. Geometry supplies its physical
-thickness: `(sheet rect trace size '(20 2) material copper thickness 0.035)`
+thickness: `(sheet rect name trace size '(20 2) material copper thickness 0.035)`
 inside a millimeter scale. `conducting-sheet-material` remains as a compatible
 constructor for older code that stores a default thickness on the material.
 The sheet follows the complete turtle frame, including arbitrary rotation.
@@ -1018,12 +1114,14 @@ and `timeout`. Numerical policy lives in a reusable simulation profile:
    standard
    #:name 'convergence
    #:cells-per-wavelength 40
-   #:minimum-dielectric-cells 8))
+   #:minimum-dielectric-cells 8
+   #:minimum-trace-cells 7))
 ```
 
-`draft` uses lambda/20, four cells through thin dielectrics, 100,000 maximum
-timesteps, and a -40 dB residual-energy threshold. `standard` uses lambda/30,
-six dielectric cells, 250,000 timesteps, and -50 dB. Both use 101 frequency
+`draft` uses lambda/20, four cells through thin dielectrics, three across
+oblique traces, 100,000 maximum timesteps, and a -40 dB residual-energy
+threshold. `standard` uses lambda/30, six dielectric cells, five across
+oblique traces, 250,000 timesteps, and -50 dB. Both use 101 frequency
 samples, mesh grading 1.4, half-wavelength padding, automatic metal-edge
 resolution, and 24 segments around derived wire capsules.
 
@@ -1082,6 +1180,7 @@ priorities. The mesh wavelength is reduced by the largest dielectric
  #:steps 101
  #:cells-per-wavelength 20
  #:minimum-dielectric-cells 4
+ #:minimum-trace-cells 3
  #:metal-edge-resolution #f ; defaults to half the wavelength cell limit
  #:mesh-grading 1.4
  #:padding-wavelengths 0.5
@@ -1116,7 +1215,10 @@ of cross-backend equivalence. `#:cells-per-wavelength` controls the global
 wavelength-based maximum cell dimension. `#:minimum-dielectric-cells` inserts
 evenly spaced critical coordinates across a dielectric extent when that global
 limit would otherwise produce fewer cells; its default is 4. The effective
-value and resulting critical coordinates are retained in the manifest. The
+value and resulting critical coordinates are retained in the manifest.
+`#:minimum-trace-cells` similarly resolves the width of turtle traces whose
+outline contains oblique edges; wholly orthogonal traces retain ideal
+metal-edge treatment without this extra refinement. Its default is 3. The
 optional `#:metal-edge-resolution` is an absolute distance in metres used by
 all sheets marked `mesh-edges metal`; `#f` follows the official patch tutorial
 and uses half the wavelength-based maximum cell size. Metal-edge constraints
@@ -1222,14 +1324,100 @@ The grid metadata records maximum directivity and radiated power. For this PEC
 proof of concept the viewer's dBi scale is directivity; efficiency and realized
 gain are not yet reported.
 
-### `(show-s-parameter-magnitude result)`
+### `(show-s-parameter-magnitude result [#:legend? #t])`
 
-### `(show-s-parameter-phase result)`
+### `(show-s-parameter-phase result [#:legend? #t])`
 
 Display every term of an `openems-multiport-result`. Labels include both the
 conventional matrix index and named direction, such as
 `S21 (output <- input)`. Phase is unwrapped independently for each term. Both
 views retain left-drag zoom and right-drag sample inspection.
+
+All interactive 2-D plots put their legend in a separate, collapsible side
+panel. `#:legend? #f` starts a window with the panel hidden; the window's
+**Show legend** checkbox can reveal it later. Right-click or right-drag places
+a cursor on the nearest measured sample and writes its complete value into a
+two-line status area beneath the plot. Inspection text therefore cannot cover
+the data or extend beyond the plotting viewport.
+
+### Measurement queries
+
+The measurement API accepts native solver results directly and returns ordinary
+Racket numbers and lists. Frequencies are in MHz, impedance is complex ohms,
+phase and directions are in degrees, and gain and S-parameter levels are in
+dB. An exact sampled frequency or direction is required by default. Add
+`#:interpolate? #t` to interpolate; the API never extrapolates.
+
+```racket
+(impedance-at sweep 435 #:port 'input #:interpolate? #t)
+(admittance-at sweep 435 #:port 'input #:interpolate? #t)
+(resistance-at sweep 435 #:port 'input #:interpolate? #t)
+(reactance-at sweep 435 #:port 'input #:interpolate? #t)
+(reflection-at sweep 435 #:port 'input #:interpolate? #t)
+(s11-db-at sweep 435 #:port 'input #:interpolate? #t)
+(return-loss-at sweep 435 #:port 'input #:interpolate? #t)
+(vswr-at sweep 435 #:port 'input #:interpolate? #t)
+```
+
+The `#:port` argument may be omitted when there is exactly one port. Port
+symbols and strings with the same spelling match. Complex impedance and
+reflection values use rectangular interpolation, so all derived quantities
+remain mutually consistent. `s11-db-at` is the signed S11 magnitude; return
+loss is its positive inverse.
+
+OpenEMS multiport results expose named matrix queries. `#:from` names the
+excited/input port and `#:to` names the measured/output port; omitting `#:to`
+selects the diagonal reflection term for `#:from`.
+
+```racket
+(s-parameter-at result 435
+                #:from 'input #:to 'output #:interpolate? #t)
+(s-parameter-db-at result 435
+                   #:from 'input #:to 'output #:interpolate? #t)
+(s-parameter-phase-at result 435
+                      #:from 'input #:to 'output #:interpolate? #t)
+```
+
+`s-parameter-phase-at` returns principal phase in the range -180 through 180
+degrees.
+
+Radiation queries accept either a `nec2c-pattern` cut or the backend-neutral
+`nec2c-pattern-grid` returned by NEC2C and OpenEMS. Grid interpolation is
+bilinear with azimuth wrapping at 360 degrees. Gain is interpolated in linear
+power rather than directly in dB.
+
+```racket
+(gain-at pattern #:azimuth 45 #:elevation 10
+         #:component 'total #:interpolate? #t)
+(maximum-gain pattern)                    ; dBi
+(maximum-gain-direction pattern)          ; '(azimuth elevation)
+(front-to-back-ratio pattern)             ; dB
+(front-to-side-ratio pattern)             ; dB
+
+(axial-ratio-at pattern #:azimuth 45 #:elevation 10)
+(polarization-tilt-at pattern #:azimuth 45 #:elevation 10)
+(polarization-sense-at pattern #:azimuth 45 #:elevation 10)
+(define-values (e-theta e-phi)
+  (e-field-at pattern #:azimuth 45 #:elevation 10))
+```
+
+F/B compares the maximum-gain direction with the same elevation at 180 degrees
+opposite azimuth. F/S compares the main lobe with the worst (highest-gain)
+available direction on the great circle 90 degrees from it. Both return
+positive rejection ratios when the main lobe is stronger. For a grounded
+pattern, F/S searches only the modeled upper hemisphere and never invents
+below-ground data. Because a single cut cannot establish the worst side lobe
+around that full circle, `front-to-side-ratio` requires a pattern grid.
+
+Use these discovery helpers when writing backend-independent optimization or
+reporting code:
+
+```racket
+(measurement-frequencies result)     ; sorted MHz values
+(measurement-frequency-range result) ; '(minimum maximum), or #f
+(measurement-ports result)            ; names in result order
+(pattern-angular-resolution pattern)  ; '(azimuth-step elevation-step)
+```
 
 ## 14. Export Functions
 
@@ -1414,20 +1602,22 @@ These operations explicitly open Racket Plot windows. The four network plots
 accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
 
 ```racket
-(show-vswr-sweep sweep [#:max-vswr #f])
-(show-return-loss-sweep sweep [#:floor-db #f])
-(show-impedance-sweep sweep)
-(show-smith-chart sweep [#:markers? #t] [#:theme 'light])
+(show-vswr-sweep sweep [#:max-vswr #f] [#:legend? #t])
+(show-return-loss-sweep sweep [#:floor-db #f] [#:legend? #t])
+(show-impedance-sweep sweep [#:legend? #t])
+(show-smith-chart sweep [#:markers? #t] [#:theme 'light] [#:legend? #t])
 (show-radiation-cut pattern
                     [#:component 'total]
                     [#:floor-db -40]
-                    [#:normalize? #t])
+                    [#:normalize? #t]
+                    [#:legend? #t])
 (show-radiation-pattern-3d grid
                            [#:component 'total]
                            [#:floor-db -40]
                            [#:normalize? #t]
                            [#:mesh-step 5]
-                           [#:aspect-ratio 1])
+                           [#:aspect-ratio 1]
+                           [#:legend? #t])
 (show-radiation-pattern-opengl grid
                                [#:component 'total]
                                [#:floor-db -40]

@@ -46,7 +46,7 @@
       (move forward 10)
       (define placed
         (with-scale millimeter
-          (stl imported path path anchor bottom)))
+          (stl name imported path path anchor bottom)))
       (define-values (minimum maximum) (body-bounds placed))
       (check-point~= minimum '(9.999 -0.002 0))
       (check-point~= maximum '(10.001 0.002 0.006))

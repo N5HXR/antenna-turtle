@@ -604,6 +604,10 @@ To expose the endpoints created by turtle operations:
 (show-model #:vertices? #t)
 ```
 
+The viewer keeps its legend in a side panel so it never covers the geometry.
+Use the **Show legend** checkbox to collapse it, or pass `#:legend? #f` to
+start with the legend hidden.
+
 The viewer uses an equal numeric range for X, Y, and Z and dynamically adjusts
 the Plot3D viewport while it rotates, preserving the model's physical
 proportions at every viewing angle. `#:aspect-ratio` defaults to `1`; another
@@ -622,6 +626,10 @@ as red boxes and polarity arrows, and ideal lumped-element regions in violet:
 (show-solid-model)
 ```
 
+The solid-model legend uses the same collapsible side panel. Long lists of
+bodies, sheets, ports, and lumped elements therefore reduce the plot width
+only while the legend is visible instead of obscuring the model.
+
 Wire edges appear as a temporary union of physical capsules with the modeled
 wire diameter. A marked feed appears as the actual gap OpenEMS will use. The
 live centerline model is not changed, so the same construction remains ready
@@ -636,11 +644,20 @@ The turtle-oriented solid layer normally avoids direct Manifold boilerplate:
 
 (with-scale millimeter
   (with-material foam
-    (cuboid substrate size '(150 150 1.6) anchor bottom))
-  (sheet rect ground size '(150 150))
+    (cuboid name substrate size '(150 150 1.6) anchor bottom))
+  (sheet rect name ground size '(150 150))
   (move up 1.6)
-  (sheet rect patch size '(89 70) mesh-edges metal))
+  (sheet rect name patch size '(89 70) mesh-edges metal))
 ```
+
+Names on bodies, sheets, traces, ports, and lumped elements are optional and
+always use the contextual `name value` pair. Antenna Turtle allocates a fresh
+uninterned symbol when one is omitted. Give an
+object an explicit name when it needs a stable label in a plot or must be
+selected later by a measurement query; reusable geometry procedures can
+usually leave their internal objects anonymous. Bare identifiers are
+literal labels. Arbitrary expressions such as `name (gensym 'fixture)` are
+accepted too.
 
 Solids are centered at the turtle by default. `cuboid` uses length, width, and
 height in the turtle's forward, left, and up directions. `sphere`, `cylinder`,
@@ -654,7 +671,7 @@ Imported STL geometry uses the same placement rules:
 
 ```racket
 (with-scale millimeter
-  (stl enclosure path "enclosure.stl" anchor bottom))
+  (stl name enclosure path "enclosure.stl" anchor bottom))
 ```
 
 STL files do not encode units. Antenna Turtle treats their raw coordinates as
@@ -666,6 +683,66 @@ To place a Yagi element or another arbitrary solid by its midpoint, either const
 centered Manifold primitive such as `(m:cylinder length radius #:center? #t)`
 or use `anchor center` in its `body` form. The latter works for arbitrary CSG
 results by placing the center of their bounding box on the current turtle.
+
+Boolean solids can be authored without dropping into the Manifold API. A
+`with-body` scope collects unnamed primitives, unions its top-level shapes, and
+registers only the completed body:
+
+```racket
+(with-scale millimeters
+  (with-body name shield
+    material aluminum
+    metal-thickness 2
+    precedence 100
+    anchor bottom
+    (difference
+      (cuboid size '(80 50 12) anchor bottom)
+      (from-here
+        (move up 2)
+        (cuboid size '(76 46 10) anchor bottom)))))
+```
+
+Use `union` to group operands explicitly, `difference` for a base followed by
+one or more cutters, `intersect` for common volume, and `hull` for a convex
+envelope. Turtle movement and turning position each `cuboid`, `sphere`,
+`cylinder`, `capsule`, or imported `stl`. Primitive and completed-body anchors
+use the same bounding-box rules as ordinary solids. The turtle returns to its
+entry state when `with-body` finishes.
+
+`(scale factor solid-form ...)` uniformly scales those forms about the current
+turtle point. The existing `(scale factor)` call still changes the scale of
+subsequent movement and geometry. Nonuniform stretching is intentionally left
+for a later revision.
+
+PCB traces can be drawn directly with turtle movement instead of assembling a
+chain of centered rectangles:
+
+```racket
+(with-scale millimeters
+  (with-traces 3
+    material copper
+    thickness 0.035
+    (move forward 20)
+    (turn left 45)
+    (move forward 12)
+    (turn left 135)
+    (move forward 8)))
+```
+
+One `with-traces` scope creates one constant-width conducting sheet. Arbitrary
+turn angles are supported, with mitered corners and a default miter limit of
+four; use `join bevel` or change `miter-limit` when desired. A path that
+returns to its starting point becomes a hollow closed trace. Open paths have
+butt ends, and separate trace scopes are not joined automatically.
+
+Trace motion must remain in the globally aligned XY, XZ, or YZ plane in which
+the scope began. Branching operations such as `from-here`, turtle-stack
+operations, nested traces, and active wire drawing are rejected with a
+specific error because they cannot describe one continuous swept centerline.
+OpenEMS uses ideal metal-edge treatment on wholly orthogonal outlines. Oblique
+outlines receive width-based Yee-grid refinement—three cells across in the
+`draft` profile and five in `standard`—and mixed outlines combine both modes.
+Oblique edges remain stair-stepped, so convergence testing is prudent.
 
 Planar rectangular conductors may request openEMS metal-edge meshing with
 `mesh-edges metal` in the `sheet` form. This replaces an exact in-plane edge
@@ -753,6 +830,32 @@ implementation requires the same reference impedance at every port.
 (show-s-parameter-phase two-port)
 ```
 
+Plot legends appear beside the plotting viewport and can be hidden with the
+window's **Show legend** checkbox. Every plotting procedure also accepts
+`#:legend? #f` when the legend should start collapsed. Right-click or
+right-drag over a 2-D plot places a cursor at the nearest measured sample; its
+full value appears in the two-line status area below the plot rather than in a
+floating label that can cover or overflow the data.
+
+Simulation values can be queried directly without unpacking backend structs:
+
+```racket
+(impedance-at two-port 2400 #:port 'input #:interpolate? #t)
+(s-parameter-db-at two-port 2400
+                   #:from 'input #:to 'output #:interpolate? #t)
+
+(define pattern (radiation-pattern two-port))
+(maximum-gain pattern)
+(maximum-gain-direction pattern) ; '(azimuth elevation)
+(front-to-back-ratio pattern)
+(front-to-side-ratio pattern)
+```
+
+Named ports remove any need to remember S-matrix indexes. Exact samples are
+used by default; interpolation must be requested explicitly and never extends
+beyond the sampled range. See the measurement-query section of `docs/API.md`
+for impedance, matching, polarization, field, and discovery helpers.
+
 The familiar network plots show the diagonal reflection and active input
 impedance for each named port. Radiation postprocessing accepts
 `#:excitation 'port-name` to select the independently recorded field data.
@@ -787,7 +890,7 @@ Use `loss-tangent` on a dielectric for the normal narrowband OpenEMS model:
 ```racket
 (define fr4
   (dielectric name fr4 er 4.4 loss-tangent 0.02))
-(sheet rect trace size '(40 3) material copper thickness 0.035)
+(sheet rect name trace size '(40 3) material copper thickness 0.035)
 ```
 
 The tangent defaults to the model frequency; `loss-frequency` overrides that

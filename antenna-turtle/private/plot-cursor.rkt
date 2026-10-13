@@ -6,10 +6,15 @@
 (provide
  (struct-out cursor-series)
  (struct-out cursor-selection)
+ (struct-out plot-legend-item)
  nearest-cursor-sample)
 
 (struct cursor-series (label points color) #:transparent)
 (struct cursor-selection (series point distance-squared) #:transparent)
+;; A deliberately small, backend-independent legend description. Keeping it
+;; outside the GUI module lets headless renderer builders describe legends
+;; without loading racket/gui/base.
+(struct plot-legend-item (label color style kind) #:transparent)
 
 (define (finite-point? point)
   (and (vector? point)

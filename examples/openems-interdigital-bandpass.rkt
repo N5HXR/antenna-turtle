@@ -47,7 +47,7 @@
                                       ,(/ substrate-height 2))))
 (m:solid-close! raw-substrate)
 
-(body substrate
+(body name substrate
       geometry substrate
       material substrate-material
       priority 10
@@ -60,7 +60,7 @@
     (,x-low ,y-high)))
 
 ;; Continuous ground plane at z=0.
-(sheet ground
+(sheet name ground
        points (rectangle (- (/ board-width 2)) (/ board-width 2)
                          board-y-min board-y-max)
        material copper
@@ -74,13 +74,13 @@
              (+ center (/ resonator-width 2))
              y-low (+ y-low resonator-length)))
 
-(sheet resonator-1
+(sheet name resonator-1
        points (resonator-points left-center 0)
        material copper priority 20)
-(sheet resonator-2
+(sheet name resonator-2
        points (resonator-points middle-center end-offset)
        material copper priority 20)
-(sheet resonator-3
+(sheet name resonator-3
        points (resonator-points right-center 0)
        material copper priority 20)
 
@@ -88,12 +88,12 @@
 (define outer-edge (+ pitch (/ resonator-width 2)))
 (define input-x (- (- outer-edge) feed-length))
 (define output-x (+ outer-edge feed-length))
-(sheet input-feed
+(sheet name input-feed
        points (rectangle input-x left-center
                          (- tap-height (/ feed-width 2))
                          (+ tap-height (/ feed-width 2)))
        material copper priority 20)
-(sheet output-feed
+(sheet name output-feed
        points (rectangle right-center output-x
                          (- tap-height (/ feed-width 2))
                          (+ tap-height (/ feed-width 2)))

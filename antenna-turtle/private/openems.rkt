@@ -78,7 +78,8 @@
   #:transparent)
 
 (struct exported-sheet
-  (name material priority points-2d transform minimum maximum mesh-edges thickness)
+  (name material priority points-2d transform minimum maximum mesh-edges thickness
+        polygons-2d boundaries-2d trace-width)
   #:transparent)
 
 (struct exported-mesh-constraint
@@ -115,6 +116,7 @@
 (define default-maximum-timesteps 100000)
 (define default-end-criteria 1e-5)
 (define default-minimum-dielectric-cells 4)
+(define default-minimum-trace-cells 3)
 (define identity-rigid-transform
   '((1 0 0 0) (0 1 0 0) (0 0 1 0)))
 (define-runtime-path openems-progress-path "openems-progress.rkt")
@@ -486,6 +488,7 @@
             'null)
         'points_2d (map (lambda (point) (map exact->inexact point))
                         (exported-sheet-points-2d sheet))
+        'polygon_count (length (exported-sheet-polygons-2d sheet))
         'local_to_solver_transform (matrix->lists (exported-sheet-transform sheet))
         'minimum (map exact->inexact (exported-sheet-minimum sheet))
         'maximum (map exact->inexact (exported-sheet-maximum sheet))
@@ -573,8 +576,17 @@
 
 (define (transform-and-export-sheets transform)
   (for/list ([sheet (in-list (model-sheets))])
-    (define points (map (lambda (point) (transform-point transform point))
-                        (planar-sheet-points sheet)))
+    (define polygons
+      (for/list ([polygon (in-list (planar-sheet-polygons sheet))])
+        (map (lambda (point) (transform-point transform point)) polygon)))
+    (define boundaries
+      (for/list ([boundary (in-list (planar-sheet-boundaries sheet))])
+        (map (lambda (point) (transform-point transform point)) boundary)))
+    ;; Use the sheet's authoritative outline to establish a stable local
+    ;; frame. Its fill polygons may have been triangulated for concavity.
+    (define points
+      (map (lambda (point) (transform-point transform point))
+           (planar-sheet-points sheet)))
     (define origin (first points))
     (define u (normalize 'openems-sweep (list-subtract (second points) origin)))
     (define transformed-normal
@@ -587,22 +599,31 @@
       (for/list ([point (in-list points)])
         (define offset (list-subtract point origin))
         (list (dot offset u) (dot offset v))))
+    (define (project-polygon polygon)
+      (for/list ([point (in-list polygon)])
+        (define offset (list-subtract point origin))
+        (list (dot offset u) (dot offset v))))
+    (define polygons-2d (map project-polygon polygons))
+    (define boundaries-2d (map project-polygon boundaries))
     ;; The polygon lives in local z=0, so the transform's basis columns are u,
     ;; v, and n; csx-matrix-string serializes the matrix row-major for CSXCAD.
     (define local-to-solver
       (list (list (first u) (first v) (first transformed-normal) (first origin))
             (list (second u) (second v) (second transformed-normal) (second origin))
             (list (third u) (third v) (third transformed-normal) (third origin))))
+    (define all-points (append* polygons))
     (define minimum
-      (for/list ([axis (in-range 3)]) (apply min (map (lambda (p) (list-ref p axis)) points))))
+      (for/list ([axis (in-range 3)]) (apply min (map (lambda (p) (list-ref p axis)) all-points))))
     (define maximum
-      (for/list ([axis (in-range 3)]) (apply max (map (lambda (p) (list-ref p axis)) points))))
+      (for/list ([axis (in-range 3)]) (apply max (map (lambda (p) (list-ref p axis)) all-points))))
     (exported-sheet (planar-sheet-name sheet)
                     (planar-sheet-material sheet)
                     (or (planar-sheet-priority sheet) 10)
                     points-2d local-to-solver minimum maximum
                     (planar-sheet-mesh-edges sheet)
-                    (planar-sheet-thickness sheet))))
+                    (planar-sheet-thickness sheet)
+                    polygons-2d boundaries-2d
+                    (planar-sheet-trace-width sheet))))
 
 (define (geometry-minimum geometry)
   (if (exported-body? geometry)
@@ -778,6 +799,12 @@
     (transform-point (exported-sheet-transform sheet)
                      (point3 (first point) (second point) 0))))
 
+(define (exported-sheet-boundaries-3d sheet)
+  (for/list ([boundary (in-list (exported-sheet-boundaries-2d sheet))])
+    (for/list ([point (in-list boundary)])
+      (transform-point (exported-sheet-transform sheet)
+                       (point3 (first point) (second point) 0)))))
+
 (define (near? first second [scale 1])
   (<= (abs (- first second)) (* 1e-9 (max 1 scale))))
 
@@ -801,30 +828,88 @@
      'openems-sweep
      "metal edge treatment requires an axis-aligned planar sheet"
      "sheet" (exported-sheet-name sheet)))
-  (define normal-axis (first flat-axes))
-  (define in-plane-axes (remove normal-axis '(0 1 2)))
-  (define points (exported-sheet-points-3d sheet))
-  (unless
-      (and (= (length points) 4)
-           (for/and ([point (in-list points)])
-             (for/and ([axis (in-list in-plane-axes)])
-               (define coordinate (list-ref point axis))
-               (or (near? coordinate (list-ref minimum axis) scale)
-                   (near? coordinate (list-ref maximum axis) scale))))
-           (= (length
-               (remove-duplicates
-                (for/list ([point (in-list points)])
-                  (for/list ([axis (in-list in-plane-axes)])
-                    (if (near? (list-ref point axis)
-                               (list-ref minimum axis) scale)
-                        'low
-                        'high)))))
-              4))
-    (raise-arguments-error
-     'openems-sweep
-     "metal edge treatment currently requires a rectangular sheet"
-     "sheet" (exported-sheet-name sheet)))
-  normal-axis)
+  (first flat-axes))
+
+(define (boundary-segments-3d sheet)
+  (append*
+   (for/list ([boundary (in-list (exported-sheet-boundaries-3d sheet))])
+     (map list boundary (append (rest boundary) (list (first boundary)))))))
+
+(define (segment-varying-axes segment)
+  (define first-point (first segment))
+  (define second-point (second segment))
+  (define scale
+    (max 1 (apply max (map abs (append first-point second-point)))))
+  (for/list ([axis (in-range 3)]
+             #:unless (near? (list-ref first-point axis)
+                             (list-ref second-point axis) scale))
+    axis))
+
+(define (sheet-has-oblique-edges? sheet)
+  (for/or ([segment (in-list (boundary-segments-3d sheet))])
+    (> (length (segment-varying-axes segment)) 1)))
+
+(define (trace-mesh-treatment sheet)
+  (define segments (boundary-segments-3d sheet))
+  (define aligned-count
+    (count (lambda (segment)
+             (= (length (segment-varying-axes segment)) 1))
+           segments))
+  (cond [(= aligned-count (length segments)) 'ideal-orthogonal]
+        [(zero? aligned-count) 'oblique]
+        [else 'hybrid]))
+
+(define (point-in-loop? point loop)
+  (define x (first point))
+  (define y (second point))
+  (odd?
+   (for/sum ([a (in-list loop)]
+             [b (in-list (append (rest loop) (list (first loop))))])
+     (if (and (not (eq? (> (second a) y) (> (second b) y)))
+              (< x (+ (first a)
+                      (* (- y (second a))
+                         (/ (- (first b) (first a))
+                            (- (second b) (second a)))))))
+         1 0))))
+
+(define (point-in-sheet-region? sheet point-3d)
+  (define transform (exported-sheet-transform sheet))
+  (define origin (map fourth transform))
+  (define u (map first transform))
+  (define v (map second transform))
+  (define offset (map - point-3d origin))
+  (define point-2d (list (dot offset u) (dot offset v)))
+  (odd?
+   (for/sum ([boundary (in-list (exported-sheet-boundaries-2d sheet))])
+     (if (point-in-loop? point-2d boundary) 1 0))))
+
+(define (metal-boundary-edges-for-axis sheet axis resolution)
+  (define plane-axis (metal-sheet-plane-axis sheet))
+  (if (= axis plane-axis)
+      '()
+      (for/list ([segment (in-list (boundary-segments-3d sheet))]
+                 #:when
+                 (let ([varying (segment-varying-axes segment)])
+                   (and (= (length varying) 1)
+                        (not (= (first varying) axis)))))
+        (define first-point (first segment))
+        (define second-point (second segment))
+        (define coordinate (list-ref first-point axis))
+        (define midpoint (map (lambda (a b) (/ (+ a b) 2))
+                              first-point second-point))
+        (define probe-distance (/ resolution 20))
+        (define plus (list-set midpoint axis (+ coordinate probe-distance)))
+        (define minus (list-set midpoint axis (- coordinate probe-distance)))
+        (define plus-inside? (point-in-sheet-region? sheet plus))
+        (define minus-inside? (point-in-sheet-region? sheet minus))
+        (list sheet
+              (cond [(and plus-inside? (not minus-inside?)) 'low]
+                    [(and minus-inside? (not plus-inside?)) 'high]
+                    [else
+                     ;; Degenerate probes can occur at a nearby corner.  The
+                     ;; symmetric exact-edge fallback is safer than guessing.
+                     'exact])
+              coordinate))))
 
 (define (metal-edge-sheets geometry)
   (filter (lambda (item)
@@ -864,19 +949,17 @@
     (append*
      (for/list ([sheet (in-list (metal-edge-sheets geometry))]
                 #:unless (= axis (metal-sheet-plane-axis sheet)))
-       (list (list sheet 'low
-                   (list-ref (exported-sheet-minimum sheet) axis))
-             (list sheet 'high
-                   (list-ref (exported-sheet-maximum sheet) axis))))))
+       (metal-boundary-edges-for-axis sheet axis resolution))))
   (define-values (_existing added)
     (for/fold ([existing fixed-values] [added '()]) ([edge (in-list edges)])
       (match-define (list sheet side coordinate) edge)
       (define candidates
-        (if (eq? side 'low)
-            (list (- coordinate (* 2/3 resolution))
-                  (+ coordinate (/ resolution 3)))
-            (list (- coordinate (/ resolution 3))
-                  (+ coordinate (* 2/3 resolution)))))
+        (case side
+          [(low) (list (- coordinate (* 2/3 resolution))
+                       (+ coordinate (/ resolution 3)))]
+          [(high) (list (- coordinate (/ resolution 3))
+                        (+ coordinate (* 2/3 resolution)))]
+          [else (list coordinate)]))
       (define conflict?
         (for/or ([candidate (in-list candidates)])
           (for/or ([line (in-list existing)])
@@ -898,6 +981,23 @@
                 (values (cons coordinate existing) (cons coordinate added))))
           (values (append candidates existing) (append candidates added)))))
   added)
+
+(define (trace-refinement-axis-values geometry axis minimum-trace-cells)
+  (append*
+   (for/list ([sheet (in-list (metal-edge-sheets geometry))]
+              #:when (and (exported-sheet-trace-width sheet)
+                          (sheet-has-oblique-edges? sheet))
+              #:unless (= axis (metal-sheet-plane-axis sheet)))
+     (define low (list-ref (exported-sheet-minimum sheet) axis))
+     (define high (list-ref (exported-sheet-maximum sheet) axis))
+     (define target (/ (exported-sheet-trace-width sheet)
+                       minimum-trace-cells))
+     (define count (max 1 (ceiling (/ (- high low) target))))
+     ;; These are width-resolution helpers, not geometric boundary locks.
+     ;; Keeping the bounding endpoints out avoids putting an exact grid line
+     ;; back on an orthogonal edge that already received a 1/3--2/3 pair.
+     (for/list ([index (in-range 1 count)])
+       (+ low (* (- high low) (/ index count)))))))
 
 (define (dielectric-subdivision-values geometry axis max-resolution
                                        minimum-dielectric-cells)
@@ -931,9 +1031,33 @@
              #:when (member axis (exported-mesh-constraint-axes constraint)))
     (list-ref (exported-mesh-constraint-solver-point constraint) axis)))
 
+;; Turtle motion, rotations, and independently transformed geometry can arrive
+;; at the same intended coordinate through different floating-point operation
+;; sequences.  Passing both representations to SmoothMeshLines makes it grade
+;; outward from an effectively zero-width cell, sometimes adding hundreds of
+;; spurious lines.  Coalesce only differences consistent with accumulated
+;; binary64 roundoff.  A wavelength-derived tolerance would be unsafe here:
+;; electrically small gaps and metal thicknesses may be intentional.
+(define binary64-epsilon (expt 2.0 -52))
+
+(define (mesh-coordinate-roundoff-close? left right max-resolution)
+  (define numerical-scale
+    (max (abs left) (abs right) max-resolution))
+  (<= (abs (- left right))
+      (* 128 binary64-epsilon numerical-scale)))
+
+(define (coalesce-nearby-mesh-values values max-resolution)
+  (reverse
+   (for/fold ([kept '()]) ([value (in-list (sort values <))])
+     (if (and (pair? kept)
+              (mesh-coordinate-roundoff-close?
+               (car kept) value max-resolution))
+         kept
+         (cons value kept)))))
+
 (define (critical-axis-values geometry ports components constraints axis domain-min domain-max
                               max-resolution minimum-dielectric-cells
-                              metal-edge-resolution)
+                              minimum-trace-cells metal-edge-resolution)
   (define port-values
     (append*
      (for/list ([port (in-list ports)])
@@ -953,13 +1077,13 @@
             (ordinary-geometry-axis-values geometry axis)
             (dielectric-subdivision-values
              geometry axis max-resolution minimum-dielectric-cells)))
-  (sort
-   (remove-duplicates
-    (append fixed-values
-            (metal-edge-axis-values
-             geometry axis metal-edge-resolution fixed-values))
-    =)
-   <))
+  (coalesce-nearby-mesh-values
+   (append fixed-values
+           (trace-refinement-axis-values
+            geometry axis minimum-trace-cells)
+           (metal-edge-axis-values
+            geometry axis metal-edge-resolution fixed-values))
+   max-resolution))
 
 (define (validate-mesh-constraint-domain! constraints domain-min domain-max)
   (for ([constraint (in-list constraints)])
@@ -1129,11 +1253,13 @@
                     (conductor-effective-sheet-thickness
                      material (exported-sheet-thickness sheet)
                      (model-frequency))))])
-          (line "sheet_points_~a = ~a;" index
-                (octave-point-matrix (exported-sheet-points-2d sheet)))
-          (line "CSX = AddPolygon(CSX, '~a', ~a, 2, 0, sheet_points_~a, 'Transform', {'Matrix', '~a'});"
-                property (exported-sheet-priority sheet) index
-                (csx-matrix-string (exported-sheet-transform sheet))))
+          (for ([polygon (in-list (exported-sheet-polygons-2d sheet))]
+                [polygon-index (in-naturals 1)])
+            (line "sheet_points_~a_~a = ~a;" index polygon-index
+                  (octave-point-matrix polygon))
+            (line "CSX = AddPolygon(CSX, '~a', ~a, 2, 0, sheet_points_~a_~a, 'Transform', {'Matrix', '~a'});"
+                  property (exported-sheet-priority sheet) index polygon-index
+                  (csx-matrix-string (exported-sheet-transform sheet)))))
         (for ([component (in-list components)]
               [priority (in-list component-priorities)]
               [component-index (in-naturals 1)])
@@ -1984,6 +2110,8 @@
                        #:minimum-dielectric-cells
                        [minimum-dielectric-cells
                         default-minimum-dielectric-cells]
+                       #:minimum-trace-cells
+                       [minimum-trace-cells default-minimum-trace-cells]
                        #:metal-edge-resolution
                        [requested-metal-edge-resolution #f]
                        #:mesh-grading [mesh-grading 1.4]
@@ -2003,6 +2131,7 @@
       #:steps steps
       #:cells-per-wavelength cells-per-wavelength
       #:minimum-dielectric-cells minimum-dielectric-cells
+      #:minimum-trace-cells minimum-trace-cells
       #:metal-edge-resolution requested-metal-edge-resolution
       #:mesh-grading mesh-grading
       #:padding-wavelengths padding-wavelengths
@@ -2021,6 +2150,8 @@
                        #:minimum-dielectric-cells
                        [minimum-dielectric-cells
                         default-minimum-dielectric-cells]
+                       #:minimum-trace-cells
+                       [minimum-trace-cells default-minimum-trace-cells]
                        #:metal-edge-resolution
                        [requested-metal-edge-resolution #f]
                        #:mesh-grading [mesh-grading 1.4]
@@ -2045,6 +2176,9 @@
   (unless (exact-positive-integer? minimum-dielectric-cells)
     (raise-argument-error
      'openems-sweep "exact-positive-integer?" minimum-dielectric-cells))
+  (unless (exact-positive-integer? minimum-trace-cells)
+    (raise-argument-error
+     'openems-sweep "exact-positive-integer?" minimum-trace-cells))
   (unless (or (not requested-metal-edge-resolution)
               (and (finite-real? requested-metal-edge-resolution)
                    (positive? requested-metal-edge-resolution)))
@@ -2103,6 +2237,19 @@
   (validate-component-alignment! components)
   (define bodies (transform-and-export-bodies directory transform))
   (define sheets (transform-and-export-sheets transform))
+  (for ([sheet (in-list sheets)]
+        #:when (exported-sheet-trace-width sheet))
+    (define treatment (trace-mesh-treatment sheet))
+    (printf "OpenEMS trace mesh: ~a -- ~a~a\n"
+            (exported-sheet-name sheet)
+            (case treatment
+              [(ideal-orthogonal) "ideal orthogonal metal-edge treatment"]
+              [(hybrid) "hybrid orthogonal/oblique treatment"]
+              [else "oblique width-based Cartesian refinement"])
+            (if (eq? treatment 'ideal-orthogonal)
+                ""
+                (format "; target ~a cells across width"
+                        minimum-trace-cells))))
   (for ([body (in-list bodies)]
         #:when (em-material-loss-spec (exported-body-material body)))
     (define material (exported-body-material body))
@@ -2182,15 +2329,18 @@
   (define critical-x
     (critical-axis-values geometry ports components mesh-constraints 0
                           (first domain-min) (first domain-max) max-resolution
-                          minimum-dielectric-cells metal-edge-resolution))
+                          minimum-dielectric-cells minimum-trace-cells
+                          metal-edge-resolution))
   (define critical-y
     (critical-axis-values geometry ports components mesh-constraints 1
                           (second domain-min) (second domain-max) max-resolution
-                          minimum-dielectric-cells metal-edge-resolution))
+                          minimum-dielectric-cells minimum-trace-cells
+                          metal-edge-resolution))
   (define critical-z
     (critical-axis-values geometry ports components mesh-constraints 2
                           (third domain-min) (third domain-max) max-resolution
-                          minimum-dielectric-cells metal-edge-resolution))
+                          minimum-dielectric-cells minimum-trace-cells
+                          metal-edge-resolution))
   (define port-priorities
     (map (lambda (port) (derive-port-priority geometry port)) ports))
   (define component-priorities
@@ -2282,6 +2432,7 @@
      'mesh (hash 'policy "fixed-critical-coordinate-poc"
                  'minimum_dielectric_cells_per_extent
                  minimum-dielectric-cells
+                 'minimum_trace_cells_across minimum-trace-cells
                  'metal_edge_resolution_m metal-edge-resolution
                  'critical_x (map exact->inexact critical-x)
                  'critical_y (map exact->inexact critical-y)

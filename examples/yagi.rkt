@@ -8,7 +8,7 @@
 ;; Keep each element's role, boom position, and total length together. LOOP
 ;; destructuring makes those columns explicit at the point of use.
 (define element-layout
-  (list (list 'reflector  0                    (* 0.52 wavelength))
+  (list (list 'reflector  0                   (* 0.52 wavelength))
         (list 'driven    (* 1/5 wavelength)   (* 0.48 wavelength))
         (list 'director  (* 2/5 wavelength)   (* 0.45 wavelength))))
 

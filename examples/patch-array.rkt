@@ -16,24 +16,24 @@
 
 (with-scale millimeters
   (with-material fr4
-    (cuboid substrate
+    (cuboid name substrate
       size substrate-size
       anchor bottom))
 
-  (sheet rect ground-plane
+  (sheet rect name ground-plane
     size (take substrate-size 2)
     mesh-edges exact)
 
   (from-here
     (move up substrate-height)
-    (sheet rect patch
+    (sheet rect name patch
       size patch-size
       mesh-edges metal))
 
   (from-here
     (move up (span (* 0.6 quarter-wave) millimeters))
     (with-scale 0.98
-      (cuboid pec
+      (cuboid name pec
         size (append patch-size '(2)))))
 
   ;; Ports are subordinate features placed in the turtle frame. Explicit

@@ -18,7 +18,7 @@
 (define feed-length 20)
 (define resonator-gap 4)
 (define copper-thickness 0.035)
-(define fr4 (dielectric name fr4 er 4.4 loss-tangent 0.017))
+(define fr4 (dielectric name fr4 er 4.4 loss-tangent 0.002))
 (define capacitors {2.2 * picofarads})
 
 (define shield-solid
@@ -41,10 +41,10 @@
 
 (with-scale millimeters
   (with-material fr4
-    (cuboid substrate
+    (cuboid name substrate
       size (list board-length board-width substrate-height)
       anchor bottom))
-  (sheet rect ground
+  (sheet rect name ground
     size (list board-length board-width)
     material copper
     thickness copper-thickness
@@ -91,7 +91,7 @@
       (port up name output gap substrate-height size '(2 2))))
 
   ;; Comment this body out to isolate board loss from enclosure loss/loading.
-  ;(body shield
+  ;(body name shield
   ;  geometry shield-solid
   ;  material aluminum
   ;  metal-thickness 2
@@ -101,14 +101,14 @@
 (show-solid-model)
 
 (when #f
-  (define long-draft
+  (define long-standard
     (derive-simulation-profile
-     draft #:name 'long-draft #:maximum-timesteps 1000000))
+     standard #:name 'long-draft #:maximum-timesteps 1000000))
   
   (define result
     (simulate engine openems
               sweep '(350 520)
-              profile long-draft
+              profile long-standard
               keep-artifacts #t))
 
   (show-smith-chart result)

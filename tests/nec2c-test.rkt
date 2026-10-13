@@ -11,6 +11,11 @@
                   cursor-series
                   cursor-selection-series
                   cursor-selection-point
+                  plot-legend-item
+                  plot-legend-item-label
+                  plot-legend-item-color
+                  plot-legend-item-style
+                  plot-legend-item-kind
                   nearest-cursor-sample)
          "../antenna-turtle/main.rkt")
 
@@ -73,6 +78,14 @@ REPORT
      101.8 4.1 values))
   (check-eq? (cursor-selection-series selection) first-series)
   (check-equal? (cursor-selection-point selection) (vector 102 4)))
+
+(test-case "headless plot legends preserve external panel presentation"
+  (define item (plot-legend-item "S21 (output <- input)"
+                                 "firebrick" 'short-dash 'line))
+  (check-equal? (plot-legend-item-label item) "S21 (output <- input)")
+  (check-equal? (plot-legend-item-color item) "firebrick")
+  (check-eq? (plot-legend-item-style item) 'short-dash)
+  (check-eq? (plot-legend-item-kind item) 'line))
 
 (test-case "NEC2C report parser preserves multiple feeds and polarization"
   (define report (parse-nec2c-output parser-fixture))

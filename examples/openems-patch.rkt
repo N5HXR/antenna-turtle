@@ -31,12 +31,12 @@
                      0)))
 (m:solid-close! raw-substrate)
 
-(body substrate
+(body name substrate
       geometry centered-substrate
       material substrate-material
       priority 10)
 
-(sheet ground-plane
+(sheet name ground-plane
        points `((,(- (/ substrate-width 2)) ,(- (/ substrate-length 2)))
                 (,(+ (/ substrate-width 2)) ,(- (/ substrate-length 2)))
                 (,(+ (/ substrate-width 2)) ,(+ (/ substrate-length 2)))
@@ -46,7 +46,7 @@
        mesh-edges exact)
 
 (move up substrate-height)
-(sheet patch
+(sheet name patch
        points `((,(- (/ patch-width 2)) ,(- (/ patch-length 2)))
                 (,(+ (/ patch-width 2)) ,(- (/ patch-length 2)))
                 (,(+ (/ patch-width 2)) ,(+ (/ patch-length 2)))

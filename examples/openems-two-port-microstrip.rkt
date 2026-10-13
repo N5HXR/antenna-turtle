@@ -23,12 +23,12 @@
 (define substrate
   (m:cube board-length board-width substrate-height #:center? #t))
 
-(body substrate
+(body name substrate
       geometry substrate
       material substrate-material
       priority 10)
 
-(sheet ground
+(sheet name ground
        points `((,(- (/ board-length 2)) ,(- (/ board-width 2)))
                 (,(+ (/ board-length 2)) ,(- (/ board-width 2)))
                 (,(+ (/ board-length 2)) ,(+ (/ board-width 2)))
@@ -37,7 +37,7 @@
        priority 20)
 
 (move up substrate-height)
-(sheet trace
+(sheet name trace
        points `((,(- (/ board-length 2)) ,(- (/ trace-width 2)))
                 (,(+ (/ board-length 2)) ,(- (/ trace-width 2)))
                 (,(+ (/ board-length 2)) ,(+ (/ trace-width 2)))

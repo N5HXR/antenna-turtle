@@ -14,6 +14,7 @@
    frequency-steps
    cells-per-wavelength
    minimum-dielectric-cells
+   minimum-trace-cells
    metal-edge-resolution
    mesh-grading
    padding-wavelengths
@@ -22,7 +23,8 @@
    wire-segments)
   #:guard
   (lambda (name frequency-steps cells-per-wavelength
-                minimum-dielectric-cells metal-edge-resolution mesh-grading
+                minimum-dielectric-cells minimum-trace-cells
+                metal-edge-resolution mesh-grading
                 padding-wavelengths maximum-timesteps end-criteria
                 wire-segments type-name)
     (define (finite-positive? value)
@@ -36,6 +38,9 @@
     (unless (exact-positive-integer? minimum-dielectric-cells)
       (raise-argument-error
        type-name "exact-positive-integer?" minimum-dielectric-cells))
+    (unless (exact-positive-integer? minimum-trace-cells)
+      (raise-argument-error
+       type-name "exact-positive-integer?" minimum-trace-cells))
     (unless (or (not metal-edge-resolution)
                 (finite-positive? metal-edge-resolution))
       (raise-argument-error
@@ -52,7 +57,8 @@
     (unless (and (exact-integer? wire-segments) (>= wire-segments 3))
       (raise-argument-error type-name "exact-integer? >= 3" wire-segments))
     (values name frequency-steps cells-per-wavelength
-            minimum-dielectric-cells metal-edge-resolution mesh-grading
+            minimum-dielectric-cells minimum-trace-cells
+            metal-edge-resolution mesh-grading
             padding-wavelengths maximum-timesteps end-criteria wire-segments))
   #:transparent)
 
@@ -62,6 +68,7 @@
    101
    20
    4
+   3
    #f
    1.4
    0.5
@@ -75,6 +82,7 @@
    101
    30
    6
+   5
    #f
    1.4
    0.5
@@ -93,6 +101,9 @@
          #:minimum-dielectric-cells
          [minimum-dielectric-cells
           (simulation-profile-minimum-dielectric-cells base)]
+         #:minimum-trace-cells
+         [minimum-trace-cells
+          (simulation-profile-minimum-trace-cells base)]
          #:metal-edge-resolution
          [metal-edge-resolution
           (simulation-profile-metal-edge-resolution base)]
@@ -113,5 +124,6 @@
      'derive-simulation-profile "simulation-profile?" base))
   (simulation-profile
    name frequency-steps cells-per-wavelength minimum-dielectric-cells
+   minimum-trace-cells
    metal-edge-resolution mesh-grading padding-wavelengths
    maximum-timesteps end-criteria wire-segments))

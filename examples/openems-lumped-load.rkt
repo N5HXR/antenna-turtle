@@ -15,17 +15,17 @@
 
 (with-scale millimeters
   (with-material fr4
-    (cuboid substrate
+    (cuboid name substrate
       size (list board-length board-width substrate-height)
       anchor bottom))
 
-  (sheet rect ground
+  (sheet rect name ground
     size (list board-length board-width)
     precedence 20)
 
   (from-here
     (move up substrate-height)
-    (sheet rect trace
+    (sheet rect name trace
       size (list trace-length trace-width)
       precedence 20
       mesh-edges metal))

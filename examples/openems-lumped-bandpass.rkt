@@ -35,10 +35,10 @@
 
 (with-scale millimeters
   (with-material fr4
-    (cuboid substrate
+    (cuboid name substrate
       size (list board-length board-width substrate-height)
       anchor bottom))
-  (sheet rect ground
+  (sheet rect name ground
     size (list board-length board-width)
     precedence 20)
 
@@ -77,7 +77,7 @@
           up (/ substrate-height 2))
     (port up name output gap substrate-height size '(2 2)))
 
-  (body shield
+  (body name shield
       geometry shield
       material pec
       precedence 100)

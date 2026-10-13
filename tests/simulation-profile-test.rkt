@@ -7,12 +7,14 @@
   (check-equal? (simulation-profile-name draft) 'draft)
   (check-equal? (simulation-profile-cells-per-wavelength draft) 20)
   (check-equal? (simulation-profile-minimum-dielectric-cells draft) 4)
+  (check-equal? (simulation-profile-minimum-trace-cells draft) 3)
   (check-equal? (simulation-profile-maximum-timesteps draft) 100000)
   (check-equal? (simulation-profile-end-criteria draft) 1e-4)
 
   (check-equal? (simulation-profile-name standard) 'standard)
   (check-equal? (simulation-profile-cells-per-wavelength standard) 30)
   (check-equal? (simulation-profile-minimum-dielectric-cells standard) 6)
+  (check-equal? (simulation-profile-minimum-trace-cells standard) 5)
   (check-equal? (simulation-profile-maximum-timesteps standard) 250000)
   (check-equal? (simulation-profile-end-criteria standard) 1e-5))
 

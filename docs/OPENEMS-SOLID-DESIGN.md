@@ -75,7 +75,7 @@ Bodies and sheets use the current turtle coordinate frame by default. A body
 form is pair-wise so optional settings remain extensible:
 
 ```racket
-(body radiator
+(body name radiator
   material pec
   geometry radiator-shape
   priority 20

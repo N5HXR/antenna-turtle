@@ -1,8 +1,9 @@
 #lang racket
 
-(require (except-in "private/core.rkt" feed cylinder)
+(require (except-in "private/core.rkt" feed cylinder scale)
          (except-in "private/solid-core.rkt" dielectric conductor)
          "private/solid-dsl.rkt"
+         "private/solid-trace-dsl.rkt"
          "private/solid-primitives.rkt"
          "private/electrical-units.rkt"
          "private/material-catalog.rkt"
@@ -11,6 +12,7 @@
          "private/solid-view.rkt"
          "private/openems.rkt"
          "private/openems-power.rkt"
+         "private/measurement.rkt"
          "private/export-nec2c.rkt"
          "private/export-mmana.rkt"
          "private/export-matlab.rkt"
@@ -34,6 +36,7 @@
  (all-from-out "private/nec2c-view.rkt")
  (all-from-out "private/solid-core.rkt")
  (all-from-out "private/solid-dsl.rkt")
+ (all-from-out "private/solid-trace-dsl.rkt")
  (all-from-out "private/solid-primitives.rkt")
  (all-from-out "private/electrical-units.rkt")
  (all-from-out "private/material-catalog.rkt")
@@ -41,6 +44,7 @@
  (all-from-out "private/simulation-dsl.rkt")
  (all-from-out "private/openems.rkt")
  (all-from-out "private/openems-power.rkt")
+ (all-from-out "private/measurement.rkt")
  wavelength
  half-wave
  quarter-wave
@@ -53,6 +57,7 @@
              call-with-warp call-with-surface call-with-reflection
              call-with-radial-repeat radial-iterations-value
              register-model-reset-hook! current-turtle-affine-transform
+             current-turtle-event-handler current-wire-active?
              call-with-pen call-with-push)
  model
  turn

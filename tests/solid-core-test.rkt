@@ -19,7 +19,7 @@
   (turn left 90)
   (define source (m:cube 1))
   (define placed
-    (body radiator
+    (body name radiator
       geometry source))
   (define-values (minimum maximum) (body-bounds placed))
   (check-= (first minimum) 1 1e-12)
@@ -42,7 +42,7 @@
   (move up 20)
   (define source (m:cube 2))
   (define placed
-    (body enclosure
+    (body name enclosure
       geometry source
       coordinates world
       priority 7))
@@ -58,7 +58,7 @@
   (move forward 5)
   (define source (m:cylinder 4 1 #:segments 16))
   (define placed
-    (body element
+    (body name element
       geometry source
       anchor center))
   (define-values (minimum maximum) (body-bounds placed))
@@ -122,7 +122,7 @@
   (turn left 90)
   (define outline '((-1 -2) (1 -2) (1 2) (-1 2)))
   (define placed-sheet
-    (sheet reflector
+    (sheet name reflector
       points outline
       material pec
       mesh-edges metal))
@@ -131,7 +131,10 @@
   (check-equal? (planar-sheet-mesh-edges placed-sheet) 'metal)
 
   (define placed-port (port forward priority 17))
-  (check-equal? (lumped-port-name placed-port) "port-1")
+  (check-true (symbol? (lumped-port-name placed-port)))
+  (check-false (symbol-interned? (lumped-port-name placed-port)))
+  (check-true
+   (regexp-match? #rx"^port" (symbol->string (lumped-port-name placed-port))))
   (check-equal? (lumped-port-impedance placed-port) 75)
   (check-equal? (lumped-port-center placed-port) (point3 3 0 0))
   (check-equal? (lumped-port-direction placed-port) (point3 0 1 0))
@@ -146,8 +149,8 @@
   (reset-model!)
   (with-wire (move forward 1))
   (define source (m:cube 1))
-  (body radome geometry source)
-  (sheet ground points '((0 0) (1 0) (0 1)))
+  (body name radome geometry source)
+  (sheet name ground points '((0 0) (1 0) (0 1)))
   (port up name "feed")
   (move forward 0.5)
   (lumped-element up name load resistance (* 50 ohms)
@@ -228,7 +231,7 @@
 (test-case "reset-model clears both wire and physical geometry"
   (reset-model!)
   (define source (m:cube 1))
-  (body block geometry source)
+  (body name block geometry source)
   (port right)
   (mesh-plane yz)
   (with-wire (move up 1))
@@ -246,18 +249,18 @@
    #rx"cannot place solid geometry inside with-warp"
    (lambda ()
      (with-warp (lambda (x y z) (list x y z))
-       (body warped geometry source))))
+       (body name warped geometry source))))
   (check-exn
    #rx"cannot place solid geometry inside radial-repeat"
    (lambda ()
      (radial-repeat 2
-       (body repeated geometry source))))
+       (body name repeated geometry source))))
   (m:solid-close! source))
 
 (test-case "solid model preview renders bodies and finite ports without a GUI"
   (reset-model!)
   (define source (m:cube 1 #:center? #t))
-  (body radiator geometry source)
+  (body name radiator geometry source)
   (port up gap 0.1 width 0.2 depth 0.3)
   (define renderers (solid-model->plot-renderers))
   (check-true (> (length renderers) 2))
@@ -269,7 +272,7 @@
 
 (test-case "solid model preview renders a sheet-only scene"
   (reset-model!)
-  (sheet patch points '((-1 -1) (1 -1) (1 1) (-1 1)))
+  (sheet name patch points '((-1 -1) (1 -1) (1 1) (-1 1)))
   (define renderers (solid-model->plot-renderers))
   (check-equal? (length renderers) 1)
   (clear-bodies))
