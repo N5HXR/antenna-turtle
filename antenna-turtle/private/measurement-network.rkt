@@ -11,7 +11,8 @@
  impedance-at admittance-at resistance-at reactance-at
  reflection-at s11-db-at return-loss-at vswr-at
  s-parameter-at s-parameter-db-at s-parameter-phase-at
- measurement-network-frequencies measurement-network-ports)
+ measurement-network-frequencies measurement-network-ports
+ characteristic-impedance-at )
 
 (define (name=? left right)
   (or (equal? left right)
@@ -183,3 +184,31 @@
       (map network-sample-port-name
            (network-sweep-samples
             (network-result->sweep 'measurement-ports result))))]))
+
+(define (characteristic-impedance-at
+         sweep frequency
+         #:input  [input 'input]
+         #:output [output 'output]
+         #:zref   [zref 50]
+         #:interpolate? [interpolate? #t])
+
+  (define (s from to)
+    (s-parameter-at sweep frequency
+                    #:from from
+                    #:to to
+                    #:interpolate? interpolate?))
+
+  (define s11 (s input input))
+  (define s21 (s input output))
+  (define s12 (s output input))
+  (define s22 (s output output))
+
+  (define numerator
+    (- (* (+ 1 s11) (+ 1 s22))
+       (* s12 s21)))
+
+  (define denominator
+    (- (* (- 1 s11) (- 1 s22))
+       (* s12 s21)))
+
+  (* zref (sqrt (/ numerator denominator))))

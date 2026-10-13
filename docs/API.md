@@ -844,8 +844,8 @@ placement by default:
     (sheet rect name patch size '(89 70) mesh-edges metal))
 
   (from-here
-    (move up 0.8 left -13)
-    (port up name feed gap 1.6 size '(2 2))))
+    (move left -13)
+    (port up name feed gap 1.6 size 2 anchor start)))
 ```
 
 `cuboid` dimensions are `(length width height)`, corresponding to turtle
@@ -881,6 +881,13 @@ their callers to manufacture names. A bare identifier is a concise literal
 label (`name feed`); strings and expressions such as
 `name (gensym 'fixture)` are also accepted.
 
+Ports are centered on the turtle by default. `anchor start` instead places the
+port's negative-direction terminal at the turtle, while `anchor end` places
+its positive-direction terminal there; the names are relative to the declared
+port direction and continue to work after turtle rotation. `size n` is a
+square transverse profile. Use `size '(width depth)` or separate `width` and
+`depth` settings for a rectangular profile.
+
 ### Planar turtle traces: `(with-traces width settings ... body ...)`
 
 `with-traces` sweeps a constant-width conducting sheet along ordinary turtle
@@ -891,7 +898,6 @@ movements. It is the planar-sheet counterpart to `with-wire`:
   (with-traces 3
     name resonator
     material copper
-    thickness 0.035
     (move forward 20)
     (turn left 45)
     (move forward 12)
@@ -909,6 +915,8 @@ the loop. Open paths have butt ends.
 Corners default to `join miter` with `miter-limit 4`; an excessively long
 miter falls back to a bevel. `join bevel` requests bevels directly. Other
 settings are `name`, `material`, `thickness`, `precedence`, and `priority`.
+The catalog `copper` material supplies its 35-micrometer foil thickness and
+normal conductor precedence when those settings are omitted.
 One scope creates one sheet and has one width. Adjacent scopes are independent
 and are not joined automatically.
 
@@ -1030,12 +1038,20 @@ effective tangent at both sweep endpoints. `conductivity` may be supplied
 directly instead, but not together with `loss-tangent`.
 
 `silver`, `copper`, `gold`, `aluminum`, `brass`, and nonmagnetic nominal
-`steel` are reusable finite-conductivity materials. Custom materials use
-`(conductor name alloy conductivity 2.4e7)`. Geometry supplies its physical
-thickness: `(sheet rect name trace size '(20 2) material copper thickness 0.035)`
-inside a millimeter scale. `conducting-sheet-material` remains as a compatible
-constructor for older code that stores a default thickness on the material.
-The sheet follows the complete turtle frame, including arbitrary rotation.
+`steel` are reusable finite-conductivity materials. `copper` includes a
+35-micrometer (one-ounce PCB foil) default for sheets and traces. That default
+is an absolute material property in meters and is never multiplied by
+`with-scale`. An explicit geometry `thickness` overrides it and does follow the
+active scale. Custom defaults use, for example,
+`(conductor name foil conductivity 2.4e7 sheet-thickness 18e-6)`.
+`conducting-sheet-material` remains as a compatible constructor whose stored
+thickness follows the older, scale-relative behavior. The sheet follows the
+complete turtle frame, including arbitrary rotation.
+
+Nominal dielectric constants are `air`, `fr4`, `ptfe`/`teflon`,
+`rogers-4003c`, `rogers-4350b`, and `rogers-5880`. They provide convenient
+room-temperature permittivity and loss-tangent values at the model frequency;
+define a custom dielectric for a specific vendor datasheet or frequency.
 
 Finite-conductivity volume bodies use `material copper metal-thickness ...`.
 Revision 1 accepts only solids whose triangulated boundary facets align with
@@ -1048,11 +1064,14 @@ narrowband surface model inside the recommended range without changing model
 geometry.
 Non-axis-aligned facets raise an error before the solver starts. PEC volume
 bodies retain arbitrary STL geometry.
-`mesh-edges exact` is the compatibility default and puts mesh planes on its
-geometric bounds. `mesh-edges metal` applies the openEMS 1/3--2/3 treatment to
+Conductive sheets default to `mesh-edges metal`, which applies the openEMS
+1/3--2/3 treatment to
 an axis-aligned rectangular metal sheet: each in-plane edge is represented by
 a line one-third of the local edge resolution inside and another two-thirds
-outside. Other polygons and rotated sheets reject that treatment explicitly.
+outside. Use `mesh-edges exact` explicitly to put planes on the geometric
+bounds instead. Other polygons and rotated sheets reject metal-edge treatment
+explicitly. `with-traces` also inherits its material's standard precedence
+when none is specified.
 
 Port `priority`/`precedence` is optional. By default, the OpenEMS exporter chooses an
 integer priority between touching dielectric and conductor geometry, following
@@ -1065,8 +1084,10 @@ are recorded in the simulation manifest.
 
 Places an ideal two-terminal OpenEMS R, L, C, or compound RLC region centered
 on the turtle. `direction` is its terminal axis. `name`, `gap`, and either
-`size '(width depth)` or both `width` and `depth` are required, as is at least
-one of `resistance`, `inductance`, and `capacitance`:
+`size`, or both `width` and `depth`, are required, as is at least one of
+`resistance`, `inductance`, and `capacitance`. A scalar `size` gives a square
+profile; a two-element list gives `(width depth)`. Like ports, elements accept
+`anchor start`, `anchor center`, and `anchor end`:
 
 ```racket
 (with-scale millimeters
@@ -1078,7 +1099,8 @@ one of `resistance`, `inductance`, and `capacitance`:
     topology series
     caps #t
     gap 1
-    size '(3 0.035)))
+    size 3
+    anchor start))
 ```
 
 When multiple electrical values are supplied, `topology series` or `topology

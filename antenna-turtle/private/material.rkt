@@ -79,10 +79,17 @@
 
 (define make-dielectric dielectric)
 
-(define (conductor #:name [name 'conductor] #:conductivity conductivity)
+(define (conductor #:name [name 'conductor]
+                   #:conductivity conductivity
+                   #:sheet-thickness [sheet-thickness #f])
   (material-name 'conductor name)
   (positive-real 'conductor conductivity "electric conductivity")
-  (em-material name 'conductor #f #f conductivity 0 #f #f))
+  (when sheet-thickness
+    (positive-real 'conductor sheet-thickness "default sheet thickness"))
+  ;; A conductor's catalog thickness is an absolute physical property in
+  ;; meters.  Unlike explicit geometry dimensions, it is never affected by
+  ;; current-geometry-scale.
+  (em-material name 'conductor #f #f conductivity 0 sheet-thickness #f))
 
 (define make-conductor conductor)
 

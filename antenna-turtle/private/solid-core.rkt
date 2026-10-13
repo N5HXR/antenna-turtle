@@ -101,6 +101,24 @@
   (validate-priority who value)
   value)
 
+(define (metal-material? material)
+  (memq (em-material-kind material) '(pec conductor conducting-sheet)))
+
+(define (effective-sheet-thickness who material explicit-thickness scale-factor)
+  (when explicit-thickness
+    (nonnegative-real who explicit-thickness "sheet thickness"))
+  (cond
+    ;; Explicit geometry is expressed in the active modeling units.
+    [explicit-thickness (* scale-factor explicit-thickness)]
+    ;; A normal conductor catalog value is already an absolute SI thickness.
+    [(eq? (em-material-kind material) 'conductor)
+     (em-material-thickness material)]
+    ;; Preserve the historical scale-relative conducting-sheet constructor.
+    [(eq? (em-material-kind material) 'conducting-sheet)
+     (and (em-material-thickness material)
+          (* scale-factor (em-material-thickness material)))]
+    [else #f]))
+
 (define (geometry-name who value)
   (unless (or (symbol? value)
               (and (string? value) (not (string=? value ""))))
@@ -189,7 +207,7 @@
                    #:priority [priority #f]
                    #:precedence [precedence #f]
                    #:coordinates [coordinates 'local]
-                   #:mesh-edges [mesh-edges 'exact]
+                   #:mesh-edges [mesh-edges #f]
                    #:thickness [thickness #f])
   (define effective-name (effective-feature-name 'add-sheet name 'sheet))
   (validate-material 'add-sheet material)
@@ -199,25 +217,22 @@
      "material" material))
   (define effective-priority
     (effective-precedence 'add-sheet priority precedence))
-  (unless (memq mesh-edges '(exact metal))
-    (raise-argument-error 'add-sheet "(or/c 'exact 'metal)" mesh-edges))
+  (unless (memq mesh-edges '(#f exact metal))
+    (raise-argument-error 'add-sheet "(or/c #f 'exact 'metal)" mesh-edges))
+  (define effective-mesh-edges
+    (or mesh-edges (if (metal-material? material) 'metal 'exact)))
   (unless (and (list? points) (>= (length points) 3))
     (raise-argument-error 'add-sheet "list of at least three 2D points" points))
   (define orientation (scene-transform 'add-sheet coordinates))
   (define scale-factor (current-geometry-scale))
   (define placement (scale-transform orientation scale-factor))
-  (when thickness (nonnegative-real 'add-sheet thickness "sheet thickness"))
-  (define source-thickness
-    (or thickness
-        (and (eq? (em-material-kind material) 'conducting-sheet)
-             (em-material-thickness material))))
-  (when (and (eq? (em-material-kind material) 'conductor)
-             (not source-thickness))
-    (raise-arguments-error
-     'add-sheet "finite-conductivity sheets require an explicit thickness"
-     "material" material))
   (define effective-thickness
-    (and source-thickness (* scale-factor source-thickness)))
+    (effective-sheet-thickness 'add-sheet material thickness scale-factor))
+  (when (and (eq? (em-material-kind material) 'conductor)
+             (not effective-thickness))
+    (raise-arguments-error
+     'add-sheet "finite-conductivity sheets require thickness on the sheet or material"
+     "material" material))
   ;; Preserve the historical material accessor for compatibility while also
   ;; storing thickness on the placed sheet, where new conductor materials need
   ;; it to live.
@@ -233,7 +248,7 @@
   (define sheet
     (planar-sheet effective-name effective-material world-points
                   (transform-vector orientation '(0 0 1))
-                  effective-priority placement mesh-edges effective-thickness
+                  effective-priority placement effective-mesh-edges effective-thickness
                   (list world-points) (list world-points) #f))
   (define scene (current-solid-scene))
   (set-solid-scene-sheets!
@@ -271,20 +286,16 @@
   (unless (memq mesh-edges '(exact metal))
     (raise-argument-error 'with-traces "(or/c 'exact 'metal)" mesh-edges))
   (define effective-priority
-    (effective-precedence 'with-traces priority precedence))
+    (or (effective-precedence 'with-traces priority precedence)
+        (material-default-precedence material)))
   (define scale-factor (current-geometry-scale))
-  (when thickness (nonnegative-real 'with-traces thickness "trace thickness"))
-  (define source-thickness
-    (or thickness
-        (and (eq? (em-material-kind material) 'conducting-sheet)
-             (em-material-thickness material))))
-  (when (and (eq? (em-material-kind material) 'conductor)
-             (not source-thickness))
-    (raise-arguments-error 'with-traces
-                           "finite-conductivity traces require thickness"
-                           "material" material))
   (define effective-thickness
-    (and source-thickness (* scale-factor source-thickness)))
+    (effective-sheet-thickness 'with-traces material thickness scale-factor))
+  (when (and (eq? (em-material-kind material) 'conductor)
+             (not effective-thickness))
+    (raise-arguments-error 'with-traces
+                           "finite-conductivity traces require thickness on the trace or material"
+                           "material" material))
   (define effective-material
     (if (and (eq? (em-material-kind material) 'conducting-sheet)
              effective-thickness)
@@ -331,12 +342,21 @@
 
 (define automatic-port-dimension (gensym 'automatic-port-dimension))
 
+(define (anchored-feature-center who anchor origin direction gap)
+  (unless (memq anchor '(start center end))
+    (raise-argument-error who "(or/c 'start 'center 'end)" anchor))
+  (case anchor
+    [(start) (point+scaled origin direction (/ gap 2))]
+    [(end) (point+scaled origin direction (- (/ gap 2)))]
+    [else origin]))
+
 (define (add-lumped-port direction
                          #:name [requested-name #f]
                          #:impedance [impedance (model-impedance)]
                          #:gap [gap automatic-port-dimension]
                          #:width [width automatic-port-dimension]
                          #:depth [depth automatic-port-dimension]
+                         #:anchor [anchor 'center]
                          #:priority [priority #f]
                          #:precedence [precedence #f])
   (define local-direction (hash-ref direction-components direction #f))
@@ -370,11 +390,16 @@
         (fresh-port-name scene)))
   (define placement (current-turtle-affine-transform 'add-lumped-port))
   (define transverse (hash-ref transverse-components direction))
+  (define world-direction (transform-vector placement local-direction))
+  (define center
+    (anchored-feature-center
+     'add-lumped-port anchor
+     (transform-point placement '(0 0 0))
+     world-direction effective-gap))
   (define port
     (lumped-port
      name impedance
-     (transform-point placement '(0 0 0))
-     (transform-vector placement local-direction)
+     center world-direction
      (transform-vector placement (first transverse))
      (transform-vector placement (second transverse))
      effective-gap effective-width effective-depth
@@ -393,6 +418,7 @@
                             #:gap gap
                             #:width width
                             #:depth depth
+                            #:anchor [anchor 'center]
                             #:priority [priority #f]
                             #:precedence [precedence #f])
   (define local-direction (hash-ref direction-components direction #f))
@@ -427,14 +453,20 @@
   (define scale-factor (current-geometry-scale))
   (define placement (current-turtle-affine-transform 'add-lumped-element))
   (define transverse (hash-ref transverse-components direction))
+  (define world-direction (transform-vector placement local-direction))
+  (define effective-gap (* scale-factor gap))
+  (define center
+    (anchored-feature-center
+     'add-lumped-element anchor
+     (transform-point placement '(0 0 0))
+     world-direction effective-gap))
   (define component
     (lumped-component
      name resistance inductance capacitance (or topology 'parallel) caps
-     (transform-point placement '(0 0 0))
-     (transform-vector placement local-direction)
+     center world-direction
      (transform-vector placement (first transverse))
      (transform-vector placement (second transverse))
-     (* scale-factor gap) (* scale-factor width) (* scale-factor depth)
+     effective-gap (* scale-factor width) (* scale-factor depth)
      effective-priority placement))
   (set-solid-scene-components!
    scene (append (solid-scene-components scene) (list component)))

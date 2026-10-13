@@ -721,7 +721,6 @@ chain of centered rectangles:
 (with-scale millimeters
   (with-traces 3
     material copper
-    thickness 0.035
     (move forward 20)
     (turn left 45)
     (move forward 12)
@@ -744,13 +743,12 @@ outlines receive width-based Yee-grid refinement—three cells across in the
 `draft` profile and five in `standard`—and mixed outlines combine both modes.
 Oblique edges remain stair-stepped, so convergence testing is prudent.
 
-Planar rectangular conductors may request openEMS metal-edge meshing with
-`mesh-edges metal` in the `sheet` form. This replaces an exact in-plane edge
-line with the conventional 1/3-inside, 2/3-outside pair before mesh smoothing.
-The default `mesh-edges exact` remains useful for substrate-sized ground planes
-and material boundaries. `#:metal-edge-resolution` on `openems-sweep` sets the
-pair's total spacing in metres; its default is half the wavelength-based cell
-limit.
+Planar conductors default to openEMS metal-edge meshing. This replaces an exact
+in-plane edge line with the conventional 1/3-inside, 2/3-outside pair before
+mesh smoothing. Request `mesh-edges exact` explicitly when exact geometric
+planes are preferable for a particular ground plane or boundary.
+`#:metal-edge-resolution` on `openems-sweep` sets the pair's total spacing in
+metres; its default is half the wavelength-based cell limit.
 
 When the model itself reveals a critical coordinate that the automatic mesh
 cannot infer, register a hard constraint at the current turtle position:
@@ -777,11 +775,16 @@ placement idiom as ports:
     name input-coupling
     capacitance {2.2 * picofarads}
     gap 1
-    size '(3 0.035)))
+    size 3
+    anchor start))
 ```
 
 The direction joins the two conductor terminals. `gap` is the terminal-face
-separation and `size` gives the two transverse dimensions. Physical dimensions
+separation. A scalar `size` creates a square transverse profile; a two-element
+list creates a rectangular one. `anchor start` places the negative-direction
+terminal at the turtle, `anchor end` places the positive-direction terminal
+there, and `anchor center` is the default. Anchors are relative to the declared
+direction and work equally for ports and lumped elements. Physical dimensions
 scale with the surrounding geometry, but electrical unit constants remain SI.
 Use `topology series` or `topology parallel` when combining R, L, and C;
 terminal `caps` default to `#t`. The backend requires Yee-grid alignment,
@@ -885,12 +888,17 @@ filter modeled from calculator dimensions.
 
 ### Realistic material loss
 
-Use `loss-tangent` on a dielectric for the normal narrowband OpenEMS model:
+Use `loss-tangent` on a dielectric for the normal narrowband OpenEMS model,
+or start with the nominal built-in `fr4` material:
 
 ```racket
-(define fr4
-  (dielectric name fr4 er 4.4 loss-tangent 0.02))
-(sheet rect name trace size '(40 3) material copper thickness 0.035)
+(with-scale millimeters
+  (with-material fr4
+    (cuboid size '(80 50 1.6) anchor bottom))
+  (with-material copper
+    (sheet rect size '(80 50))
+    (move up 1.6)
+    (with-traces 3 (move forward 40))))
 ```
 
 The tangent defaults to the model frequency; `loss-frequency` overrides that
@@ -898,8 +906,19 @@ reference in MHz. Antenna Turtle prints a reminder that this becomes constant
 conductivity and records the approximation in the artifact manifest. Built-in
 room-temperature conductors are `silver`, `copper`, `gold`, `aluminum`,
 `brass`, and a nominal nonmagnetic `steel`. A custom material uses
-`(conductor name custom conductivity 2.4e7)`. Physical sheet thickness belongs
-to the sheet and therefore follows `with-scale`.
+`(conductor name custom conductivity 2.4e7)`. `copper` carries the common
+one-ounce PCB foil thickness of 35 micrometers, so copper sheets and traces may
+omit `thickness`. This catalog thickness is already in meters and **never**
+changes under `with-scale`. An explicit `thickness` overrides it and is a
+normal geometry dimension in the active scale. Conductive sheets default to
+`mesh-edges metal`; use `mesh-edges exact` explicitly when exact geometric edge
+planes are intentional. Traces also inherit the normal conductor precedence.
+
+Nominal substrate constants are `air`, `fr4`, `ptfe` (also `teflon`),
+`rogers-4003c`, `rogers-4350b`, and `rogers-5880`. Their permittivity and loss
+tangent are convenient room-temperature starting points; use a custom
+`dielectric` when a particular laminate datasheet or frequency calls for other
+values.
 
 Rectilinear finite-conductivity bodies additionally require
 `metal-thickness`. Their boundary facets must remain aligned with the Yee grid;

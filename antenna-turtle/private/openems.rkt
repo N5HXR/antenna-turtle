@@ -939,26 +939,38 @@
         (list (list-ref (geometry-minimum item) axis)
               (list-ref (geometry-maximum item) axis))]))))
 
-(define (metal-edge-axis-values geometry axis resolution fixed-values)
+(define (trace-metal-edge-resolution sheet resolution minimum-trace-cells)
+  (define trace-width (exported-sheet-trace-width sheet))
+  (if trace-width
+      (min resolution (/ trace-width minimum-trace-cells))
+      resolution))
+
+(define (metal-edge-axis-values geometry axis resolution minimum-trace-cells
+                                fixed-values)
   ;; DetectEdges/AddEdges2Grid place two grid lines around each 2-D metal
   ;; boundary: resolution/3 inside and 2*resolution/3 outside. If another
   ;; required line would make either shifted line excessively close, retain
   ;; the exact edge instead of creating a pathological sliver cell.
-  (define minimum-separation (/ resolution 4))
   (define edges
     (append*
      (for/list ([sheet (in-list (metal-edge-sheets geometry))]
                 #:unless (= axis (metal-sheet-plane-axis sheet)))
-       (metal-boundary-edges-for-axis sheet axis resolution))))
+       (metal-boundary-edges-for-axis
+        sheet axis
+        (trace-metal-edge-resolution
+         sheet resolution minimum-trace-cells)))))
   (define-values (_existing added)
     (for/fold ([existing fixed-values] [added '()]) ([edge (in-list edges)])
       (match-define (list sheet side coordinate) edge)
+      (define edge-resolution
+        (trace-metal-edge-resolution sheet resolution minimum-trace-cells))
+      (define minimum-separation (/ edge-resolution 4))
       (define candidates
         (case side
-          [(low) (list (- coordinate (* 2/3 resolution))
-                       (+ coordinate (/ resolution 3)))]
-          [(high) (list (- coordinate (/ resolution 3))
-                        (+ coordinate (* 2/3 resolution)))]
+          [(low) (list (- coordinate (* 2/3 edge-resolution))
+                       (+ coordinate (/ edge-resolution 3)))]
+          [(high) (list (- coordinate (/ edge-resolution 3))
+                        (+ coordinate (* 2/3 edge-resolution)))]
           [else (list coordinate)]))
       (define conflict?
         (for/or ([candidate (in-list candidates)])
@@ -981,6 +993,44 @@
                 (values (cons coordinate existing) (cons coordinate added))))
           (values (append candidates existing) (append candidates added)))))
   added)
+
+(define (metal-boundary-coordinates-for-axis sheet axis)
+  (define plane-axis (metal-sheet-plane-axis sheet))
+  (if (= axis plane-axis)
+      '()
+      (remove-duplicates
+       (for/list ([segment (in-list (boundary-segments-3d sheet))]
+                  #:when
+                  (let ([varying (segment-varying-axes segment)])
+                    (and (= (length varying) 1)
+                         (not (= (first varying) axis)))))
+         (list-ref (first segment) axis))
+       =)))
+
+(define (port-boundary-coincident-with-metal-edge?
+         geometry port axis coordinate)
+  (define-values (port-minimum port-maximum) (port-bounds port))
+  (for/or ([sheet (in-list (metal-edge-sheets geometry))]
+           #:when (bounds-intersect? sheet port-minimum port-maximum))
+    (for/or ([edge-coordinate
+              (in-list (metal-boundary-coordinates-for-axis sheet axis))])
+      (near? coordinate edge-coordinate
+             (max 1 (abs coordinate) (abs edge-coordinate))))))
+
+(define (port-mesh-axis-values geometry ports axis)
+  (append*
+   (for/list ([port (in-list ports)])
+     (define-values (minimum maximum) (port-bounds port))
+     (define direction-axis
+       (signed-axis-index (point->list (lumped-port-direction port))))
+     (for/list ([coordinate
+                 (in-list (list (list-ref minimum axis)
+                                (list-ref maximum axis)))]
+                #:unless
+                (and (not (= axis direction-axis))
+                     (port-boundary-coincident-with-metal-edge?
+                      geometry port axis coordinate)))
+       coordinate))))
 
 (define (trace-refinement-axis-values geometry axis minimum-trace-cells)
   (append*
@@ -1058,11 +1108,11 @@
 (define (critical-axis-values geometry ports components constraints axis domain-min domain-max
                               max-resolution minimum-dielectric-cells
                               minimum-trace-cells metal-edge-resolution)
-  (define port-values
-    (append*
-     (for/list ([port (in-list ports)])
-       (define-values (minimum maximum) (port-bounds port))
-       (list (list-ref minimum axis) (list-ref maximum axis)))))
+  ;; Port terminal planes in the excitation direction are mandatory. A
+  ;; transverse port face that exactly follows a selected metal boundary is
+  ;; not: retaining it would put an exact grid line on the conductor edge and
+  ;; suppress the requested 1/3--2/3 treatment.
+  (define port-values (port-mesh-axis-values geometry ports axis))
   (define component-values
     (append*
      (for/list ([component (in-list components)])
@@ -1082,7 +1132,8 @@
            (trace-refinement-axis-values
             geometry axis minimum-trace-cells)
            (metal-edge-axis-values
-            geometry axis metal-edge-resolution fixed-values))
+            geometry axis metal-edge-resolution minimum-trace-cells
+            fixed-values))
    max-resolution))
 
 (define (validate-mesh-constraint-domain! constraints domain-min domain-max)

@@ -79,6 +79,16 @@
 (define-syntax-rule (with-material material body ...)
   (call-with-solid-material material (lambda () body ...)))
 
+(define (transverse-size who value)
+  (cond
+    [(real? value) (values value value)]
+    [(and (list? value) (= (length value) 2))
+     (values (first value) (second value))]
+    [else
+     (raise-argument-error who
+                           "(or/c real? (list/c real? real?))"
+                           value)]))
+
 (define-syntax (mesh-plane stx)
   (syntax-parse stx
     [(_ plane:id)
@@ -130,14 +140,16 @@
          #'(make-conductor argument ...)
          (let ([values
                 (settings 'conductor stx #'(argument ...)
-                          '(name conductivity)
-                          "expected name or conductivity setting/value pairs")])
+                          '(name conductivity sheet-thickness)
+                          "expected name, conductivity, or sheet-thickness setting/value pairs")])
            (define conductivity (hash-ref values 'conductivity #f))
            (unless conductivity
              (raise-syntax-error 'conductor "conductivity is required" stx))
            (define name (hash-ref values 'name #''conductor))
            #`(make-conductor #:name #,(name-expression name)
-                            #:conductivity #,conductivity)))]))
+                            #:conductivity #,conductivity
+                            #,@(optional-keyword values 'sheet-thickness
+                                                  #'#:sheet-thickness))))]))
 
 (define-syntax (body stx)
   (syntax-parse stx
@@ -197,7 +209,7 @@
      (define mesh
        (literal-expression
         (hash-ref values 'mesh-edges #f) '(exact metal) 'sheet stx
-        "mesh-edges must be exact or metal" #''exact))
+        "mesh-edges must be exact or metal" #'#f))
      (define requested-name
        (if (hash-has-key? values 'name)
            (name-expression (hash-ref values 'name))
@@ -237,7 +249,7 @@
      (define mesh
        (literal-expression
         (hash-ref values 'mesh-edges #f) '(exact metal) 'sheet stx
-        "mesh-edges must be exact or metal" #''exact))
+        "mesh-edges must be exact or metal" #'#f))
      #`(add-sheet #,(if (hash-has-key? values 'name)
                         (name-expression (hash-ref values 'name))
                         #'#f)
@@ -256,9 +268,9 @@
        (raise-syntax-error 'port "expected a turtle direction" stx #'direction))
      (define values
        (settings 'port stx #'(setting ...)
-                 '(name impedance gap width depth size priority precedence)
+                 '(name impedance gap width depth size anchor priority precedence)
                  (string-append
-                  "expected name, impedance, gap, width, depth, size, "
+                  "expected name, impedance, gap, width, depth, size, anchor, "
                   "priority, or precedence setting/value pairs")))
      (when (and (hash-has-key? values 'size)
                 (or (hash-has-key? values 'width)
@@ -272,15 +284,20 @@
         (optional-keyword values 'gap #'#:gap)
         (optional-keyword values 'width #'#:width)
         (optional-keyword values 'depth #'#:depth)
+        (if (hash-has-key? values 'anchor)
+            (list #'#:anchor
+                  (literal-expression
+                   (hash-ref values 'anchor) '(start center end)
+                   'port stx "anchor must be start, center, or end"))
+            '())
         (precedence-keywords values)))
      (if (hash-has-key? values 'size)
          (let ([size (hash-ref values 'size)])
-           #`(let ([dimensions #,size])
-               (unless (and (list? dimensions) (= (length dimensions) 2))
-                 (raise-argument-error 'port "two-element size list" dimensions))
+           #`(let-values ([(transverse-width transverse-depth)
+                           (transverse-size 'port #,size)])
                (add-lumped-port
                 '#,(syntax-e #'direction)
-                #:width (first dimensions) #:depth (second dimensions)
+                #:width transverse-width #:depth transverse-depth
                 #,@keyword-arguments)))
          #`(add-lumped-port '#,(syntax-e #'direction) #,@keyword-arguments))]
     [(_ . _)
@@ -296,10 +313,10 @@
        (settings
         'lumped-element stx #'(setting ...)
         '(name resistance inductance capacitance topology caps
-               gap width depth size priority precedence)
+               gap width depth size anchor priority precedence)
         (string-append
          "expected name, resistance, inductance, capacitance, topology, caps, "
-         "gap, width, depth, size, priority, or precedence setting/value pairs")))
+         "gap, width, depth, size, anchor, priority, or precedence setting/value pairs")))
      (unless (hash-has-key? values 'gap)
        (raise-syntax-error 'lumped-element "gap setting is required" stx))
      (unless (ormap (lambda (key) (hash-has-key? values key))
@@ -333,16 +350,20 @@
         (optional-keyword values 'capacitance #'#:capacitance)
         (if topology (list #'#:topology topology) '())
         (optional-keyword values 'caps #'#:caps)
+        (if (hash-has-key? values 'anchor)
+            (list #'#:anchor
+                  (literal-expression
+                   (hash-ref values 'anchor) '(start center end)
+                   'lumped-element stx "anchor must be start, center, or end"))
+            '())
         (precedence-keywords values)))
      (if (hash-has-key? values 'size)
          (let ([size (hash-ref values 'size)])
-           #`(let ([dimensions #,size])
-               (unless (and (list? dimensions) (= (length dimensions) 2))
-                 (raise-argument-error
-                  'lumped-element "two-element size list" dimensions))
+           #`(let-values ([(transverse-width transverse-depth)
+                           (transverse-size 'lumped-element #,size)])
                (add-lumped-element
                 '#,(syntax-e #'direction)
-                #:width (first dimensions) #:depth (second dimensions)
+                #:width transverse-width #:depth transverse-depth
                 #,@common)))
          #`(add-lumped-element
             '#,(syntax-e #'direction)

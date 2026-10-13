@@ -632,6 +632,67 @@
   (delete-file mock-octave)
   (clear-bodies))
 
+(test-case "matching port faces preserve turtle-trace metal-edge meshing"
+  (reset-model!)
+  (model frequency 1000 impedance 50)
+  (define substrate-material
+    (dielectric #:name 'substrate #:relative-permittivity 4.4))
+  (with-scale millimeters
+    (with-material substrate-material
+      (cuboid name board size '(80 50 1.6) anchor bottom))
+    (sheet rect name ground size '(80 50)
+           material pec mesh-edges metal precedence 20)
+    (move back 20 up 0.8)
+    (port up name 'input gap 1.6 size '(1.5 1.5))
+    (move up 0.8 back 0.75)
+    (with-traces 1.5
+      name test-trace
+      material pec
+      precedence 20
+      (move forward 40))
+    (move back 0.75 down 0.8)
+    (port up name 'output gap 1.6 size '(1.5 1.5)))
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 900 1100 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define manifest
+    (openems-run-info-manifest (exn:fail:openems-run-info failure)))
+  (define mesh (hash-ref manifest 'mesh))
+  (define y-lines (hash-ref mesh 'critical_y))
+  (define z-lines (hash-ref mesh 'critical_z))
+  (define (contains-near? values wanted)
+    (for/or ([value (in-list values)]) (< (abs (- value wanted)) 1e-10)))
+  (define trace-width 0.0015)
+  (define half-width (/ trace-width 2))
+  (define edge-resolution
+    (min (hash-ref mesh 'metal_edge_resolution_m)
+         (/ trace-width (hash-ref mesh 'minimum_trace_cells_across))))
+  ;; The port is exactly as wide as the trace, but its transverse faces must
+  ;; not restore exact grid lines on the conductor boundaries.
+  (check-false (contains-near? y-lines (- half-width)))
+  (check-false (contains-near? y-lines half-width))
+  (for ([wanted
+         (in-list
+          (list (- (- half-width) (* 2/3 edge-resolution))
+                (+ (- half-width) (/ edge-resolution 3))
+                (- half-width (/ edge-resolution 3))
+                (+ half-width (* 2/3 edge-resolution))))])
+    (check-true (contains-near? y-lines wanted)))
+  ;; The port's two terminal planes remain locked to ground and trace.
+  (check-true (contains-near? z-lines 0))
+  (check-true (contains-near? z-lines 0.0016))
+  (openems-close!
+   (openems-run-info-artifacts (exn:fail:openems-run-info failure)))
+  (delete-file mock-octave)
+  (clear-bodies))
+
 (test-case "OpenEMS rejects a rotated frame in a multiport model"
   (reset-model!)
   (model frequency 915)

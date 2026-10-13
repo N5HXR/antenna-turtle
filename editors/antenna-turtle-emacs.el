@@ -154,7 +154,7 @@
     "points" "mesh-edges" "size" "length" "width" "height"
     "radius" "diameter" "segments" "name" "er" "ur"
     "relative-permittivity" "relative-permeability" "loss-tangent"
-    "loss-frequency" "conductivity" "thickness" "metal-thickness"
+    "loss-frequency" "conductivity" "sheet-thickness" "thickness" "metal-thickness"
     "gap" "depth" "path" "join" "miter-limit"
     "resistance" "inductance" "capacitance" "topology" "caps"
     "engine" "sweep" "profile" "octave" "keep-artifacts" "progress"
@@ -166,8 +166,11 @@
 
 (defconst antenna-turtle--solid-values
   '("pec" "silver" "copper" "gold" "aluminum" "brass" "steel"
+    "air" "fr4" "ptfe" "teflon"
+    "rogers-4003c" "rogers-4350b" "rogers-5880"
     "rect" "exact" "metal" "local" "world" "xy" "xz" "yz"
-    "origin" "top" "bottom" "front" "draft" "standard" "openems"
+    "origin" "top" "bottom" "front" "start" "center" "end"
+    "draft" "standard" "openems"
     "series" "parallel" "miter" "bevel"))
 
 (defconst antenna-turtle--feed-locations

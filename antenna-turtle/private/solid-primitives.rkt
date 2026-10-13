@@ -132,7 +132,7 @@
                         #:material [material (current-solid-material)]
                         #:precedence [precedence #f]
                         #:thickness [thickness #f]
-                        #:mesh-edges [mesh-edges 'exact])
+                        #:mesh-edges [mesh-edges #f])
   (positive-finite 'sheet length "length")
   (positive-finite 'sheet width "width")
   (define half-length (/ length 2))
@@ -151,7 +151,7 @@
                              #:material [material (current-solid-material)]
                              #:precedence [precedence #f]
                              #:thickness [thickness #f]
-                             #:mesh-edges [mesh-edges 'exact])
+                             #:mesh-edges [mesh-edges #f])
   (define dimensions (dimension-list 'sheet size 2))
   (add-rect-sheet name (first dimensions) (second dimensions)
                   #:material material #:precedence precedence

@@ -48,6 +48,9 @@
    #:color (material-color (solid-body-material body))
    #:line-color "dimgray"
    #:line-width 0.35
+   ;; Manifold exposes triangle meshes, but their internal triangulation is an
+   ;; implementation detail rather than meaningful model geometry.
+   #:line-style 'transparent
    #:alpha (if (eq? kind 'dielectric) 0.45 0.9)
    #:label (format "~a" (solid-body-name body))))
 
@@ -59,6 +62,9 @@
    #:color (material-color (planar-sheet-material sheet))
    #:line-color "gray"
    #:line-width 0.6
+   ;; Concave sheets are triangulated for rendering and export. Do not draw
+   ;; the artificial seams between those triangles in the solid-model view.
+   #:line-style 'transparent
    #:alpha 0.9
    #:label (format "~a" (planar-sheet-name sheet))))
 

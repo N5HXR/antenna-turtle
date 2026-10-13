@@ -169,12 +169,8 @@ The first solid backend uses axis-aligned lumped ports. Waveguide, microstrip,
 and other distributed structures need explicit planar port geometry and modal
 configuration in a later multiport milestone.
 
-* TODO Add anchors for ports and lumped elements
-Allow ~port~ and ~lumped-element~ regions to use the same turtle-relative
-~anchor~ vocabulary as solid primitives.  Anchors should place a selected
-bounding-box face, edge, or corner at the turtle without changing the
-feature's electrical terminal axis.  In particular, ~anchor bottom~ should
-make it easy to place a component flush on a conductor sheet without manually
-offsetting its center by half its height.  Define and test contact, overlap,
-scaling, and model-to-solver rotation behavior before enabling this in a
-future revision.
+* DONE Add terminal-axis anchors for ports and lumped elements
+~anchor start~, ~anchor center~, and ~anchor end~ place the corresponding
+terminal-axis location at the turtle without changing the electrical axis.
+The centered behavior remains the default. Scalar ~size~ values also describe
+a square transverse profile; two-element lists retain rectangular profiles.

@@ -208,6 +208,57 @@
                          #:gap 1 #:width 1 #:depth 1)))
   (clear-bodies))
 
+(test-case "ports and lumped elements accept square sizes and terminal anchors"
+  (reset-model!)
+  (define-values (input output component)
+    (with-scale millimeters
+      (define input
+        (port up name input gap 2 size 3 anchor start))
+      (move up 2)
+      (define output
+        (port up name output gap 2 size 4 anchor end))
+      (move forward 10)
+      (define component
+        (lumped-element forward resistance 50 gap 2 size 5 anchor start))
+      (values input output component)))
+  (check-= (lumped-port-width input) 0.003 1e-15)
+  (check-= (lumped-port-depth input) 0.003 1e-15)
+  (check-= (point3-z (lumped-port-center input)) 0.001 1e-15)
+  (check-= (point3-z (lumped-port-start input)) 0 1e-15)
+  (check-= (point3-z (lumped-port-stop input)) 0.002 1e-15)
+  (check-= (lumped-port-width output) 0.004 1e-15)
+  (check-= (lumped-port-depth output) 0.004 1e-15)
+  (check-= (point3-z (lumped-port-center output)) 0.001 1e-15)
+  (check-= (point3-z (lumped-port-start output)) 0 1e-15)
+  (check-= (point3-z (lumped-port-stop output)) 0.002 1e-15)
+  (check-= (lumped-component-width component) 0.005 1e-15)
+  (check-= (lumped-component-depth component) 0.005 1e-15)
+  (check-= (point3-x (lumped-component-center component)) 0.011 1e-15)
+  (check-= (point3-z (lumped-component-center component)) 0.002 1e-15)
+  (check-exn #rx"start.*center.*end"
+             (lambda ()
+               (add-lumped-port 'up #:gap 1 #:width 1 #:depth 1
+                                #:anchor 'sideways)))
+  (check-exn #rx"real.*list"
+             (lambda ()
+               (port up gap 1 size '(1 2 3))))
+  (clear-bodies)
+
+  ;; Both terminal anchors retain their invariant for every turtle direction,
+  ;; including the negative-polarity aliases.
+  (reset-model!)
+  (for ([direction (in-list '(forward forwards back backward backwards
+                                      left right up down))])
+    (define at-start
+      (add-lumped-port direction #:gap 2 #:width 1 #:depth 1
+                       #:anchor 'start))
+    (define at-end
+      (add-lumped-port direction #:gap 2 #:width 1 #:depth 1
+                       #:anchor 'end))
+    (check-equal? (lumped-port-start at-start) (point3 0 0 0))
+    (check-equal? (lumped-port-stop at-end) (point3 0 0 0)))
+  (clear-bodies))
+
 (test-case "mesh constraints capture the current global turtle coordinate"
   (reset-model!)
   (with-scale 0.001

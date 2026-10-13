@@ -4,7 +4,6 @@
  title "Ring resonator"
  frequency 717)
 
-(define fr4 (dielectric name fr4 er 4.4 loss-tangent 0.015))
 (define board-length 80)
 (define board-width 80)
 (define board-thick 1.6)

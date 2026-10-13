@@ -287,6 +287,55 @@
   (check-= (planar-sheet-thickness trace) 0.000035 1e-15)
   (clear-bodies))
 
+(test-case "catalog substrates and copper make ordinary PCB geometry concise"
+  (reset-model!)
+  (define-values (substrate ground trace)
+    (with-scale millimeters
+      (define substrate
+        (with-material fr4
+          (cuboid size '(80 50 1.6) anchor bottom)))
+      (define ground
+        (with-material copper
+          (sheet rect size '(80 50))))
+      (move up 1.6)
+      (define trace
+        (with-material copper
+          (with-traces 3 (move forward 20))))
+      (values substrate ground trace)))
+  (check-equal? (solid-body-material substrate) fr4)
+  (check-equal? (solid-body-priority substrate) 10)
+  (for ([placed (in-list (list ground trace))])
+    (check-equal? (planar-sheet-material placed) copper)
+    (check-equal? (planar-sheet-priority placed) 20)
+    (check-equal? (planar-sheet-mesh-edges placed) 'metal)
+    (check-= (planar-sheet-thickness placed) 35e-6 1e-15))
+  (check-equal? (em-material-relative-permittivity air) 1.0)
+  (check-equal? teflon ptfe)
+  (check-equal? (em-material-name rogers-4003c) 'rogers-4003c)
+
+  ;; Catalog foil is an absolute material property, not a model-space length.
+  (reset-model!)
+  (define doubled
+    (with-scale (* 2 millimeters)
+      (sheet rect size '(10 2) material copper)))
+  (check-= (planar-sheet-thickness doubled) 35e-6 1e-15)
+  (define xs (map point3-x (planar-sheet-points doubled)))
+  (check-= (- (apply max xs) (apply min xs)) 0.02 1e-15)
+
+  ;; Explicit geometry still follows the active unit scale and overrides the
+  ;; catalog default; exact meshing remains available when requested.
+  (define explicit
+    (with-scale millimeters
+      (sheet rect size '(10 2) material copper
+             thickness 0.070 mesh-edges exact)))
+  (check-= (planar-sheet-thickness explicit) 70e-6 1e-15)
+  (check-equal? (planar-sheet-mesh-edges explicit) 'exact)
+
+  (define custom-foil
+    (conductor name custom-foil conductivity 1e7 sheet-thickness 12e-6))
+  (check-= (em-material-thickness custom-foil) 12e-6 1e-18)
+  (clear-bodies))
+
 (test-case "solid cylinders and spheres follow the turtle up axis"
   (reset-model!)
   (define cylinder-body

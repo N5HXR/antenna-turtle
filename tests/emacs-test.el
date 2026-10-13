@@ -25,12 +25,15 @@
             "  anchor bottom)\n"
             "(mesh-point)\n"
             "(mesh-plane xy)\n"
-            "(lumped-element up name load resistance (* 50 ohms) gap 1 size '(2 2))\n"
+            "(lumped-element up name load resistance (* 50 ohms) gap 1 size 2 anchor start)\n"
             "(with-body name shield material aluminum anchor bottom\n"
             "  (difference (cuboid size '(20 10 4))\n"
             "              (cuboid size '(16 6 4))))\n"
             "(with-traces 3 name resonator join miter\n"
             "  (move forward 10))\n"
+            "(with-material rogers-4003c\n"
+            "  (sheet rect size '(10 2)))\n"
+            "(conductor name foil conductivity 1e7 sheet-thickness 12e-6)\n"
             "(simulate engine openems sweep '(800 1050) profile draft)\n")
     (antenna-turtle-setup)
     (font-lock-ensure)
@@ -56,12 +59,18 @@
                 'antenna-turtle-loop-clause-face))
     (should (eq (antenna-turtle-test--face-at "resistance" 1)
                 'antenna-turtle-loop-clause-face))
+    (should (eq (antenna-turtle-test--face-at "start" 1)
+                'font-lock-constant-face))
     (should (eq (antenna-turtle-test--face-at "ohms" 1)
                 'font-lock-constant-face))
     (should (eq (antenna-turtle-test--face-at "xy" 1)
                 'font-lock-constant-face))
     (should (eq (antenna-turtle-test--face-at "draft" 1)
-                'font-lock-constant-face))))
+                'font-lock-constant-face))
+    (should (eq (antenna-turtle-test--face-at "rogers-4003c" 1)
+                'font-lock-constant-face))
+    (should (eq (antenna-turtle-test--face-at "sheet-thickness" 1)
+                'antenna-turtle-loop-clause-face))))
 
 (ert-deftest antenna-turtle-solid-indentation ()
   (with-temp-buffer
