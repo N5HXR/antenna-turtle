@@ -113,7 +113,7 @@
                     #:width [width 900]
                     #:height [height 700]
                     #:aspect-ratio [aspect-ratio 1]
-                    #:legend? [legend? #t])
+                    #:legend? [legend? #f])
   (unless (antenna-model? model)
     (raise-argument-error 'show-model "antenna-model?" model))
   (unless (exact-positive-integer? width)

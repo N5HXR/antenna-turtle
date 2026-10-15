@@ -1,0 +1,203 @@
+* 00-matched-microstrip.rkt
+All tests passed.
+* 01-line-length-phase.rkt
+First test passed, but second failed with the longer line having lower impedance than expected:
+
+(report-near "20/40 mm characteristic-impedance agreement"
+               (characteristic-impedance-at short-result center-frequency)
+               (characteristic-impedance-at long-result center-frequency)
+               #:relative 0.03) =>
+CHECK  20/40 mm characteristic-impedance agreement: measured 46.694223624863795+2.8197656916034277i; expected 50.04471860422384+2.8280702915659117i; error 3.350505271313178 (limit 1.5037368977234638)
+#f
+* 02-quarter-wave-transformer.rkt
+All tests passed
+* 03-half-wave-repeater.rkt
+** First test failed
+(report-near "repeated 75-ohm load at 1 GHz"
+               (impedance-at result 1000 #:port 'input #:interpolate? #t)
+               load-resistance #:relative 0.15) =>
+CHECK  repeated 75-ohm load at 1 GHz: measured 70.63177332868234-14.898089248754737i; expected 75; error 15.52528478050797 (limit 11.25)
+#f
+** Second test passed
+(report-near "expected 75-ohm-load S11 (dB)"
+               (s11-db-at result 1000 #:port 'input #:interpolate? #t)
+               (* 20 (/ (log 0.2) (log 10))) #:absolute 2.0) =>
+PASS  expected 75-ohm-load S11 (dB): measured -13.581750881586697; expected -13.979400086720375; error 0.3976492051336784 (limit 2.0)
+#t
+* 04-lumped-resistor.rkt
+** First test fails with unexpected impedance
+(report-near "dummy-load impedance at 1 GHz"
+               (impedance-at result 1000 #:port 'input #:interpolate? #t)
+               50 #:relative 0.10) =>
+CHECK  dummy-load impedance at 1 GHz: measured 43.61164838277097+3.8492319773420047i; expected 50; error 7.458392802792366 (limit 5.0)
+#f
+** Second test passes, though, with good return loss
+(report-at-most "dummy-load S11 at 1 GHz (dB)"
+                  (s11-db-at result 1000 #:port 'input #:interpolate? #t)
+                  -15) =>
+PASS  dummy-load S11 at 1 GHz (dB): measured -21.98102959640832; expected <= -15
+#t
+** Power budget looks right
+(display-power-budget (power-budget result #:frequency 1000)) =>
+Power budget — input excitation at 1000.000000 MHz
+
+Incident                            1.251045e-24 W    100.00%      0.00 dB
+Reflected                           7.928113e-27 W      0.63%    -21.98 dB
+Delivered to output ports                  0e+00 W      0.00%      -inf dB
+Radiated                            5.492974e-28 W      0.04%    -33.57 dB
+Dielectric heat                            0e+00 W      0.00%      -inf dB
+Lumped-element heat                 1.228309e-24 W     98.18%     -0.08 dB
+Conductors / numerical remainder    1.425856e-26 W      1.14%    -19.43 dB
+
+Accepted power        1.243117e-24 W
+Radiation efficiency          0.04%
+The final category includes conducting-sheet loss and power-balance error.
+* 05-series-rlc.rkt
+** First test passes
+(report-near "series-RLC insertion at resonance (dB)"
+               (s-parameter-db-at result 1000 #:from 'input #:to 'output
+                                  #:interpolate? #t)
+               (* 20 (/ (log (/ 100 105)) (log 10))) #:absolute 1.5) =>
+PASS  series-RLC insertion at resonance (dB): measured -0.5333709946040509; expected -0.4237859813987619; error 0.10958501320528902 (limit 1.5)
+#t
+** Second test passes
+(report-reciprocity result 1000 s-parameter-at) =>
+PASS  Soutputinput reciprocity at 1000 MHz: measured -0.2960000660079306-0.892643719752588i; expected -0.29628952546132636-0.8919031195651522i; error 0.0007951574767240445 (limit 0.01879658115283892)
+#t
+* 06-parallel-plate-capacitor.rkt
+** Test results slightly off, but charts looked good.
+(report-near "parallel-plate capacitance"
+               measured-capacitance expected-capacitance
+               #:relative 0.20) =>
+CHECK  parallel-plate capacitance: measured 5.579660940754654e-12; expected 4.64844860172e-12; error 9.312123390346537e-13 (limit 9.296897203440002e-13)
+#f
+06-parallel-plate-capacitor.rkt>
+(printf "Analytic no-fringing target: ~a pF\n"
+          (/ expected-capacitance picofarads)) =>
+Analytic no-fringing target: 4.64844860172 pF
+* 07-open-stub-notch.rkt
+** first test passes
+(report-at-most "quarter-wave stub S21 at 1 GHz (dB)"
+                  (s-parameter-db-at result 1000 #:from 'input #:to 'output
+                                     #:interpolate? #t)
+                  -10) =>
+PASS  quarter-wave stub S21 at 1 GHz (dB): measured -19.060173397370395; expected <= -10
+#t
+** Second test passes
+07-open-stub-notch.rkt>
+(report-reciprocity result 1000 s-parameter-at) =>
+PASS  Soutputinput reciprocity at 1000 MHz: measured -0.01784487379066119+0.10998903500069312i; expected -0.017845187230283336+0.10998881977392562i; error 3.8021961835480097e-7 (limit 0.0022285413330288455)
+#t
+* 08-half-wave-resonator.rkt
+This one gets an error from non-touching port terminals:
+
+(define result
+    (simulate engine openems sweep '(650 1350) profile standard
+              keep-artifacts #t)) =>
+OpenEMS artifacts: /var/tmp/antenna-turtle-openems17919037381791903738540
+OpenEMS trace mesh: trace8857808 -- ideal orthogonal metal-edge treatment
+OpenEMS trace mesh: trace8857809 -- ideal orthogonal metal-edge treatment
+OpenEMS trace mesh: trace8857810 -- ideal orthogonal metal-edge treatment
+openems-sweep: lumped element input-coupling has a terminal that does not touch conductive geometry
+* 09-ring-resonator.rkt
+** first test pass
+(report-near "ring transmission notch (MHz)"
+               notch-frequency 1000 #:relative 0.20) =>
+PASS  ring transmission notch (MHz): measured 1035.0; expected 1000; error 35.0 (limit 200.0)
+#t
+** second test pass
+(report-at-most "ring-notch depth (dB)"
+                  (s-parameter-db-at result notch-frequency
+                                     #:from 'input #:to 'output)
+                  -3) =>
+PASS  ring-notch depth (dB): measured -11.39449897824036; expected <= -3
+#t
+** third test pass
+(report-reciprocity result notch-frequency s-parameter-at) =>
+PASS  Soutputinput reciprocity at 1035.0 MHz: measured -0.2684763993004517-0.021350371396053558i; expected -0.2684765552174409-0.02134998063813816i; error 4.2071588509215403e-7 (limit 0.005386482428252133)
+#t
+* 10-free-space-dipole.rkt
+** First test pass
+(report-near "dipole resonance (MHz)" resonant-frequency 300
+               #:relative 0.10) =>
+PASS  dipole resonance (MHz): measured 279.0; expected 300; error 21.0 (limit 30.0)
+#t
+** Second test pass
+(report-near "dipole peak directivity (dBi)"
+               (maximum-gain pattern) 2.15 #:absolute 0.75) =>
+PASS  dipole peak directivity (dBi): measured 1.9619469728431307; expected 2.15; error 0.18805302715686922 (limit 0.75)
+#t
+* 11-small-loop.rkt
+** First test passed, with good directivity
+(report-near "small-loop peak directivity (dBi)"
+               (maximum-gain pattern) 1.76 #:absolute 0.75) =>
+PASS  small-loop peak directivity (dBi): measured 1.7272333177212356; expected 1.76; error 0.03276668227876445 (limit 0.75)
+#t
+** FIXED But, feedpoint impedance is wonky
+11-small-loop.rkt> (impedance-at result 300)
+-1.1398237110418794-3689.959043111218i
+
+; This needs investigation
+* 12-lossy-line.rkt
+** First test pass
+(report-true "lossy line has more insertion loss"
+               (< lossy-s21 ideal-s21)
+               (format "ideal ~a dB; lossy ~a dB" ideal-s21 lossy-s21)) =>
+PASS  lossy line has more insertion loss: ideal -0.040459397042921855 dB; lossy -0.23616703756559226 dB
+#t
+** second test pass
+(report-reciprocity lossy-result center-frequency s-parameter-at) =>
+PASS  Soutputinput reciprocity at 1000 MHz: measured -0.9701094911843129-0.07720251126135468i; expected -0.9701154662472791-0.07717652648594715i; error 2.6662894262048896e-5 (limit 0.019463609470934333)
+#t
+** Power budget looks OK
+(display-power-budget
+   (power-budget lossy-result #:excitation 'input
+                 #:frequency center-frequency)) =>
+Power budget — input excitation at 1000.000000 MHz
+
+Incident                            1.227163e-24 W    100.00%      0.00 dB
+Reflected                            5.16662e-27 W      0.42%    -23.76 dB
+Delivered to output ports           1.158365e-24 W     94.39%     -0.25 dB
+Radiated                             3.89376e-27 W      0.32%    -24.99 dB
+Dielectric heat                     5.533551e-26 W      4.51%    -13.46 dB
+Lumped-element heat                        0e+00 W      0.00%      -inf dB
+Conductors / numerical remainder    4.402055e-27 W      0.36%    -24.45 dB
+
+Accepted power        1.221996e-24 W
+Radiation efficiency          0.32%
+The final category includes conducting-sheet loss and power-balance error.
+
+* 13-pec-cavity.rkt
+This seemingly passed:
+
+(report-near "TE101 cavity resonance (MHz)"
+               cavity-resonance expected-te101 #:relative 0.05) =>
+CHECK  TE101 cavity resonance (MHz): measured 1500.0; expected 1249; error 251.0 (limit 62.45)
+#f
+
+However, the simulation finished in a shockingly short period of time:
+
+Running FDTD engine... this may take a while... grab a cup of coffee?!?
+[@        4s] Timestep:         3024 || Speed:   91.0 MC/s (1.342e-03 s/TS) || Energy: ~6.01e-20 (-49.35dB)
+[@        8s] Timestep:         8505 || Speed:  165.6 MC/s (7.371e-04 s/TS) || Energy: ~9.98e-21 (-57.14dB)
+RunFDTD: end-criteria of -50.00dB reached after 8505 timesteps (-57.14dB)
+Time for 8505 iterations with 122059.00 cells : 8.10 sec
+Speed: 128.21 MCells/s
+
+The 1500MHz resonant frequency is an oddly round number.  And finishing in 8505 time steps is fishy.
+* 14-pi-attenuator.rkt
+** result shows -5.9dB?
+(s-parameter-db-at result 1000 #:from 'input #:to 'output
+                                  #:interpolate? #t) =>
+-5.930675293195141
+** First test fails by 2dB
+(report-at-most "pi-attenuator input S11 at 1 GHz (dB)"
+                  (s-parameter-db-at result 1000 #:from 'input #:to 'input
+                                     #:interpolate? #t)
+                  -18) =>
+CHECK  pi-attenuator input S11 at 1 GHz (dB): measured -16.24544400959448; expected <= -18
+#f
+** Second test passes
+(report-reciprocity result 1000 s-parameter-at) =>
+PASS  Soutputinput reciprocity at 1000 MHz: measured -0.14583288879478945-0.4836974358350782i; expected -0.1458329177380328-0.483697489630035i; error 6.108689479409021e-8 (limit 0.010104068514620944)
+#t

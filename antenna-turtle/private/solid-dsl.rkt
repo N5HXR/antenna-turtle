@@ -48,6 +48,32 @@
         (list keyword (hash-ref settings key))
         '()))
 
+  (define (loss-expression value stx)
+    (syntax-parse value
+      [(narrow:id tangent frequency)
+       #:when (eq? (syntax-e #'narrow) 'narrow)
+       #'(make-narrow-loss tangent frequency)]
+      [(broad:id tangent lower upper)
+       #:when (eq? (syntax-e #'broad) 'broad)
+       #'(make-broad-loss tangent lower upper)]
+      [(broad:id tangent lower upper at:id reference)
+       #:when (and (eq? (syntax-e #'broad) 'broad)
+                   (eq? (syntax-e #'at) 'at))
+       #'(make-broad-loss tangent lower upper
+                          #:reference-frequency reference)]
+      [(relax:id pole ...+)
+       #:when (eq? (syntax-e #'relax) 'relax)
+       (define pole-expressions
+         (for/list ([item (in-list (syntax->list #'(pole ...)))])
+           (syntax-parse item
+             [(delta time) #'(list delta time)]
+             [_ (raise-syntax-error
+                 'dielectric
+                 "each relax pole must be (delta-epsilon relaxation-time)"
+                 stx item)])))
+       #`(make-relaxation-loss (list #,@pole-expressions))]
+      [_ value]))
+
   (define (precedence-keywords settings)
     (append (optional-keyword settings 'priority #'#:priority)
             (optional-keyword settings 'precedence #'#:precedence)))
@@ -109,10 +135,10 @@
                  (settings
                   'dielectric stx #'(argument ...)
                   '(name er ur relative-permittivity relative-permeability
-                         loss-tangent loss-frequency conductivity)
+                         loss loss-tangent loss-frequency conductivity)
                   (string-append
                    "expected name, er, ur, relative-permittivity, or "
-                   "relative-permeability, loss-tangent, loss-frequency, or "
+                   "relative-permeability, loss, loss-tangent, loss-frequency, or "
                    "conductivity setting/value pairs"))]
                 [epsilon
                  (or (hash-ref values 'er #f)
@@ -128,6 +154,10 @@
               #:name #,(name-expression name)
               #:relative-permittivity #,epsilon
               #:relative-permeability #,mu
+              #,@(if (hash-has-key? values 'loss)
+                     (list #'#:loss
+                           (loss-expression (hash-ref values 'loss) stx))
+                     '())
               #,@(optional-keyword values 'loss-tangent #'#:loss-tangent)
               #,@(optional-keyword values 'loss-frequency #'#:loss-frequency)
               #,@(optional-keyword values 'conductivity #'#:conductivity))))]))

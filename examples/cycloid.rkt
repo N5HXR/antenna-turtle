@@ -5,8 +5,7 @@
  frequency 906
  wire-diameter (* 2 millimeters)
  max-length (half centimeter)
- ground real
- height 10
+ impedance 200
 )
 
 ;; A cycloid curl is roughly half a wavelength around its circumference.
@@ -24,7 +23,7 @@
 
 ;; Generate geometry for a collinear cycloid antenna array.
 (define (cycloid)
-  (with-scale 0.979
+  (with-scale 0.965
     (with-points
      (point left radius)
      (move up half-wave)
@@ -39,4 +38,11 @@
 (from-here (cycloid))
 (printf "Used ~a meters of wire.~n" (~r (- (wire-used) mark)))
 
-(export-mmana "mmana/cycloid.maa")
+(define impedance (nec2c-measure-impedance))
+(define sweep (nec2c-vswr-sweep 800 1050 #:steps 201))
+(define azimuth (nec2c-azimuth-pattern #:elevation 0 #:step 2))
+(define sphere (nec2c-radiation-grid #:theta-step 1 #:phi-step 1))
+
+(show-model)
+(show-radiation-pattern-opengl sphere #:palette 'electric)
+(show-smith-chart sweep)

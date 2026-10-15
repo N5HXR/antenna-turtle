@@ -7,6 +7,9 @@
 
 (provide
  gain-at maximum-gain maximum-gain-direction
+ maximum-gain-at-frequency realized-maximum-gain-at-frequency
+ horizon-gain-at-frequency realized-horizon-gain-at-frequency
+ maximum-gain-direction-at-frequency radiation-pattern-at-frequency
  front-to-back-ratio front-to-side-ratio
  axial-ratio-at polarization-tilt-at polarization-sense-at e-field-at
  pattern-angular-resolution measurement-pattern-frequencies)
@@ -191,6 +194,64 @@
     (maximum-gain-sample 'maximum-gain-direction pattern component))
   (list (sample-azimuth sample) (sample-elevation sample)))
 
+(define (gain-sweep-value-at who result frequency accessor interpolate?)
+  (unless (nec2c-gain-sweep-result? result)
+    (raise-argument-error who "nec2c-gain-sweep-result?" result))
+  (sample-at-frequency
+   who
+   (nec2c-gain-sweep-result-samples result)
+   frequency
+   nec2c-gain-sweep-sample-frequency-mhz
+   accessor
+   interpolate-db-power
+   interpolate?))
+
+(define (maximum-gain-at-frequency result frequency
+                                   #:interpolate? [interpolate? #f])
+  (gain-sweep-value-at
+   'maximum-gain-at-frequency result frequency
+   nec2c-gain-sweep-sample-maximum-gain-db interpolate?))
+
+(define (realized-maximum-gain-at-frequency
+         result frequency #:interpolate? [interpolate? #f])
+  (gain-sweep-value-at
+   'realized-maximum-gain-at-frequency result frequency
+   nec2c-gain-sweep-sample-realized-maximum-gain-db interpolate?))
+
+(define (horizon-gain-at-frequency result frequency
+                                   #:interpolate? [interpolate? #f])
+  (gain-sweep-value-at
+   'horizon-gain-at-frequency result frequency
+   nec2c-gain-sweep-sample-horizon-gain-db interpolate?))
+
+(define (realized-horizon-gain-at-frequency
+         result frequency #:interpolate? [interpolate? #f])
+  (gain-sweep-value-at
+   'realized-horizon-gain-at-frequency result frequency
+   nec2c-gain-sweep-sample-realized-horizon-gain-db interpolate?))
+
+(define (gain-sweep-discrete-value-at who result frequency accessor)
+  (unless (nec2c-gain-sweep-result? result)
+    (raise-argument-error who "nec2c-gain-sweep-result?" result))
+  (sample-at-frequency
+   who
+   (nec2c-gain-sweep-result-samples result)
+   frequency
+   nec2c-gain-sweep-sample-frequency-mhz
+   accessor
+   (lambda (left _right _fraction) left)
+   #f))
+
+(define (maximum-gain-direction-at-frequency result frequency)
+  (gain-sweep-discrete-value-at
+   'maximum-gain-direction-at-frequency result frequency
+   nec2c-gain-sweep-sample-maximum-gain-direction))
+
+(define (radiation-pattern-at-frequency result frequency)
+  (gain-sweep-discrete-value-at
+   'radiation-pattern-at-frequency result frequency
+   nec2c-gain-sweep-sample-pattern))
+
 (define (front-to-back-ratio pattern #:component [component 'total]
                              #:interpolate? [interpolate? #t])
   (define front (maximum-gain-sample 'front-to-back-ratio pattern component))
@@ -314,6 +375,9 @@
    (minimum-positive-step (map sample-elevation samples))))
 
 (define (measurement-pattern-frequencies pattern)
-  (unique-sorted
-   (map nec2c-pattern-sample-frequency-mhz
-        (pattern-samples 'measurement-frequencies pattern))))
+  (if (nec2c-gain-sweep-result? pattern)
+      (map nec2c-gain-sweep-sample-frequency-mhz
+           (nec2c-gain-sweep-result-samples pattern))
+      (unique-sorted
+       (map nec2c-pattern-sample-frequency-mhz
+            (pattern-samples 'measurement-frequencies pattern)))))

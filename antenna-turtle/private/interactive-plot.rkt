@@ -95,7 +95,7 @@
                                #:aspect-ratio [aspect-ratio #f]
                                #:legend-anchor [legend-anchor 'bottom-right]
                                #:legend-items [legend-items '()]
-                               #:legend? [legend? #t]
+                               #:legend? [legend? #f]
                                #:axes? [axes? #t]
                                #:cursor-rule? [cursor-rule? #t]
                                #:theme [theme 'light])

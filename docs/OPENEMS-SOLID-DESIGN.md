@@ -159,12 +159,12 @@ substitution as future work.
 
 ## Materials and overlap
 
-The first loss revision supports PEC, constant-conductivity conductors, and
-nondispersive dielectrics. A dielectric loss tangent is converted to constant
-conductivity at the model frequency (or an explicit reference frequency), so
-its accuracy is intentionally narrowband. The manifest retains both the
-material intent and the derived value. Magnetic and dispersive materials
-remain future work.
+The material layer supports PEC, constant-conductivity conductors, narrowband
+dielectric loss represented by conductivity, causal broadband fits generated
+from one permittivity/loss-tangent reference, and explicit Debye relaxation
+poles. The manifest retains the declared model, resolved fit range, and pole
+data. Broadband dielectric polarization heat is not included in the existing
+conductivity/SAR power subtotal. Magnetic dispersion remains future work.
 
 Ferrites are not merely lossy dielectrics. Future work may require complex,
 frequency-dependent, anisotropic, or gyrotropic permeability and is bounded by

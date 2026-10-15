@@ -3,7 +3,7 @@
 (require "material.rkt")
 
 (provide silver copper gold aluminum brass steel
-         air fr4 ptfe teflon
+         air fr4 fr4-vhf fr4-uhf fr4-shf ptfe teflon
          rogers-4003c rogers-4350b rogers-5880)
 
 ;; Nominal room-temperature bulk conductivities in S/m. Steel deliberately
@@ -23,6 +23,15 @@
 (define air (dielectric #:name 'air #:relative-permittivity 1.0))
 (define fr4
   (dielectric #:name 'fr4 #:relative-permittivity 4.4 #:loss-tangent 0.015))
+(define fr4-vhf
+  (dielectric #:name 'fr4-vhf #:relative-permittivity 4.4
+              #:loss (make-broad-loss 0.015 50 300)))
+(define fr4-uhf
+  (dielectric #:name 'fr4-uhf #:relative-permittivity 4.4
+              #:loss (make-broad-loss 0.015 300 3000)))
+(define fr4-shf
+  (dielectric #:name 'fr4-shf #:relative-permittivity 4.4
+              #:loss (make-broad-loss 0.015 3000 10000)))
 (define ptfe
   (dielectric #:name 'ptfe #:relative-permittivity 2.1 #:loss-tangent 0.0002))
 (define teflon ptfe)

@@ -26,14 +26,16 @@
   (cond
     [(network-sweep? result) result]
     [(nec2c-sweep-result? result) (nec2c-sweep->network-sweep result)]
+    [(nec2c-gain-sweep-result? result)
+     (nec2c-gain-sweep->network-sweep result)]
     [(openems-sweep-result? result) (openems-sweep->network-sweep result)]
     [(openems-multiport-result? result) (openems-sweep->network-sweep result)]
     [else
      (raise-argument-error
       who
       (string-append
-       "network-sweep?, nec2c-sweep-result?, openems-sweep-result?, or "
-       "openems-multiport-result?")
+       "network-sweep?, nec2c-sweep-result?, nec2c-gain-sweep-result?, "
+       "openems-sweep-result?, or openems-multiport-result?")
       result)]))
 
 (define (select-name who requested available description)
@@ -159,6 +161,11 @@
      (unique-sorted
       (map nec2c-feedpoint-sample-frequency-mhz
            (nec2c-impedance-result-samples result)))]
+    [(nec2c-gain-sweep-result? result)
+     (list
+      (nec2c-feedpoint-sample-feed-name
+       (nec2c-gain-sweep-sample-feedpoint
+        (first (nec2c-gain-sweep-result-samples result)))))]
     [(openems-multiport-result? result)
      (unique-sorted
       (map openems-s-parameter-sample-frequency-mhz

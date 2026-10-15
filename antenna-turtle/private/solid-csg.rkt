@@ -206,7 +206,9 @@
                       #:priority [priority #f]
                       #:precedence [precedence #f]
                       #:anchor [anchor 'center]
-                      #:metal-thickness [metal-thickness #f])
+                      #:metal-thickness [metal-thickness #f]
+                      #:form [form 'solid]
+                      #:material-source [material-source 'explicit-or-context])
   (dynamic-wind
     void
     (lambda ()
@@ -217,7 +219,9 @@
                     (and (not priority)
                          (material-default-precedence material)))
                 #:anchor anchor
-                #:metal-thickness metal-thickness))
+                #:metal-thickness metal-thickness
+                #:form form
+                #:material-source material-source))
     (lambda () (close-solid! geometry))))
 
 (define (csg-cuboid size #:anchor [anchor 'center])

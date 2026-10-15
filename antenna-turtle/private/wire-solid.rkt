@@ -167,7 +167,8 @@
           (solid-body
            (fresh-wire-name (solid-scene-bodies original)
                             (solid-scene-sheets original))
-           pec solid 20 'world identity-transform #f))
+           pec solid 20 'world identity-transform #f
+           'solid 'explicit-or-context))
         (define combined
           (solid-scene
            (append (solid-scene-bodies original) (list body))

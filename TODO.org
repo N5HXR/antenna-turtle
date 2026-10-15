@@ -98,6 +98,13 @@ frequency, built-in room-temperature metal conductivities, geometry-owned
 sheet thickness, and Yee-aligned conducting boundaries for rectilinear solid
 bodies. Preserve lossless examples and add a lossy filter companion.
 
+* DONE Add OpenEMS broadband dielectric loss
+Support compact ~narrow~, ~broad~, and explicit ~relax~ loss specifications,
+model-centered derived dielectrics, nominal VHF/UHF/SHF FR4 catalog entries,
+causal CSXCAD broadband export, dispersive mesh sizing, fit-range diagnostics,
+and manifest provenance. Explicitly exclude relaxation heat from the existing
+conductivity/SAR power subtotal until a frequency-domain integrator is added.
+
 * DONE Add OpenEMS aggregate power-budget reporting
 Retain absolute port powers, integrate model-frequency dielectric loss with a
 raw-SAR dump, probe resistive lumped elements, and combine those measurements

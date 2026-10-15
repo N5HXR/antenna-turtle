@@ -241,7 +241,7 @@
 (define (show-solid-model #:width [width 900]
                           #:height [height 700]
                           #:aspect-ratio [aspect-ratio 1]
-                          #:legend? [legend? #t]
+                          #:legend? [legend? #f]
                           #:wire-segments [wire-segments 24])
   (call-with-derived-wire-scene
    (lambda (_derivation)

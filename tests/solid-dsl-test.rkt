@@ -2,7 +2,8 @@
 
 (require rackunit
          (prefix-in m: manifold)
-         "../antenna-turtle/main.rkt")
+         "../antenna-turtle/main.rkt"
+         "../antenna-turtle/private/openems-material.rkt")
 
 (define (m-point->list point)
   (list (m:point3-x point) (m:point3-y point) (m:point3-z point)))
@@ -188,6 +189,38 @@
   (check-= (m:solid-volume (solid-body-solid shield)) 1.44e-6 1e-12)
   (clear-bodies))
 
+(test-case "with-body surface form is an explicit PEC boundary representation"
+  (reset-model!)
+  (define notice (open-output-string))
+  (define boundary
+    (parameterize ([current-output-port notice])
+      (with-material copper
+        (with-body name cavity form surface
+          (difference
+            (cuboid size '(20 10 12))
+            (cuboid size '(16 6 10)))))))
+  (check-equal? (em-material-kind (solid-body-material boundary)) 'pec)
+  (check-equal? (solid-body-form boundary) 'surface)
+  (check-equal? (solid-body-material-source boundary)
+                'forced-by-surface-form)
+  (check-regexp-match #rx"form surface; modeling its boundary as PEC"
+                      (get-output-string notice))
+  (clear-bodies)
+
+  (define explicit-pec
+    (with-body name explicit-pec form surface material pec
+      (cuboid size '(2 2 2))))
+  (check-equal? (solid-body-form explicit-pec) 'surface)
+  (check-equal? (solid-body-material-source explicit-pec)
+                'explicit-or-context)
+  (clear-bodies)
+
+  (check-exn #rx"surface-form bodies must use PEC"
+             (lambda ()
+               (with-body form surface material copper
+                 (cuboid size '(2 2 2)))))
+  (clear-bodies))
+
 (test-case "with-body supports union, intersection, hull, and turtle placement"
   (reset-model!)
   (define start (here))
@@ -286,6 +319,45 @@
       (sheet rect name trace size '(10 1) material copper thickness 0.035)))
   (check-= (planar-sheet-thickness trace) 0.000035 1e-15)
   (clear-bodies))
+
+(test-case "compact dielectric loss models validate and remain inspectable"
+  (define narrow-material
+    (dielectric name narrow-board er 4.4 loss (narrow 0.015 1000)))
+  (check-equal? (material-loss-kind (em-material-loss-spec narrow-material))
+                'narrow)
+  (check-equal? (material-loss-reference-frequency
+                 (em-material-loss-spec narrow-material))
+                1000)
+  (define broad-material
+    (dielectric name broad-board er 4.4 loss (broad 0.015 200 2000 at 1000)))
+  (define broad-range
+    (material-loss-reference-frequency (em-material-loss-spec broad-material)))
+  (check-equal? (material-loss-kind (em-material-loss-spec broad-material))
+                'broad)
+  (check-equal? (broadband-loss-range-lower-frequency broad-range) 200)
+  (check-equal? (broadband-loss-range-upper-frequency broad-range) 2000)
+  (check-equal? (broadband-loss-range-reference-frequency broad-range) 1000)
+  (define relaxed-material
+    (dielectric name measured-board er 3.7
+                loss (relax (0.42 8e-11) (0.18 1.7e-10))))
+  (check-equal? (length (material-loss-value
+                         (em-material-loss-spec relaxed-material)))
+                2)
+  (define derived (model-dielectric fr4))
+  (define derived-range
+    (material-loss-reference-frequency (em-material-loss-spec derived)))
+  (check-equal? (broadband-loss-range-model-factor derived-range) 2)
+  (define-values (derived-lower derived-upper)
+    (dielectric-broadband-range-mhz derived 440))
+  (check-equal? (list derived-lower derived-upper) '(220 880))
+  (check-= (dielectric-effective-loss-tangent broad-material 1000 1000)
+           0.015 1e-12)
+  (check-true
+   (> (dielectric-maximum-relative-permittivity broad-material 1000) 4.4))
+  (check-exn #rx"greater than 1" (lambda () (model-dielectric fr4 1)))
+  (check-exn #rx"lower frequency must be less"
+             (lambda ()
+               (dielectric name bad er 4 loss (broad 0.01 1000 100)))))
 
 (test-case "catalog substrates and copper make ordinary PCB geometry concise"
   (reset-model!)

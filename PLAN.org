@@ -1,0 +1,328 @@
+#+title: Antenna Turtle Future Development Plan
+
+* Purpose
+
+This file is the parking place for capabilities deliberately deferred beyond
+the first solid-modeling/OpenEMS revision.  It is an idea inventory, not a
+promise of order or scope.  Concrete release work and defects remain in
+~TODO.org~; completed Revision 1 features are documented in the manual and API
+reference rather than repeated here.
+
+The broad direction is to preserve the small turtle vocabulary while adding
+physical modeling only where a compact, composable idiom is clear.  Solver
+details should remain behind solver-neutral scene and measurement objects
+whenever practical.
+
+* Likely next milestones
+
+** Planar and distributed ports
+
+The first OpenEMS backend has axis-aligned lumped ports.  Add explicit planar
+ports with the geometry and modal information needed for:
+
+- microstrip and stripline;
+- coplanar structures;
+- coaxial lines;
+- rectangular or other supported waveguides; and
+- general modal/distributed-port measurements.
+
+The API should use programmer-controlled port names, retain the existing
+multi-excitation result model, and make reference planes and polarity
+unambiguous.  A useful first target is a microstrip port that is less sensitive
+to the dimensions of a lumped excitation block.
+
+** Topology-aware mesh simplification
+
+Replace purely conservative refinement with an iterative, geometry-aware
+plane-removal pass.  It should operate on the three axis-line sets while:
+
+- preserving ports, explicit ~mesh-point~ and ~mesh-plane~ constraints,
+  material boundaries, and required metal-edge lines;
+- checking material occupancy, topology, and allowed geometric error;
+- enforcing wavelength resolution, adjacent-cell grading, aspect-ratio, and
+  total-cell limits; and
+- explaining retained or removed critical lines in the manifest.
+
+This is the main route to smaller simulations without making the mesher
+silently change the electrical model.
+
+** Further broadband and magnetic materials
+
+Revision 1 now supports model-centered and explicitly ranged causal broadband
+dielectric fits plus explicit Debye relaxation poles. Later material support
+should investigate:
+
+- fitting measured multi-frequency complex-permittivity data rather than one
+  nominal permittivity/loss-tangent point;
+- volumetric or dispersive conductor models for curved and oblique metal,
+  instead of restricting finite-conductivity bodies to Yee-aligned faces;
+- complex and frequency-dependent permeability;
+- anisotropic and gyrotropic media; and
+- ferrite presets only after the backend can represent their magnetic
+  behavior honestly.
+
+The room-temperature material catalog should remain convenient defaults, not
+a substitute for frequency-specific vendor data.  Temperature modeling is not
+currently a goal.
+
+** Better power accounting
+
+The current power budget reports radiation, dielectric heat, resistive
+lumped-element heat, delivered port power, and a conductor/numerical
+remainder.  Improve this by measuring conductor dissipation directly enough to
+separate it from PML, discretization, and conservation-closure error.
+
+The current dielectric subtotal includes narrowband conductivity loss but not
+Debye polarization-relaxation heat. Add frequency-domain field integration for
+dispersive dielectrics before presenting that heat as a measured category.
+
+Breakdowns by useful material class or material (conductors, dielectrics,
+lumped resistors, radiation, and ports) are desirable.  Per-object heat maps
+or a line item for every component are not a priority unless a concrete
+diagnostic need appears.
+
+** Additional manufacturing importers
+
+Build on STL import with formats that naturally describe RF fabrication:
+
+- extruded DXF outlines; and
+- PCB artwork such as Gerber copper layers.
+
+Keep parsing and scene construction independent of OpenEMS so imported models
+can be reused by later backends.  Layer mapping, units, thickness, material,
+and precedence must be explicit and reproducible.
+
+* Solid construction beyond Revision 1
+
+** PEC enclosures and CSG boundary robustness
+
+The staged enclosure policy is:
+
+1. Revision 1 guarantees at least two cells across every bounding-box
+   dimension of an explicit ~form solid~ PEC body.  Construct cavity walls as
+   separate, possibly overlapping cuboids when using this path.  A hollow
+   ~difference~ body does not reveal wall thickness through its final bounding
+   box, so this guarantee deliberately does not claim to repair that model.
+2. The opt-in ~form surface~ path converts the final axis-aligned Manifold
+   boundary to native PEC polygons.  It handles the inner and outer faces of a
+   Boolean-difference cavity, forces PEC when material is omitted, and rejects
+   explicit non-PEC material.
+3. A future revision should make surface conversion robust for more complex
+   geometry.  Topics include coplanar triangle merging, removal of internal
+   faces in touching or overlapping assemblies, consistent surface normals,
+   oblique facets and their Yee-grid approximation, and ray/occupancy tests
+   when final-boundary topology alone is insufficient.  If CSG source-feature
+   provenance is retained, it may also guide critical mesh coordinates, but
+   those coordinates must correspond to surviving physical boundaries rather
+   than blindly preserving every cutter plane.
+
+The STL solid path remains available because callers may intentionally want a
+volumetric PEC object or arbitrary geometry.  The surface path therefore stays
+an explicit ~form surface~ choice rather than becoming an automatic PEC
+optimization.
+
+** Turtle-path solids
+
+Add a path-construction context distinct from ~with-traces~.  Candidate
+operations are:
+
+- trace a closed outline in the turtle's local XY plane and extrude it along
+  turtle up;
+- revolve a closed trace around an explicit axis;
+- sweep a circular, rectangular, or arbitrary profile along a turtle path;
+- loft between two or more traces; and
+- decide explicitly whether a constructed solid also contributes a useful
+  centerline to NEC-style wire exporters.
+
+Planar extrusion is the smallest coherent first slice: reject out-of-plane
+movement, require a closed valid outline, and specify extrusion direction and
+distance without exposing raw Manifold objects.
+
+** Reserved CSG and transformation operations
+
+The following Manifold-style operations were considered useful but postponed
+until real models establish their exact turtle semantics:
+
+- ~stretch~ for independent forward/back, left/right, and up/down scaling;
+- mirror about an explicit axis/plane and origin;
+- trim with an explicit plane and a clear choice of which side survives;
+- split a body by a plane;
+- Minkowski sum; and
+- more general extrusion operations.
+
+Uniform body ~scale~, ~union~, ~difference~, ~intersect~, and ~hull~ already
+cover Revision 1.  New operations should work inside ~with-body~ and preserve
+the established anchor and turtle-frame rules.
+
+** Trace refinements
+
+Revision 1 traces are planar constant-width sheets with butt ends and miter or
+bevel joins.  Possible later additions include:
+
+- selectable end caps and corner profiles;
+- tapered or varying-width paths;
+- an explicit way to join or loft adjacent ~with-traces~ scopes; and
+- a generalized nonplanar trace or ribbon only if a compelling RF use case
+  appears.
+
+Axis-aligned traces should continue to receive ideal metal-edge meshing, while
+oblique traces use controlled width refinement.
+
+** Automated material Boolean resolution
+
+Revision 1 requires explicit precedence for unlike overlapping materials.
+Future work may define safe Boolean ownership rules for selected combinations,
+but must not guess when the intended physical interface is ambiguous.
+
+* Components and network simulation
+
+** Measured multiport component substitution
+
+Investigate embedding a measured component described by Touchstone S
+parameters.  The motivating use is a realistic packaged RF component with
+parasitics beyond an ideal series/parallel RLC model.  A two-port network has
+more terminal and reference-plane semantics than the current two-terminal
+~lumped-element~, and OpenEMS may not provide a direct implementation; keep
+this item backend-dependent rather than faking it as an ideal lumped element.
+
+** Mixed reference impedances
+
+The OpenEMS multiport result currently assumes one common reference
+impedance.  Add correct mixed-impedance power-wave normalization, preserving
+named ports and the solver-neutral S-parameter API.
+
+** Optional frequency-domain NF2FF recording
+
+Time-domain recording is the Revision 1 default because it permits arbitrary
+in-band postprocessing.  Consider an explicit list of recorded frequencies for
+smaller artifacts when the user accepts that other frequencies cannot be
+recovered without rerunning FDTD.
+
+* Grounds and boundaries
+
+** Infinite-ground modeling for field solvers
+
+Consider a clear model-level metaphor for a monopole or other structure over
+an infinite PEC ground when the backend can implement it faithfully through a
+boundary condition or image symmetry.  Do not represent infinity with an
+arbitrarily large hidden sheet.
+
+** NEC radial ground screens
+
+Extend the existing free-space, perfect-ground, and real-ground NEC support
+with optional radial-wire ground screens and explicit dimensions/material
+parameters.
+
+* Solver and exporter growth
+
+** Palace or another finite-element backend
+
+Preserve solver-neutral bodies, materials, ports, manifests, and measurement
+results so a future Palace/FEM backend can reuse the DSL.  Importers should not
+be coupled to CSXCAD, and backend-specific restrictions should remain
+validation rules rather than leak into basic geometry construction.
+
+** Solid-aware MATLAB export
+
+Add a physical-solid MATLAB export path rather than silently reducing solid
+models to wire ribbons or lofts.  Define the supported material and port
+subset explicitly.
+
+** Exporter diagnostics and parity
+
+Warn when wire-only exporters such as NEC2C or MMANA ignore explicit bodies or
+sheets.  Continue improving branch handling in the approximate MATLAB loft
+exporter if a stable solid topology can be represented.
+
+* Measurement and automation
+
+** Coalesced simulation requests
+
+Add a batch request API capable of combining compatible impedance, sweep,
+pattern, and other measurements into the fewest NEC2C or OpenEMS executions.
+The independent measurement procedures should remain the simple public entry
+points; batching must be an optimization, not a requirement for ordinary use.
+
+** Optimization conveniences
+
+Possible additions for automated design searches include:
+
+- serialization of result data to CSV, JSON, or s-expressions;
+- bandwidth, beamwidth, efficiency, and other summary metrics not already in
+  the measurement-query API;
+- small composable fitness helpers; and
+- controlled parallel evaluation with bounded solver concurrency and
+  deterministic artifact ownership.
+
+Raw transparent result structures and ordinary Racket iteration must remain
+available so specialized optimization never depends on a large framework.
+
+** Stronger reference verification
+
+Turn the verification examples into durable numerical references after each
+model has been manually inspected.  Record expected quantities and defensible
+tolerances, exercise multiple mesh profiles where appropriate, and keep long
+external-solver checks opt-in until their runtime is suitable for routine CI.
+
+* Visualization and live-workflow improvements
+
+** Reusable handles for Plot and Plot3D
+
+OpenGL radiation views already support in-place replacement through
+~visualization-handle~.  Extend that lifecycle to ordinary Plot and Plot3D
+windows so parameter searches can update existing graphs while preserving
+window placement, zoom, and presentation state.
+
+** Deliberate display of triangulated geometry
+
+Revision 1 normally hides internal polygon triangulation because it distracts
+from the authoritative outline.  A future diagnostic view may expose triangles
+and solver primitives on demand, together with mesh constraints, without
+making them the normal solid-model presentation.
+
+* General turtle-language ideas
+
+** Recorded coordinates and vector-directed turns
+
+Consider named/recorded geometric coordinates and an operation that turns the
+turtle toward a vector derived from recorded points or a recorded segment.
+The design must distinguish coordinate data from turtle state and compose
+cleanly with ~here~, ~goto~, ~from-here~, scaling, and reflection.
+
+** Generalized file libraries
+
+Racket's ~require~ and ~provide~ already support reusable libraries of turtle
+geometry, so no separate include form is planned.  Revisit this only if model
+authors encounter a concrete problem that modules cannot solve cleanly.
+
+* Ideas intentionally parked pending a use case
+
+These are remembered but should not drive an API merely because Manifold or a
+solver happens to expose them:
+
+- arbitrary three-dimensional PCB traces;
+- plane splitting, trimming, or Minkowski operations without a model that
+  demonstrates readable turtle syntax;
+- temperature-dependent material presets;
+- individual-component heat accounting; and
+- hidden approximations for unsupported infinite geometry or network
+  components.
+
+When one of these becomes necessary, begin with the model that requires it and
+design the smallest operation that expresses that model naturally.
+
+* Source notes
+
+This inventory consolidates deferred work previously recorded in:
+
+- ~TODO.org~;
+- ~docs/OPENEMS-SOLID-DESIGN.md~;
+- ~docs/NEC2C-AUTOMATION-SPEC.md~;
+- ~docs/API.md~ and ~docs/USER-MANUAL.md~; and
+- design decisions made while developing CSG bodies, planar traces, materials,
+  lumped elements, power budgets, measurement queries, and verification
+  examples.
+
+Before starting a milestone, verify that the corresponding limitation still
+exists and move an approved, concrete slice into ~TODO.org~ with acceptance
+criteria.

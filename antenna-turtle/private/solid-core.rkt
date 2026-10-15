@@ -53,7 +53,8 @@
 ;; A scene owns the transformed Manifold handles stored in its bodies. The
 ;; caller retains ownership of the source solid passed to add-body.
 (struct solid-body
-  (name material solid priority coordinates placement-transform metal-thickness)
+  (name material solid priority coordinates placement-transform metal-thickness
+        form material-source)
   #:transparent)
 (struct planar-sheet
   (name material points normal priority placement-transform mesh-edges thickness
@@ -163,9 +164,27 @@
                   #:precedence [precedence #f]
                   #:coordinates [coordinates 'local]
                   #:anchor [anchor 'origin]
-                  #:metal-thickness [metal-thickness #f])
+                  #:metal-thickness [metal-thickness #f]
+                  #:form [form 'solid]
+                  #:material-source [material-source 'explicit-or-context])
   (define effective-name (effective-feature-name 'add-body name 'body))
   (validate-material 'add-body material)
+  (unless (memq form '(solid surface))
+    (raise-argument-error 'add-body "(or/c 'solid 'surface)" form))
+  (unless (memq material-source '(explicit-or-context forced-by-surface-form))
+    (raise-argument-error
+     'add-body
+     "(or/c 'explicit-or-context 'forced-by-surface-form)"
+     material-source))
+  (when (and (eq? form 'surface)
+             (not (eq? (em-material-kind material) 'pec)))
+    (raise-arguments-error
+     'add-body "surface-form bodies must use PEC"
+     "material" material))
+  (when (eq? material-source 'forced-by-surface-form)
+    (printf
+     "Antenna Turtle material notice: body ~a uses form surface; modeling its boundary as PEC.\n"
+     effective-name))
   (define effective-priority
     (effective-precedence 'add-body priority precedence))
   (when metal-thickness
@@ -197,7 +216,8 @@
     (solid-body effective-name material owned-solid effective-priority
                 coordinates effective-placement
                 (and metal-thickness
-                     (* (current-geometry-scale) metal-thickness))))
+                     (* (current-geometry-scale) metal-thickness))
+                form material-source))
   (define scene (current-solid-scene))
   (set-solid-scene-bodies!
    scene (append (solid-scene-bodies scene) (list body)))

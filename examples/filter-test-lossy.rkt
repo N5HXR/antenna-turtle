@@ -2,9 +2,9 @@
 
 (require (prefix-in m: manifold))
 
-;; Lossy companion to filter-test.rkt.  FR4 loss is referenced to the model
-;; frequency, copper has 35 um physical thickness, and the optional enclosure
-;; exercises the revision-1 rectilinear solid-conductor path.
+;; Lossy companion to filter-test.rkt. FR4 uses a causal broadband model from
+;; half through twice the model frequency, copper has 35 um physical thickness,
+;; and the optional enclosure exercises the rectilinear solid-conductor path.
 (model title "OpenEMS lossy hybrid lumped/distributed bandpass"
        frequency 435
        impedance 50)
@@ -18,7 +18,9 @@
 (define feed-length 20)
 (define resonator-gap 4)
 (define copper-thickness 0.035)
-(define fr4 (dielectric name fr4 er 4.4 loss-tangent 0.002))
+(define filter-fr4
+  (model-dielectric
+   (dielectric name filter-fr4 er 4.4 loss (narrow 0.002 435))))
 (define capacitors {2.2 * picofarads})
 
 (define shield-solid
@@ -40,7 +42,7 @@
                     #:mesh-edges 'metal)))
 
 (with-scale millimeters
-  (with-material fr4
+  (with-material filter-fr4
     (cuboid name substrate
       size (list board-length board-width substrate-height)
       anchor bottom))

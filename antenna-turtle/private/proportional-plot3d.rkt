@@ -50,7 +50,7 @@
          #:aspect-multiplier [aspect-multiplier 1]
          #:legend-anchor [_legend-anchor (plot-legend-anchor)]
          #:legend-items [legend-items '()]
-         #:legend? [legend? #t])
+         #:legend? [legend? #f])
   (parameterize ([plot-title title]
                  [plot-x-label x-label]
                  [plot-y-label y-label]
@@ -191,7 +191,7 @@
          #:aspect-multiplier [aspect-multiplier 1]
          #:legend-anchor [legend-anchor (plot-legend-anchor)]
          #:legend-items [legend-items '()]
-         #:legend? [legend? #t])
+         #:legend? [legend? #f])
   (unless (boolean? legend?)
     (raise-argument-error 'show-proportional-plot3d "boolean?" legend?))
   ;; A solver call commonly follows immediately after showing geometry and

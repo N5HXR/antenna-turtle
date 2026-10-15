@@ -54,6 +54,23 @@ From this directory:
 raco pkg install --auto --link "$PWD"
 ```
 
+The base installation does not require Manifold. It supports wire models and
+the NEC2C, MMANA, and MATLAB file exporters. When the `racket-manifold`
+package and its native library load successfully, the same `#lang
+antenna-turtle` language also exports the solid-modeling and OpenEMS API. To
+enable that optional backend after installing Antenna Turtle:
+
+```sh
+raco pkg install --auto racket-manifold
+raco setup --pkgs antenna-turtle
+```
+
+Without Manifold, loading an Antenna Turtle model prints a short capability
+warning. Wire-only programs continue normally; solid-modeling names are not
+bound and therefore produce Racket's ordinary unbound-identifier error if
+used. After repairing or installing Manifold, rerun the `raco setup` command
+above so the language is recompiled with the full export set.
+
 Run a model with ordinary Racket to construct and validate its geometry without
 creating output files:
 

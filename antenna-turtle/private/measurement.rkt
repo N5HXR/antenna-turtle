@@ -15,7 +15,9 @@
  measurement-ports)
 
 (define (measurement-frequencies result)
-  (if (or (nec2c-pattern? result) (nec2c-pattern-grid? result))
+  (if (or (nec2c-pattern? result)
+          (nec2c-pattern-grid? result)
+          (nec2c-gain-sweep-result? result))
       (measurement-pattern-frequencies result)
       (measurement-network-frequencies result)))
 

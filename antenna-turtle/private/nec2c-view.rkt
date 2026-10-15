@@ -14,6 +14,7 @@
 (provide
  vswr-sweep-renderers
  return-loss-sweep-renderers
+ gain-sweep-renderers
  impedance-sweep-renderers
  smith-chart-renderers
  s-parameter-magnitude-renderers
@@ -22,6 +23,8 @@
  radiation-grid-renderers
  show-vswr-sweep
  show-return-loss-sweep
+ show-gain-sweep
+ show-gain-and-match-sweep
  show-impedance-sweep
  show-smith-chart
  show-s-parameter-magnitude
@@ -59,6 +62,8 @@
   (cond
     [(network-sweep? result) result]
     [(nec2c-sweep-result? result) (nec2c-sweep->network-sweep result)]
+    [(nec2c-gain-sweep-result? result)
+     (nec2c-gain-sweep->network-sweep result)]
     [(or (openems-sweep-result? result)
          (openems-multiport-result? result))
      (openems-sweep->network-sweep result)]
@@ -66,7 +71,7 @@
      (raise-argument-error
       who
       (string-append
-       "(or/c nec2c-sweep-result? openems-sweep-result? "
+       "(or/c nec2c-sweep-result? nec2c-gain-sweep-result? openems-sweep-result? "
        "openems-multiport-result? network-sweep?)")
       result)]))
 
@@ -155,6 +160,61 @@
                 #:style 'short-dash
                 #:color "gray"
                 #:label "-10 dB"))))
+
+(define gain-sweep-series-specs
+  (list
+   (list "maximum gain"
+         nec2c-gain-sweep-sample-maximum-gain-db
+         "steelblue" 'solid)
+   (list "realized maximum gain"
+         nec2c-gain-sweep-sample-realized-maximum-gain-db
+         "darkgreen" 'short-dash)
+   (list "realized horizon gain"
+         nec2c-gain-sweep-sample-realized-horizon-gain-db
+         "darkorange" 'long-dash)
+   (list "S11"
+         (lambda (sample)
+           (- (nec2c-gain-sweep-sample-return-loss-db sample)))
+         "firebrick" 'dot)))
+
+(define (gain-sweep-point sample selected-value)
+  (define feedpoint (nec2c-gain-sweep-sample-feedpoint sample))
+  (define direction (nec2c-gain-sweep-sample-maximum-gain-direction sample))
+  (vector
+   (nec2c-gain-sweep-sample-frequency-mhz sample)
+   (if (rational? selected-value) selected-value +nan.0)
+   (nec2c-gain-sweep-sample-maximum-gain-db sample)
+   (nec2c-gain-sweep-sample-realized-maximum-gain-db sample)
+   (nec2c-gain-sweep-sample-horizon-gain-db sample)
+   (nec2c-gain-sweep-sample-realized-horizon-gain-db sample)
+   (- (nec2c-gain-sweep-sample-return-loss-db sample))
+   (first direction)
+   (second direction)
+   (real-part (nec2c-feedpoint-sample-impedance feedpoint))
+   (imag-part (nec2c-feedpoint-sample-impedance feedpoint))
+   (nec2c-gain-sweep-sample-vswr sample)))
+
+(define (gain-sweep-cursor-series result)
+  (unless (nec2c-gain-sweep-result? result)
+    (raise-argument-error
+     'gain-sweep-renderers "nec2c-gain-sweep-result?" result))
+  (for/list ([spec (in-list gain-sweep-series-specs)])
+    (define accessor (second spec))
+    (cursor-series
+     (first spec)
+     (for/list ([sample (in-list (nec2c-gain-sweep-result-samples result))])
+       (gain-sweep-point sample (accessor sample)))
+     (third spec))))
+
+(define (gain-sweep-renderers result)
+  (define series-list (gain-sweep-cursor-series result))
+  (for/list ([series (in-list series-list)]
+             [spec (in-list gain-sweep-series-specs)])
+    (lines (cursor-series-points series)
+           #:color (cursor-series-color series)
+           #:style (fourth spec)
+           #:width 2
+           #:label (cursor-series-label series))))
 
 (define (impedance-cursor-series result)
   (append*
@@ -615,7 +675,7 @@
                    #:aspect-ratio [aspect-ratio #f]
                    #:legend-anchor [legend-anchor 'bottom-right]
                    #:legend-items [legend-items (series-legend-items series)]
-                   #:legend? [legend? #t]
+                   #:legend? [legend? #f]
                    #:axes? [axes? #t]
                    #:cursor-rule? [cursor-rule? #t]
                    #:theme [theme 'light])
@@ -720,7 +780,7 @@
 (define (s-parameter-phase-renderers result)
   (s-parameter-renderers result 'phase))
 
-(define (show-s-parameter-magnitude result #:legend? [legend? #t])
+(define (show-s-parameter-magnitude result #:legend? [legend? #f])
   (define series (s-parameter-series result 'magnitude))
   (show-plot
    (s-parameter-magnitude-renderers result)
@@ -731,7 +791,7 @@
    #:x-label "frequency (MHz)"
    #:y-label "S-parameter magnitude (dB)"))
 
-(define (show-s-parameter-phase result #:legend? [legend? #t])
+(define (show-s-parameter-phase result #:legend? [legend? #f])
   (define series (s-parameter-series result 'phase))
   (show-plot
    (s-parameter-phase-renderers result)
@@ -743,7 +803,7 @@
    #:y-label "unwrapped phase (degrees)"))
 
 (define (show-vswr-sweep result #:max-vswr [max-vswr #f]
-                         #:legend? [legend? #t])
+                         #:legend? [legend? #f])
   (define normalized (normalize-network-sweep 'show-vswr-sweep result))
   (define backend (backend-title normalized))
   (define series (vswr-cursor-series normalized max-vswr))
@@ -765,7 +825,7 @@
 (define (show-return-loss-sweep
          result
          #:floor-db [floor-db #f]
-         #:legend? [legend? #t])
+         #:legend? [legend? #f])
   (define normalized (normalize-network-sweep 'show-return-loss-sweep result))
   (define backend (backend-title normalized))
   (define series (return-loss-cursor-series normalized floor-db))
@@ -785,7 +845,48 @@
    (format "return loss / S11 (dB, Z0 = ~a ohms)"
            (network-sweep-reference-impedance normalized))))
 
-(define (show-impedance-sweep result #:legend? [legend? #t])
+(define (gain-sweep-label-proc series point)
+  (list
+   (format "~a  |  ~a MHz  |  ~a dB"
+           (cursor-series-label series)
+           (cursor-number (vector-ref point 0))
+           (cursor-number (vector-ref point 1)))
+   (format "Gmax ~a dBi @ az ~a°, el ~a°  |  realized ~a dBi"
+           (cursor-number (vector-ref point 2))
+           (cursor-number (vector-ref point 7))
+           (cursor-number (vector-ref point 8))
+           (cursor-number (vector-ref point 3)))
+   (format "horizon ~a dBi; realized ~a dBi  |  S11 ~a dB"
+           (cursor-number (vector-ref point 4))
+           (cursor-number (vector-ref point 5))
+           (cursor-number (vector-ref point 6)))
+   (format "Z ~a ohms  |  VSWR ~a:1"
+           (smith-impedance (vector-ref point 9) (vector-ref point 10))
+           (cursor-number (vector-ref point 11)))))
+
+(define (show-gain-sweep result #:legend? [legend? #f])
+  (define series (gain-sweep-cursor-series result))
+  (show-plot
+   (gain-sweep-renderers result)
+   series
+   gain-sweep-label-proc
+   #:title "NEC2C gain and match over frequency"
+   #:legend-items
+   (for/list ([series (in-list series)]
+              [spec (in-list gain-sweep-series-specs)])
+     (plot-legend-item (cursor-series-label series)
+                       (cursor-series-color series)
+                       (fourth spec) 'line))
+   #:legend? legend?
+   #:x-label "frequency (MHz)"
+   #:y-label
+   (format "gain / S11 (dB, Z0 = ~a ohms)"
+           (nec2c-gain-sweep-result-reference-impedance result))))
+
+;; Descriptive alias retained alongside the concise primary name.
+(define show-gain-and-match-sweep show-gain-sweep)
+
+(define (show-impedance-sweep result #:legend? [legend? #f])
   (define normalized (normalize-network-sweep 'show-impedance-sweep result))
   (define backend (backend-title normalized))
   (define series (impedance-cursor-series normalized))
@@ -802,7 +903,7 @@
 (define (show-smith-chart result
                           #:markers? [markers? #t]
                           #:theme [theme 'light]
-                          #:legend? [legend? #t])
+                          #:legend? [legend? #f])
   (define normalized (normalize-network-sweep 'show-smith-chart result))
   (define backend (backend-title normalized))
   (validate-smith-options 'show-smith-chart markers? theme)
@@ -847,7 +948,7 @@
                             #:component [component 'total]
                             #:floor-db [floor-db -40]
                             #:normalize? [normalize? #t]
-                            #:legend? [legend? #t])
+                            #:legend? [legend? #f])
   (define series
     (list
      (cursor-series
@@ -877,7 +978,7 @@
                                    #:normalize? [normalize? #t]
                                    #:mesh-step [mesh-step 5]
                                    #:aspect-ratio [aspect-ratio 1]
-                                   #:legend? [legend? #t])
+                                   #:legend? [legend? #f])
   (unless (nec2c-pattern-grid? grid)
     (raise-argument-error
      'show-radiation-pattern-3d "nec2c-pattern-grid?" grid))

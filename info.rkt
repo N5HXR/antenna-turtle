@@ -1,7 +1,8 @@
 #lang info
 
 (define collection 'multi)
-(define deps '("base" "gui-lib" "json-lib" "k-infix" "racket-manifold"
+(define setup-collects '("antenna-turtle"))
+(define deps '("base" "gui-lib" "json-lib" "k-infix"
                "pict3d" "plot-lib" "plot-gui-lib"))
 (define build-deps '("rackunit-lib"))
 (define pkg-desc "A turtle-graphics DSL for antenna wire geometry")

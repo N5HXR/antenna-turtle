@@ -223,6 +223,43 @@
   (check-exn #rx"no volume bodies"
              (lambda () (openems-sweep 800 1000))))
 
+(test-case "OpenEMS network-only runs omit NF2FF recording"
+  (reset-model!)
+  (model frequency 900)
+  (sheet name ground
+    points '((-0.01 -0.01) (0.01 -0.01) (0.01 0.01) (-0.01 0.01))
+    material pec)
+  (port up name feed gap 0.001 width 0.001 depth 0.001)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (simulate engine openems
+                sweep '(850 950)
+                profile draft
+                octave mock-octave
+                progress #f
+                record-radiation #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define artifacts (openems-run-info-artifacts run))
+  (define driver (file->string (openems-artifacts-driver-path artifacts)))
+  (check-false (regexp-match? #rx"CreateNF2FFBox" driver))
+  (check-false (regexp-match? #rx"nf2ff-box[.]mat" driver))
+  (define nf2ff (hash-ref (openems-run-info-manifest run) 'nf2ff))
+  (check-false (hash-ref nf2ff 'enabled))
+  (check-equal? (hash-ref nf2ff 'recording) "disabled")
+  (define result (openems-sweep-result run 'feed 50 '()))
+  (check-exn #rx"radiation fields were not recorded"
+             (lambda () (radiation-pattern result)))
+  (openems-close! artifacts)
+  (delete-file mock-octave)
+  (reset-model!))
+
 (test-case "OpenEMS prepares dielectric bodies and transformed conducting sheets"
   (reset-model!)
   (model frequency 915)
@@ -313,6 +350,61 @@
   (m:solid-close! substrate)
   (clear-bodies))
 
+(test-case "OpenEMS exports broadband and explicit relaxation dielectrics"
+  (reset-model!)
+  (model frequency 1000)
+  (define broad-source (m:cube 0.01 0.01 0.001))
+  (define relax-source (m:cube 0.005 0.005 0.001))
+  (body name broad-substrate geometry broad-source
+        material (model-dielectric fr4) priority 10)
+  (move right 0.02)
+  (body name measured-block geometry relax-source
+        material (dielectric name measured er 3.7
+                             loss (relax (0.42 8e-11) (0.18 1.7e-10)))
+        priority 10)
+  (move left 0.02)
+  (sheet name ground points '((0 0) (0.01 0) (0.01 0.01) (0 0.01))
+         material pec priority 20)
+  (port up gap 0.001 width 0.001 depth 0.001)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 600 1400 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define artifacts (openems-run-info-artifacts run))
+  (define driver (file->string (openems-artifacts-driver-path artifacts)))
+  (check-regexp-match #rx"AddDjordjevicSarkarMaterial" driver)
+  (check-regexp-match #rx"'fMeas', 1000000000" driver)
+  (check-regexp-match #rx"'f1', 500000000" driver)
+  (check-regexp-match #rx"'f2', 2000000000" driver)
+  (check-regexp-match #rx"AddDebyeMaterial" driver)
+  (check-regexp-match #rx"'EpsilonDelta_1', 0[.]42" driver)
+  (check-regexp-match #rx"'EpsilonRelaxTime_2', 0[.]000000000170" driver)
+  (check-false (regexp-match? #rx"CalcSAR" driver))
+  (define materials
+    (map (lambda (geometry) (hash-ref geometry 'material))
+         (hash-ref (openems-run-info-manifest run) 'geometry)))
+  (check-equal? (hash-ref (first materials) 'loss_model) "broad")
+  (check-equal? (hash-ref (first materials) 'loss_range_mhz) '(500 2000))
+  (check-equal? (hash-ref (first materials) 'loss_model_factor) 2)
+  (check-equal? (hash-ref (second materials) 'loss_model) "relax")
+  (check-equal? (length (hash-ref (second materials) 'relaxation_poles)) 2)
+  (check-equal?
+   (hash-ref (hash-ref (openems-run-info-manifest run) 'power_accounting)
+             'dielectric_method)
+   "unavailable for dispersive dielectric; included in remainder")
+  (openems-close! artifacts)
+  (delete-file mock-octave)
+  (m:solid-close! broad-source)
+  (m:solid-close! relax-source)
+  (clear-bodies))
+
 (test-case "OpenEMS exports rectilinear conductor bodies as aligned boundary sheets"
   (reset-model!)
   (model frequency 435)
@@ -346,6 +438,90 @@
   (check-equal? (hash-ref body-description 'metal_thickness_m) 0.001)
   (check-true (< (hash-ref body-description 'effective_metal_thickness_m)
                  0.001))
+  (openems-close! artifacts)
+  (delete-file mock-octave)
+  (m:solid-close! block)
+  (clear-bodies))
+
+(test-case "OpenEMS exports surface-form PEC CSG as native boundary polygons"
+  (reset-model!)
+  (model frequency 1000)
+  (with-scale millimeters
+    (with-body name cavity form surface
+      (difference
+        (cuboid size '(40 30 20))
+        (cuboid size '(36 26 16))))
+    ;; Cross one wall so ordinary port validation sees conductive geometry.
+    (move forward 19)
+    (port up name feed gap 4 size '(2 2)))
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 900 1100 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define artifacts (openems-run-info-artifacts run))
+  (define driver (file->string (openems-artifacts-driver-path artifacts)))
+  (check-regexp-match #rx"CSX = AddMetal\\(CSX, 'body_1'\\)" driver)
+  (check-true (positive? (length (regexp-match* #rx"body_1_facet_[0-9]+ =" driver))))
+  (check-false (regexp-match? #rx"ImportSTL\\(CSX, 'body_1'" driver))
+  (check-false (regexp-match? #rx"copyfile\\('body-1.stl'" driver))
+  (define manifest (openems-run-info-manifest run))
+  (define body-description (first (hash-ref manifest 'geometry)))
+  (check-equal? (hash-ref body-description 'representation)
+                "pec-boundary-surfaces")
+  (check-equal? (hash-ref body-description 'form) "surface")
+  (check-equal? (hash-ref body-description 'material_source)
+                "forced-by-surface-form")
+  (check-equal? (hash-ref body-description 'file) 'null)
+  (check-true (positive? (hash-ref body-description 'surface_facet_count)))
+  ;; Both outer and subtracted inner boundaries contribute required mesh
+  ;; planes, even though the latter no longer exists as a source primitive.
+  (define all-critical
+    (append (hash-ref (hash-ref manifest 'mesh) 'critical_x)
+            (hash-ref (hash-ref manifest 'mesh) 'critical_y)
+            (hash-ref (hash-ref manifest 'mesh) 'critical_z)))
+  ;; The one-port solver transform translates the feed center to zero, so the
+  ;; user's +18 mm inner face appears at -1 mm in solver coordinates.
+  (check-not-false (member -0.001 all-critical))
+  (openems-close! artifacts)
+  (delete-file mock-octave)
+  (clear-bodies))
+
+(test-case "OpenEMS gives thin solid PEC bodies an interior mesh coordinate"
+  (reset-model!)
+  (model frequency 1000)
+  (define block (m:cube 0.04 0.03 0.002 #:center? #t))
+  (move up 0.01)
+  (body name wall geometry block material pec)
+  (move down 0.01)
+  (port up name feed gap 0.022 width 0.002 depth 0.002)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 900 1100 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define artifacts (openems-run-info-artifacts run))
+  (define mesh (hash-ref (openems-run-info-manifest run) 'mesh))
+  (check-equal? (hash-ref mesh 'minimum_pec_solid_cells_per_extent) 2)
+  ;; The 2 mm wall is bounded at 9 and 11 mm and must receive a plane at its
+  ;; 10 mm midpoint so that the PEC occupies two Yee cells rather than one.
+  ;; Unlike zero, this midpoint is not an unconditional domain coordinate.
+  (for ([expected (in-list '(0.009 0.01 0.011))])
+    (check-true
+     (for/or ([actual (in-list (hash-ref mesh 'critical_z))])
+       (< (abs (- actual expected)) 1e-12))))
   (openems-close! artifacts)
   (delete-file mock-octave)
   (m:solid-close! block)
@@ -791,6 +967,61 @@
   (openems-close! (openems-run-info-artifacts run))
   (delete-file mock-octave)
   (m:solid-close! block)
+  (clear-bodies))
+
+(test-case "OpenEMS refines oblique capsule wires to their diameter"
+  (reset-model!)
+  (model frequency 300 wire-diameter 0.001)
+  ;; The first edge establishes the derived port axis.  The remaining edges
+  ;; become oblique after one-port alignment and must not inherit the much
+  ;; coarser wavelength-only mesh used by an ordinary straight dipole.
+  (with-wire
+    (move forward 0.01 feed center)
+    (turn left 120)
+    (move forward 0.01)
+    (turn left 120)
+    (move-nearest))
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep 250 350 #:octave mock-octave #:progress? #f)
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define run (exn:fail:openems-run-info failure))
+  (define manifest (openems-run-info-manifest run))
+  (define wire-conversion (hash-ref manifest 'wire_conversion))
+  (check-equal? (hash-ref wire-conversion 'mesh_refinement)
+                "diameter-aware")
+  (check-equal? (length (hash-ref wire-conversion
+                                  'mesh_helper_lines_by_axis))
+                3)
+  (define mesh (hash-ref manifest 'mesh))
+  (define geometry (first (hash-ref manifest 'geometry)))
+  (define minimum (hash-ref geometry 'minimum))
+  (define maximum (hash-ref geometry 'maximum))
+  (define refined-axes 0)
+  (for ([key (in-list '(x y z))]
+        [axis (in-naturals)])
+    (define low (list-ref minimum axis))
+    (define high (list-ref maximum axis))
+    (when (> (- high low) 0.002)
+      (set! refined-axes (add1 refined-axes))
+      (define inside
+        (filter (lambda (value) (<= low value high))
+                (hash-ref mesh (string->symbol (format "critical_~a" key)))))
+      (check-true (>= (length inside) 2))
+      (for ([left (in-list inside)] [right (in-list (rest inside))])
+        (check-true (<= (- right left) 0.0010000001))
+        ;; Refinement must not create the near-coincident slivers that make
+        ;; SmoothMeshLines collapse the FDTD timestep.
+        (check-true (>= (- right left) 0.0001)))))
+  (check-true (>= refined-axes 2))
+  (openems-close! (openems-run-info-artifacts run))
+  (delete-file mock-octave)
   (clear-bodies))
 
 (test-case "OpenEMS rejects a mesh plane made oblique by one-port rotation"

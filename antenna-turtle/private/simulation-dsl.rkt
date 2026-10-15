@@ -11,6 +11,7 @@
                                 #:octave [octave #f]
                                 #:keep-artifacts? [keep-artifacts? #t]
                                 #:progress? [progress? #t]
+                                #:record-radiation? [record-radiation? #t]
                                 #:timeout [timeout #f])
   (unless (simulation-profile? profile)
     (raise-argument-error 'simulate "simulation-profile?" profile))
@@ -34,6 +35,7 @@
    #:octave octave
    #:keep-artifacts? keep-artifacts?
    #:progress? progress?
+   #:record-radiation? record-radiation?
    #:timeout timeout))
 
 (begin-for-syntax
@@ -50,12 +52,13 @@
          'simulate "expected a contextual setting name" stx key-stx))
       (define key (syntax-e key-stx))
       (unless (memq key
-                    '(engine sweep profile octave keep-artifacts progress timeout))
-        (raise-syntax-error
+                    '(engine sweep profile octave keep-artifacts progress
+                             record-radiation timeout))
+       (raise-syntax-error
          'simulate
          (string-append
           "expected engine, sweep, profile, octave, keep-artifacts, "
-          "progress, or timeout setting")
+          "progress, record-radiation, or timeout setting")
          stx key-stx))
       (when (hash-has-key? result key)
         (raise-syntax-error
@@ -91,6 +94,8 @@
           #,@(optional-keyword
               settings 'keep-artifacts #'#:keep-artifacts?)
           #,@(optional-keyword settings 'progress #'#:progress?)
+          #,@(optional-keyword
+              settings 'record-radiation #'#:record-radiation?)
           #,@(optional-keyword settings 'timeout #'#:timeout)))]))
 
 ;; Near-field recording already belongs to the simulation result. This name

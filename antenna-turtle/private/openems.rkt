@@ -71,7 +71,7 @@
 
 (struct exported-body
   (name filename material priority minimum maximum sha1 triangles
-        metal-thickness surface-facets)
+        metal-thickness surface-facets form material-source)
   #:transparent)
 
 (struct exported-facet (points-2d transform plane-axis plane-coordinate)
@@ -116,6 +116,7 @@
 (define default-maximum-timesteps 100000)
 (define default-end-criteria 1e-5)
 (define default-minimum-dielectric-cells 4)
+(define minimum-pec-solid-cells 2)
 (define default-minimum-trace-cells 3)
 (define identity-rigid-transform
   '((1 0 0 0) (0 1 0 0) (0 0 1 0)))
@@ -376,6 +377,13 @@
 (define (material-manifest material start-mhz stop-mhz)
   (define model-frequency-mhz (model-frequency))
   (define loss (em-material-loss-spec material))
+  (define loss-kind (dielectric-loss-kind material))
+  (define broad-range
+    (and (eq? loss-kind 'broad)
+         (call-with-values
+          (lambda ()
+            (dielectric-broadband-range-mhz material model-frequency-mhz))
+          list)))
   (hash 'name (format "~a" (em-material-name material))
         'kind (format "~a" (em-material-kind material))
         'relative_permittivity (or (em-material-relative-permittivity material) 'null)
@@ -386,9 +394,24 @@
             (or (em-material-electric-conductivity material) 'null))
         'magnetic_conductivity (or (em-material-magnetic-conductivity material) 'null)
         'thickness_m (or (em-material-thickness material) 'null)
-        'loss_tangent (if loss (material-loss-value loss) 'null)
+        'loss_model (if loss-kind (symbol->string loss-kind) 'null)
+        'loss_tangent (or (material-loss-tangent loss) 'null)
         'loss_reference_frequency_mhz
         (or (dielectric-reference-frequency-mhz material model-frequency-mhz) 'null)
+        'loss_range_mhz (or broad-range 'null)
+        'loss_model_factor
+        (if broad-range
+            (or (broadband-loss-range-model-factor
+                 (material-loss-reference-frequency loss))
+                'null)
+            'null)
+        'relaxation_poles
+        (if (eq? loss-kind 'relax)
+            (for/list ([pole (in-list (material-loss-value loss))])
+              (hash 'delta_epsilon (relaxation-pole-delta-epsilon pole)
+                    'relaxation_time_s
+                    (relaxation-pole-relaxation-time pole)))
+            'null)
         'effective_loss_tangent_at_sweep_start
         (if loss
             (dielectric-effective-loss-tangent material start-mhz model-frequency-mhz)
@@ -400,9 +423,14 @@
 
 (define (body-manifest body start-mhz stop-mhz)
   (hash 'representation
-        (if (eq? (em-material-kind (exported-body-material body)) 'conductor)
-            "rectilinear-conducting-boundary"
-            "volume-stl")
+        (cond
+          [(eq? (em-material-kind (exported-body-material body)) 'conductor)
+           "rectilinear-conducting-boundary"]
+          [(eq? (exported-body-form body) 'surface)
+           "pec-boundary-surfaces"]
+          [else "volume-stl"])
+        'form (symbol->string (exported-body-form body))
+        'material_source (symbol->string (exported-body-material-source body))
         'name (format "~a" (exported-body-name body))
         'file (or (exported-body-filename body) 'null)
         'sha1 (or (exported-body-sha1 body) 'null)
@@ -444,7 +472,7 @@
     (unless (= (length flat-axes) 1)
       (raise-arguments-error
        who
-       "finite-conductivity bodies require every boundary facet to align with the Yee grid"
+       "surface-exported bodies require every boundary facet to align with the Yee grid"
        "body" name "triangle" points))
     (define normal-axis (first flat-axes))
     (define in-plane-axes (remove normal-axis '(0 1 2)))
@@ -550,9 +578,18 @@
       (lambda ()
         (define conductor?
           (eq? (em-material-kind (solid-body-material body)) 'conductor))
-        (define filename (and (not conductor?) (format "body-~a.stl" index)))
+        (define surface? (eq? (solid-body-form body) 'surface))
+        (when (and surface?
+                   (not (eq? (em-material-kind (solid-body-material body)) 'pec)))
+          (raise-arguments-error
+           'openems-sweep "surface-form bodies must use PEC"
+           "body" (solid-body-name body)
+           "material" (solid-body-material body)))
+        (define boundary-export? (or conductor? surface?))
+        (define filename
+          (and (not boundary-export?) (format "body-~a.stl" index)))
         (define path (and filename (build-path directory filename)))
-        (unless conductor?
+        (unless boundary-export?
           (m:write-stl transformed path #:name (sanitize-label (solid-body-name body))))
         (define-values (minimum maximum) (m:solid-bounds transformed))
         (exported-body
@@ -565,10 +602,12 @@
          (and path (file-sha1 path))
          (m:solid-num-triangles transformed)
          (solid-body-metal-thickness body)
-         (if conductor?
+         (if boundary-export?
              (axis-aligned-surface-facets
               'openems-sweep (solid-body-name body) transformed)
-             '())))
+             '())
+         (solid-body-form body)
+         (solid-body-material-source body)))
       (lambda () (m:solid-close! transformed)))))
 
 (define (list-subtract first second)
@@ -930,7 +969,8 @@
             (list (list-ref (exported-sheet-minimum item) axis))
             '())]
        [(and (exported-body? item)
-             (eq? (em-material-kind (exported-body-material item)) 'conductor))
+             (or (eq? (em-material-kind (exported-body-material item)) 'conductor)
+                 (eq? (exported-body-form item) 'surface)))
         (remove-duplicates
          (for/list ([facet (in-list (exported-body-surface-facets item))]
                     #:when (= axis (exported-facet-plane-axis facet)))
@@ -1049,6 +1089,72 @@
      (for/list ([index (in-range 1 count)])
        (+ low (* (- high low) (/ index count)))))))
 
+;; A wavelength-sized mesh is sufficient along a straight, grid-aligned PEC
+;; wire, but it can make a thin bent or oblique capsule path disappear into a
+;; few poorly connected staircase cells.  Refine only axes traversed by an
+;; oblique wire edge, using the thinnest participating wire diameter as the
+;; maximum spacing.  Axis-aligned paths instead contribute their transverse
+;; capsule boundaries at each distinct centerline coordinate.  This keeps an
+;; ordinary dipole inexpensive while giving loops and curved wire antennas a
+;; continuous Cartesian current path.
+(define (wire-refinement-axis-values edges transform axis)
+  (define transformed
+    (for/list ([edge (in-list edges)])
+      (define start
+        (transform-point transform (vertex-point (wire-edge-start edge))))
+      (define stop
+        (transform-point transform (vertex-point (wire-edge-end edge))))
+      (list edge start stop)))
+  (define (varying-axes item)
+    (match-define (list _edge start stop) item)
+    (define scale (max 1 (apply max (map abs (append start stop)))))
+    (for/list ([coordinate (in-range 3)]
+               #:unless (near? (list-ref start coordinate)
+                               (list-ref stop coordinate) scale))
+      coordinate))
+  (define oblique
+    (filter (lambda (item)
+              (define varying (varying-axes item))
+              (and (> (length varying) 1) (member axis varying)))
+            transformed))
+  (if (pair? oblique)
+      (let* ([diameter
+              (apply min
+                     (map (lambda (item)
+                            (wire-edge-diameter (first item)))
+                          oblique))]
+             [low
+              (apply min
+                     (for/list ([item (in-list transformed)])
+                       (- (min (list-ref (second item) axis)
+                               (list-ref (third item) axis))
+                          (/ (wire-edge-diameter (first item)) 2))))]
+             [high
+              (apply max
+                     (for/list ([item (in-list transformed)])
+                       (+ (max (list-ref (second item) axis)
+                               (list-ref (third item) axis))
+                          (/ (wire-edge-diameter (first item)) 2))))]
+             [first-index (add1 (floor (/ low diameter)))]
+             [past-index (ceiling (/ high diameter))])
+        ;; Align helpers to global diameter multiples.  Redistributing them
+        ;; between tessellated capsule extrema can place a helper a few
+        ;; micrometres from a port face or polygon facet.  SmoothMeshLines then
+        ;; grades toward that accidental sliver and collapses the FDTD
+        ;; timestep.  A stable global lattice has the same resolution without
+        ;; inheriting tessellation roundoff.
+        (for/list ([index (in-range first-index past-index)])
+          (* index diameter)))
+      (remove-duplicates
+       (append*
+        (for/list ([item (in-list transformed)]
+                   #:when (not (member axis (varying-axes item))))
+          (match-define (list edge start _stop) item)
+          (define center (list-ref start axis))
+          (define radius (/ (wire-edge-diameter edge) 2))
+          (list (- center radius) (+ center radius))))
+       =)))
+
 (define (dielectric-subdivision-values geometry axis max-resolution
                                        minimum-dielectric-cells)
   ;; SmoothMeshLines limits large cells but does not guarantee that an
@@ -1074,6 +1180,27 @@
                      (in-range 1 minimum-dielectric-cells)])
            (+ low (* extent
                      (/ index minimum-dielectric-cells))))
+         '()))))
+
+(define (pec-solid-subdivision-values geometry axis max-resolution)
+  ;; A PEC volume represented by an STL must occupy at least one complete Yee
+  ;; interval. SmoothMeshLines limits spacing, but a thin wall with only its
+  ;; two boundary coordinates can otherwise be represented by one ambiguous
+  ;; cell. Add the one interior coordinate needed for the revision-1 two-cell
+  ;; guarantee. Hollow CSG differences should use `form surface` or separate
+  ;; wall solids because their bounding box does not reveal wall thickness.
+  (append*
+   (for/list ([item (in-list geometry)]
+              #:when
+              (and (exported-body? item)
+                   (eq? (em-material-kind (exported-body-material item)) 'pec)
+                   (eq? (exported-body-form item) 'solid)))
+     (define low (list-ref (exported-body-minimum item) axis))
+     (define high (list-ref (exported-body-maximum item) axis))
+     (define extent (- high low))
+     (if (and (positive? extent)
+              (< extent (* minimum-pec-solid-cells max-resolution)))
+         (list (+ low (/ extent 2)))
          '()))))
 
 (define (mesh-constraint-axis-values constraints axis)
@@ -1105,7 +1232,8 @@
          kept
          (cons value kept)))))
 
-(define (critical-axis-values geometry ports components constraints axis domain-min domain-max
+(define (critical-axis-values geometry ports components constraints wire-values
+                              axis domain-min domain-max
                               max-resolution minimum-dielectric-cells
                               minimum-trace-cells metal-edge-resolution)
   ;; Port terminal planes in the excitation direction are mandatory. A
@@ -1124,9 +1252,12 @@
             user-values
             port-values
             component-values
+            wire-values
             (ordinary-geometry-axis-values geometry axis)
             (dielectric-subdivision-values
-             geometry axis max-resolution minimum-dielectric-cells)))
+             geometry axis max-resolution minimum-dielectric-cells)
+            (pec-solid-subdivision-values
+             geometry axis max-resolution)))
   (coalesce-nearby-mesh-values
    (append fixed-values
            (trace-refinement-axis-values
@@ -1165,13 +1296,15 @@
                              critical-x critical-y critical-z max-resolution
                              required-x required-y required-z
                              mesh-grading maximum-timesteps end-criteria
-                             geometry-minimum geometry-maximum wavelength-min)
+                             geometry-minimum geometry-maximum wavelength-min
+                             record-radiation?)
   (define path (build-path directory "run-openems.m"))
   (define port-count (length ports))
   (define budget-frequency-hz (* (model-frequency) 1e6))
   (define lossy-dielectric?
     (for/or ([body (in-list bodies)])
       (and (eq? (em-material-kind (exported-body-material body)) 'dielectric)
+           (not (dielectric-dispersive? (exported-body-material body)))
            (> (dielectric-effective-conductivity
                (exported-body-material body) (model-frequency))
               0))))
@@ -1184,6 +1317,9 @@
       (when (pair? components)
         (line "lumped_source = fileread(which('AddLumpedElement'));")
         (line "if isempty(regexp(lumped_source, 'LEtype', 'once')), error('Antenna Turtle lumped elements require openEMS 0.37/CSXCAD 0.7 or newer'); end"))
+      (when (for/or ([body (in-list bodies)])
+              (eq? (dielectric-loss-kind (exported-body-material body)) 'broad))
+        (line "if exist('AddDjordjevicSarkarMaterial', 'file') ~~= 2, error('Antenna Turtle broadband dielectrics require AddDjordjevicSarkarMaterial (CSXCAD 0.7 or newer)'); end"))
       (line "physical_constants;")
       (line "unit = 1.0;")
       (line "f_start = ~a;" (number-string (* start-mhz 1e6)))
@@ -1254,25 +1390,74 @@
           (define material (exported-body-material body))
           (case (em-material-kind material)
             [(pec)
-             (line "copyfile('~a', [Sim_Path '/~a']);"
-                   (exported-body-filename body) (exported-body-filename body))
              (line "CSX = AddMetal(CSX, '~a');" property)
-             (line "CSX = ImportSTL(CSX, '~a', ~a, '~a');"
-                   property (exported-body-priority body)
-                   (exported-body-filename body))]
+             (if (eq? (exported-body-form body) 'surface)
+                 (for ([facet (in-list (exported-body-surface-facets body))]
+                       [facet-index (in-naturals 1)])
+                   (line "body_~a_facet_~a = ~a;" index facet-index
+                         (octave-point-matrix (exported-facet-points-2d facet)))
+                   (line "CSX = AddPolygon(CSX, '~a', ~a, 2, 0, body_~a_facet_~a, 'Transform', {'Matrix', '~a'});"
+                         property (exported-body-priority body) index facet-index
+                         (csx-matrix-string (exported-facet-transform facet))))
+                 (begin
+                   (line "copyfile('~a', [Sim_Path '/~a']);"
+                         (exported-body-filename body) (exported-body-filename body))
+                   (line "CSX = ImportSTL(CSX, '~a', ~a, '~a');"
+                         property (exported-body-priority body)
+                         (exported-body-filename body))))]
             [(dielectric)
              (line "copyfile('~a', [Sim_Path '/~a']);"
                    (exported-body-filename body) (exported-body-filename body))
-             (line "CSX = AddMaterial(CSX, '~a');" property)
-             ;; Density does not affect the electromagnetic solve.  A unit
-             ;; density makes the raw-SAR machinery usable as a volumetric
-             ;; dielectric power-loss integrator.
-             (line "CSX = SetMaterialProperty(CSX, '~a', 'Epsilon', ~a, 'Mue', ~a, 'Kappa', ~a, 'Density', 1);"
-                   property
-                   (number-string (em-material-relative-permittivity material))
-                   (number-string (em-material-relative-permeability material))
-                   (number-string
-                    (dielectric-effective-conductivity material (model-frequency))))
+             (case (dielectric-loss-kind material)
+               [(broad)
+                (define-values (lower-mhz upper-mhz)
+                  (dielectric-broadband-range-mhz material (model-frequency)))
+                (line (string-append
+                       "CSX = AddDjordjevicSarkarMaterial(CSX, '~a', "
+                       "'fMeas', ~a, 'epsRMeas', ~a, 'tandMeas', ~a, "
+                       "'f1', ~a, 'f2', ~a, 'sigmaDC', ~a);")
+                      property
+                      (number-string
+                       (* 1e6 (dielectric-reference-frequency-mhz
+                               material (model-frequency))))
+                      (number-string (em-material-relative-permittivity material))
+                      (number-string
+                       (material-loss-tangent (em-material-loss-spec material)))
+                      (number-string (* 1e6 lower-mhz))
+                      (number-string (* 1e6 upper-mhz))
+                      (number-string
+                       (or (em-material-electric-conductivity material) 0)))
+                (line "CSX = SetMaterialProperty(CSX, '~a', 'Mue', ~a, 'Density', 1);"
+                      property
+                      (number-string (em-material-relative-permeability material)))]
+               [(relax)
+                (line "CSX = AddDebyeMaterial(CSX, '~a');" property)
+                (line "CSX = SetMaterialProperty(CSX, '~a', 'Epsilon', ~a, 'Mue', ~a, 'Kappa', ~a, 'Density', 1);"
+                      property
+                      (number-string (em-material-relative-permittivity material))
+                      (number-string (em-material-relative-permeability material))
+                      (number-string
+                       (or (em-material-electric-conductivity material) 0)))
+                (for ([pole (in-list
+                             (material-loss-value
+                              (em-material-loss-spec material)))]
+                      [pole-index (in-naturals 1)])
+                  (line "CSX = SetMaterialProperty(CSX, '~a', 'EpsilonDelta_~a', ~a, 'EpsilonRelaxTime_~a', ~a);"
+                        property pole-index
+                        (number-string (relaxation-pole-delta-epsilon pole))
+                        pole-index
+                        (number-string (relaxation-pole-relaxation-time pole))))]
+               [else
+                (line "CSX = AddMaterial(CSX, '~a');" property)
+                ;; Density does not affect the electromagnetic solve. A unit
+                ;; density permits narrowband conductivity/SAR accounting.
+                (line "CSX = SetMaterialProperty(CSX, '~a', 'Epsilon', ~a, 'Mue', ~a, 'Kappa', ~a, 'Density', 1);"
+                      property
+                      (number-string (em-material-relative-permittivity material))
+                      (number-string (em-material-relative-permeability material))
+                      (number-string
+                       (dielectric-effective-conductivity
+                        material (model-frequency))))])
              (line "CSX = ImportSTL(CSX, '~a', ~a, '~a');"
                    property (exported-body-priority body)
                    (exported-body-filename body))]
@@ -1390,17 +1575,19 @@
                 (number-string (lumped-port-impedance port))
                 (octave-vector (point->list (lumped-port-direction port)))
                 (if (= port-index active-index) "true" "false")))
-        ;; Keep a separate NF2FF recording for each independent excitation.
-        (line "pml_cells = 8;")
-        (line "if min([numel(mesh.x), numel(mesh.y), numel(mesh.z)]) <= 2*pml_cells, error('mesh too small for NF2FF box and PML'); end")
         (line "geometry_min = ~a;" (octave-vector geometry-minimum))
         (line "geometry_max = ~a;" (octave-vector geometry-maximum))
-        (line "nf2ff_start = [mesh.x(pml_cells+1), mesh.y(pml_cells+1), mesh.z(pml_cells+1)];")
-        (line "nf2ff_stop = [mesh.x(end-pml_cells), mesh.y(end-pml_cells), mesh.z(end-pml_cells)];")
-        (line "if any(nf2ff_start >= geometry_min) || any(nf2ff_stop <= geometry_max), error('NF2FF box does not enclose all radiating geometry'); end")
-        (line "nf2ff_resolution = ~a;" (number-string (/ wavelength-min 15)))
-        (line "[CSX, nf2ff] = CreateNF2FFBox(CSX, 'nf2ff', nf2ff_start, nf2ff_stop, 'OptResolution', nf2ff_resolution);")
-        (line "save([Sim_Path '/nf2ff-box.mat'], 'nf2ff', 'nf2ff_start', 'nf2ff_stop', 'nf2ff_resolution');")
+        ;; Keep a separate NF2FF recording for each independent excitation
+        ;; only when later radiation postprocessing was requested.
+        (when record-radiation?
+          (line "pml_cells = 8;")
+          (line "if min([numel(mesh.x), numel(mesh.y), numel(mesh.z)]) <= 2*pml_cells, error('mesh too small for NF2FF box and PML'); end")
+          (line "nf2ff_start = [mesh.x(pml_cells+1), mesh.y(pml_cells+1), mesh.z(pml_cells+1)];")
+          (line "nf2ff_stop = [mesh.x(end-pml_cells), mesh.y(end-pml_cells), mesh.z(end-pml_cells)];")
+          (line "if any(nf2ff_start >= geometry_min) || any(nf2ff_stop <= geometry_max), error('NF2FF box does not enclose all radiating geometry'); end")
+          (line "nf2ff_resolution = ~a;" (number-string (/ wavelength-min 15)))
+          (line "[CSX, nf2ff] = CreateNF2FFBox(CSX, 'nf2ff', nf2ff_start, nf2ff_stop, 'OptResolution', nf2ff_resolution);")
+          (line "save([Sim_Path '/nf2ff-box.mat'], 'nf2ff', 'nf2ff_start', 'nf2ff_stop', 'nf2ff_resolution');"))
         (when lossy-dielectric?
           (line "CSX = AddDump(CSX, 'dielectric_loss', 'DumpType', 29, 'Frequency', budget_frequency, 'FileType', 1, 'DumpMode', 2);")
           (line "CSX = AddBox(CSX, 'dielectric_loss', 0, geometry_min, geometry_max);"))
@@ -1896,6 +2083,15 @@
     (raise-user-error 'openems-radiation-grid
                       "the OpenEMS field artifacts have been released"))
   (define manifest (openems-run-info-manifest run))
+  (define nf2ff-capability (hash-ref manifest 'nf2ff #f))
+  (when (and (hash? nf2ff-capability)
+             (not (hash-ref nf2ff-capability 'enabled #t)))
+    (raise-user-error
+     'openems-radiation-grid
+     (string-append
+      "radiation fields were not recorded for this simulation; "
+      "rerun with record-radiation #t (or #:record-radiation? #t for "
+      "openems-sweep)")))
   (define sweep (hash-ref manifest 'sweep))
   (define frequency
     (cond
@@ -2174,6 +2370,7 @@
                        #:octave [requested-octave #f]
                        #:keep-artifacts? [keep? #t]
                        #:progress? [progress? #t]
+                       #:record-radiation? [record-radiation? #t]
                        #:timeout [timeout #f])
   (call-with-derived-wire-scene
    (lambda (derivation)
@@ -2191,6 +2388,7 @@
       #:octave requested-octave
       #:keep-artifacts? keep?
       #:progress? progress?
+      #:record-radiation? record-radiation?
       #:timeout timeout
       #:wire-derivation derivation))
    #:segments wire-segments))
@@ -2213,6 +2411,7 @@
                        #:octave [requested-octave #f]
                        #:keep-artifacts? [keep? #t]
                        #:progress? [progress? #t]
+                       #:record-radiation? [record-radiation? #t]
                        #:timeout [timeout #f]
                        #:wire-derivation [wire-derivation #f])
   (positive-real 'openems-sweep start-mhz "start frequency in MHz")
@@ -2247,6 +2446,8 @@
     (raise-argument-error 'openems-sweep "boolean?" keep?))
   (unless (boolean? progress?)
     (raise-argument-error 'openems-sweep "boolean?" progress?))
+  (unless (boolean? record-radiation?)
+    (raise-argument-error 'openems-sweep "boolean?" record-radiation?))
   (unless (or (not timeout) (and (finite-real? timeout) (> timeout 0)))
     (raise-argument-error 'openems-sweep "(or/c #f positive-real?)" timeout))
   (validate-model!)
@@ -2304,13 +2505,41 @@
   (for ([body (in-list bodies)]
         #:when (em-material-loss-spec (exported-body-material body)))
     (define material (exported-body-material body))
-    (printf
-     (string-append
-      "OpenEMS material notice: dielectric ~a uses loss tangent ~a at ~a MHz; "
-      "the backend models it as constant conductivity, so loss is a narrowband approximation.\n")
-     (em-material-name material)
-     (material-loss-value (em-material-loss-spec material))
-     (dielectric-reference-frequency-mhz material (model-frequency))))
+    (case (dielectric-loss-kind material)
+      [(broad)
+       (define-values (lower-mhz upper-mhz)
+         (dielectric-broadband-range-mhz material (model-frequency)))
+       (printf
+        (string-append
+         "OpenEMS material notice: dielectric ~a uses a broadband causal fit "
+         "from ~a to ~a MHz (tan(delta) ~a at ~a MHz); dispersive dielectric "
+         "heat is not included in power accounting.\n")
+        (em-material-name material) lower-mhz upper-mhz
+        (material-loss-tangent (em-material-loss-spec material))
+        (dielectric-reference-frequency-mhz material (model-frequency)))
+       (unless (<= lower-mhz start-mhz stop-mhz upper-mhz)
+         (printf
+          (string-append
+           "OpenEMS material warning: sweep ~a--~a MHz exceeds dielectric ~a's "
+           "broadband fit range ~a--~a MHz; enlarge its loss range or "
+           "model-dielectric factor.\n")
+          start-mhz stop-mhz (em-material-name material)
+          lower-mhz upper-mhz))]
+      [(relax)
+       (printf
+        (string-append
+         "OpenEMS material notice: dielectric ~a uses ~a explicit relaxation "
+         "pole(s); dispersive dielectric heat is not included in power accounting.\n")
+        (em-material-name material)
+        (length (material-loss-value (em-material-loss-spec material))))]
+      [else
+       (printf
+        (string-append
+         "OpenEMS material notice: dielectric ~a uses loss tangent ~a at ~a MHz; "
+         "the backend models it as constant conductivity, so loss is a narrowband approximation.\n")
+        (em-material-name material)
+        (material-loss-tangent (em-material-loss-spec material))
+        (dielectric-reference-frequency-mhz material (model-frequency)))]))
   (for ([item (in-list (append bodies sheets))])
     (define material (geometry-material item))
     (define physical-thickness
@@ -2330,12 +2559,33 @@
          (model-frequency)))))
   (flush-output)
   (define geometry (append bodies sheets))
+  ;; The derived capsule union contains many axis-aligned facets very close to
+  ;; the mathematical radius because its circular cross-section is polygonal.
+  ;; Those facets are OpenEMS geometry, not independently required mesh
+  ;; planes.  Diameter-aware wire helpers below replace their generic
+  ;; conductor-boundary locks and avoid near-coincident sliver cells.
+  (define wire-body-name
+    (and wire-derivation
+         (solid-body-name (wire-solid-derivation-body wire-derivation))))
+  (define mesh-geometry
+    (if wire-body-name
+        (filter (lambda (item)
+                  (not (and (exported-body? item)
+                            (equal? (exported-body-name item)
+                                    wire-body-name))))
+                geometry)
+        geometry))
   (define dielectric-loss-accounting?
     (for/or ([body (in-list bodies)])
       (and (eq? (em-material-kind (exported-body-material body)) 'dielectric)
+           (not (dielectric-dispersive? (exported-body-material body)))
            (> (dielectric-effective-conductivity
                (exported-body-material body) (model-frequency))
               0))))
+  (define dispersive-dielectric?
+    (for/or ([body (in-list bodies)])
+      (and (eq? (em-material-kind (exported-body-material body)) 'dielectric)
+           (dielectric-dispersive? (exported-body-material body)))))
   (validate-component-contacts! geometry components)
   (define-values (physical-minimum physical-maximum) (scene-bounds geometry))
   (define component-minima
@@ -2361,7 +2611,8 @@
        (define material (exported-body-material body))
        (if (eq? (em-material-kind material) 'dielectric)
            (max maximum
-                (* (em-material-relative-permittivity material)
+                (* (dielectric-maximum-relative-permittivity
+                    material (model-frequency))
                    (em-material-relative-permeability material)))
            maximum))))
   (define material-wavelength-min (/ wavelength-min maximum-index))
@@ -2377,18 +2628,34 @@
   (define domain-min (map (lambda (value) (- value padding)) minimum))
   (define domain-max (map (lambda (value) (+ value padding)) maximum))
   (validate-mesh-constraint-domain! mesh-constraints domain-min domain-max)
+  (define wire-mesh-values
+    (if wire-derivation
+        (for/list ([axis (in-range 3)])
+          (wire-refinement-axis-values (model-edges) transform axis))
+        '(() () ())))
+  (when (and wire-derivation (ormap pair? wire-mesh-values))
+    (printf
+     (string-append
+      "OpenEMS wire mesh: diameter-aware refinement adds ~a/~a/~a "
+      "X/Y/Z helper lines for capsule geometry\n")
+     (length (first wire-mesh-values))
+     (length (second wire-mesh-values))
+     (length (third wire-mesh-values))))
   (define critical-x
-    (critical-axis-values geometry ports components mesh-constraints 0
+    (critical-axis-values mesh-geometry ports components mesh-constraints
+                          (first wire-mesh-values) 0
                           (first domain-min) (first domain-max) max-resolution
                           minimum-dielectric-cells minimum-trace-cells
                           metal-edge-resolution))
   (define critical-y
-    (critical-axis-values geometry ports components mesh-constraints 1
+    (critical-axis-values mesh-geometry ports components mesh-constraints
+                          (second wire-mesh-values) 1
                           (second domain-min) (second domain-max) max-resolution
                           minimum-dielectric-cells minimum-trace-cells
                           metal-edge-resolution))
   (define critical-z
-    (critical-axis-values geometry ports components mesh-constraints 2
+    (critical-axis-values mesh-geometry ports components mesh-constraints
+                          (third wire-mesh-values) 2
                           (third domain-min) (third domain-max) max-resolution
                           minimum-dielectric-cells minimum-trace-cells
                           metal-edge-resolution))
@@ -2405,7 +2672,7 @@
                        (mesh-constraint-axis-values mesh-constraints 1)
                        (mesh-constraint-axis-values mesh-constraints 2)
                        mesh-grading maximum-timesteps end-criteria
-                       minimum maximum wavelength-min)
+                       minimum maximum wavelength-min record-radiation?)
   (define initial-manifest
     (hash
      'format_version 1
@@ -2437,6 +2704,9 @@
                         (wire-solid-derivation-body wire-derivation)))
                'edge_count (wire-solid-derivation-edge-count wire-derivation)
                'circular_segments (wire-solid-derivation-segments wire-derivation)
+               'mesh_refinement "diameter-aware"
+               'mesh_helper_lines_by_axis
+               (map length wire-mesh-values)
                'feed_edge_id
                (or (wire-solid-derivation-feed-edge-id wire-derivation) 'null)
                'derived_feed_gap_m
@@ -2483,6 +2753,7 @@
      'mesh (hash 'policy "fixed-critical-coordinate-poc"
                  'minimum_dielectric_cells_per_extent
                  minimum-dielectric-cells
+                 'minimum_pec_solid_cells_per_extent minimum-pec-solid-cells
                  'minimum_trace_cells_across minimum-trace-cells
                  'metal_edge_resolution_m metal-edge-resolution
                  'critical_x (map exact->inexact critical-x)
@@ -2497,12 +2768,16 @@
                  'effective_padding_m padding
                  'grading (exact->inexact mesh-grading)
                  'boundary_conditions (make-list 6 "PML_8"))
-     'nf2ff (hash 'recording "time-domain"
-                  'name "nf2ff"
-                  'box_policy "inner-PML-boundary"
-                  'optimum_resolution_m (/ wavelength-min 15)
-                  'postprocess_default_frequency_mhz
-                  (exact->inexact (model-frequency)))
+     'nf2ff
+     (if record-radiation?
+         (hash 'enabled #t
+               'recording "time-domain"
+               'name "nf2ff"
+               'box_policy "inner-PML-boundary"
+               'optimum_resolution_m (/ wavelength-min 15)
+               'postprocess_default_frequency_mhz
+               (exact->inexact (model-frequency)))
+         (hash 'enabled #f 'recording "disabled"))
      'power_accounting
      (hash 'frequency_mhz (exact->inexact (model-frequency))
            'port_power "port-power.csv"
@@ -2510,9 +2785,11 @@
            'lumped_power "lumped-power.csv"
            'conductor_power "conservation remainder"
            'dielectric_method
-           (if dielectric-loss-accounting?
-               "openEMS raw SAR / CalcSAR"
-               "zero"))
+           (cond
+             [dielectric-loss-accounting? "openEMS raw SAR / CalcSAR"]
+             [dispersive-dielectric?
+              "unavailable for dispersive dielectric; included in remainder"]
+             [else "zero"]))
      'solver (hash 'octave_executable (path->string octave)
                    'driver "run-openems.m"
                    'excitation_center_hz 0.0
@@ -2580,7 +2857,7 @@
            'cell_count (* (length x) (length y) (length z))))
         (hash-ref initial-manifest 'mesh)))
   (define final-nf2ff
-    (if mesh-values
+    (if (and record-radiation? mesh-values)
         (hash-set*
          (hash-ref initial-manifest 'nf2ff)
          'start_m
