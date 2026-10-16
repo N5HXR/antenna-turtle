@@ -1,0 +1,17 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "esbuild viewer.js --bundle --minify --format=iife --target=chrome120 --outfile=../../antenna-turtle/private/report-assets/viewer.bundle.js",
+    "refresh": "node refresh-report.mjs",
+    "test": "node field-math-test.mjs && node surface-math-test.mjs",
+    "validate:surface": "node validate-surface-report.mjs",
+    "validate:power": "node validate-power-report.mjs"
+  },
+  "dependencies": {
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}

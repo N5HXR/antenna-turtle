@@ -45,6 +45,8 @@
                    "private/material-catalog.rkt"
                    "private/simulation-profile.rkt"
                    "private/simulation-dsl.rkt"
+                   "private/field-capture.rkt"
+                   "private/html-report.rkt"
                    "private/solid-view.rkt"
                    "private/openems.rkt"
                    "private/openems-power.rkt"
@@ -58,6 +60,8 @@
            (all-from-out "private/material-catalog.rkt")
            (all-from-out "private/simulation-profile.rkt")
            (all-from-out "private/simulation-dsl.rkt")
+           (all-from-out "private/field-capture.rkt")
+           (all-from-out "private/html-report.rkt")
            (all-from-out "private/openems.rkt")
            (all-from-out "private/openems-power.rkt")
            (all-from-out "private/measurement.rkt")

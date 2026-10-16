@@ -1541,14 +1541,15 @@ open plots. Its complete contextual signature is:
           [keep-artifacts boolean]
           [progress boolean]
           [record-radiation boolean]
+          [record-fields field-capture-request]
           [timeout seconds-or-#f])
 ```
 
 `sweep` is required and `profile` defaults to `standard`. `octave` defaults to
 `#f` (use `octave-executable`, `OCTAVE`, or `PATH` discovery), artifact
 retention and progress default to `#t`, radiation recording defaults to `#t`,
-and timeout defaults to `#f` (unlimited). Numerical policy lives in the
-profile:
+field recording defaults to disabled, and timeout defaults to `#f`
+(unlimited). Numerical policy lives in the profile:
 
 ```racket
 (define result
@@ -1625,6 +1626,155 @@ It does not suppress physical radiation or change the mesh, timestep, or
 termination criterion. Network, port, dielectric-loss, and lumped-element
 measurements remain available, but `radiation-pattern` and the radiated-power
 portion of `power-budget` require a run made with radiation recording enabled.
+
+`record-fields` accepts a solver-neutral `field-capture` request. The capture
+frequency is in MHz and must lie inside the inclusive simulation sweep. An
+omitted excitation selects the first port; otherwise name a port with the same
+symbol or string used in the solid model. `#:max-samples` controls automatic
+spatial subsampling per requested dump, not the FDTD mesh.
+
+```racket
+(define capture
+  (field-capture
+   #:frequency 1000
+   #:excitation 'input
+   #:current 'conductors
+   #:volume '(electric magnetic)
+   #:max-samples 250000))
+
+(define result
+  (simulate engine openems
+            sweep '(850 1150)
+            record-radiation #f
+            record-fields capture
+            keep-artifacts #t))
+```
+
+The complete constructors and accessors are:
+
+```racket
+(field-slice quantity axis position-metres)
+  quantity : (or 'electric 'magnetic)
+  axis     : (or 'x 'y 'z)
+
+(field-capture #:frequency frequency-mhz
+               #:excitation [port-name-or-#f #f]
+               #:current [(or #f 'conductors) #f]
+               #:slices [(listof field-slice?) '()]
+               #:volume [(listof (or 'electric 'magnetic)) '()]
+               #:max-samples [positive-exact-integer 250000])
+
+field-slice?
+field-slice-quantity
+field-slice-axis
+field-slice-position
+field-capture?
+field-capture-frequency
+field-capture-excitation
+field-capture-current
+field-capture-slices
+field-capture-volume
+field-capture-max-samples
+```
+
+At least one current, slice, or volume request is required. Field-slice coordinates are
+expressed in the model's user coordinate system and must transform to an
+axis-aligned Yee-grid plane. Planar sheets use direct `rot(H)` and normal-`D`
+captures. Triangulated PEC, STL, CSG, and finite-conductivity boundary bodies
+use paired thin-shell `H` and `D` captures. The report reconstructs complex
+surface current as `K = n × (H_out - H_in)` and free surface charge as
+`rho_s = n · (D_out - D_in)`. For a closed PEC volume, the interior terms are
+zero and the exporter records one-sided reconstruction metadata.
+
+Solid-body shell captures share `#:max-samples` with other requested dumps.
+Their manifest entries identify the associated geometry, physical sampling
+offset, whether both sides are used, units, and phasor convention. This is a
+spatial interpolation of Yee-grid fields onto the rendered surface, not a
+claim that openEMS solved directly at each display vertex.
+
+`#:volume` records cell-centered complex phasors throughout the padded
+simulation domain. A report can derive X-, Y-, or Z-normal planes at any
+position from the same data and interpolate continuously between retained
+voxel planes. `#:max-samples` is the spatial voxel budget for each requested
+quantity; electric and magnetic fields use the same retained grid. The
+exporter reduces the longest axis first, which normally preserves the more
+densely refined transverse mesh of a transmission line. This subsampling only
+affects retained report data, never the FDTD mesh or solver result.
+
+Captured complex phasors are normalized to one watt of incident power at the
+selected excitation and frequency. The manifest records the reconstruction
+convention as `instantaneous = real(phasor * exp(+j*phase))`, coordinates,
+units, component order, normalization, and source dump details.
+
+### `(write-html-report result destination [#:title title-or-#f])`
+
+Writes a single self-contained interactive HTML report and returns its complete
+path. `result` must be an `openems-sweep-result` or
+`openems-multiport-result` created with `record-fields`; its retained artifacts
+must still be available. `destination` is a path string. `#:title` defaults to
+the model title recorded in the manifest.
+
+```racket
+(define report-path
+  (write-html-report result "scratch/dipole-report.html"
+                     #:title "One-watt dipole current"))
+```
+
+The report embeds geometry, gzip-compressed complex float arrays, metadata,
+Three.js, and all controls. It opens directly from a `file:` URL in a modern
+browser and performs no network fetch. Planar conductors offer `|current|`,
+`dir(current)`, and surface-charge color modes. Current is width-integrated for
+the primary presentation so ideal PEC edge crowding does not consume the
+palette; charge comes from a companion normal electric-flux dump. Adjacent
+station colors are interpolated across display triangles without changing the
+underlying capture resolution.
+
+Report metadata includes solver termination/timing, mesh dimensions and
+spacing, ports and reference impedances, the complete one-port sample or
+multiport S-parameter tables, and exact-frequency port, dielectric, and lumped
+power results. Power rows retain their absolute solver values and normalized
+ratios relative to one watt incident at the selected capture excitation.
+
+Co-located electric and magnetic captures on the same physical plane are
+grouped into one selectable slice with an E/H toggle. Field views include
+static total and plane-tangential phasor envelopes, instantaneous tangential
+intensity, animated signed normal or user x/y/z components, denser
+instantaneous vectors, and projected instantaneous field lines. Static
+envelopes mute phase and playback controls. The normal component is the
+Cartesian component named by the selected plane axis. Every scalar field view
+may be linear or logarithmic with an adjustable floor; signed components use a
+symmetric logarithmic transfer that preserves polarity. Vector length,
+field-line visibility, and field-line color honor the same transfer. Opacity is
+adjustable.
+The default slice-auto range uses the
+98th percentile of the complex field amplitude on the displayed plane so a
+PEC- or feed-adjacent outlier cannot make the radiating field disappear. This
+range is phase-independent and does not flicker during animation. A volume
+range option preserves one absolute color scale while the plane moves. E uses
+a warm palette and H a cool palette. The complete simulation plane is
+displayed, with a toggleable dashed outline marking the inner PML boundary.
+
+Volumetric E/H captures add a model-coordinate X/Y/Z plane selector and a
+position slider. The viewer interpolates complex components before deriving
+magnitude, signed components, or instantaneous vectors, preserving phase
+relationships through the RF cycle. Fixed `#:slices` remain useful when a
+small report needs only predetermined cross-sections. Field lines are
+streamlines of the instantaneous field projected into the selected plane; they
+are a visualization aid, not particle trajectories or independent solver data.
+
+When co-registered E and H captures are present, `POWER` derives the Poynting
+vector without another solver run. Time-average power uses
+`0.5 Re(E × conjugate(H))`; instantaneous power reconstructs E and H at the
+selected phase before taking `E(t) × H(t)`. Views include magnitude, signed
+through-plane flow, vectors, and plane-projected flow lines. The detail line
+estimates integrated time-average signed power over the non-PML portion of the
+selected plane and reports it in watts. Solver port/power results remain the
+authoritative accounting. A `CURRENT` checkbox overlays conductor current
+on a field or power slice. Color legends retain physical units and maxima;
+scale choices affect presentation only.
+
+See `docs/HTML-REPORTS-M0.md` for schema boundaries, normalization, packaging,
+security, and the limitations of direct surface-current capture.
 
 ### `(radiation-pattern result keyword-arguments ...)`
 
@@ -1713,6 +1863,7 @@ permittivity of dispersive materials.
  #:keep-artifacts? #t
  #:progress? #t
  #:record-radiation? #t
+ #:field-capture #f
  #:timeout #f)
 ```
 

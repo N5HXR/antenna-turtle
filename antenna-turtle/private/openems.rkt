@@ -14,6 +14,7 @@
          racket/system
          (prefix-in m: manifold)
          "core.rkt"
+         "field-capture.rkt"
          "nec2c.rkt"
          "network.rkt"
          "openems-material.rkt"
@@ -84,6 +85,14 @@
 
 (struct exported-mesh-constraint
   (kind plane user-point solver-point axes)
+  #:transparent)
+
+;; A solver-coordinate frequency-domain dump.  These records are deliberately
+;; private to the openEMS adapter; the public field-capture request remains
+;; solver-neutral.
+(struct exported-field-dump
+  (name quantity dump-type dump-mode minimum maximum units source max-samples
+        metadata)
   #:transparent)
 
 (define octave-executable
@@ -306,6 +315,192 @@
     [else
      (error 'openems-sweep "unknown mesh constraint kind: ~e"
             (mesh-constraint-kind constraint))]))
+
+(define (axis-unit-vector axis)
+  (case axis
+    [(x) (point3 1 0 0)]
+    [(y) (point3 0 1 0)]
+    [(z) (point3 0 0 1)]))
+
+(define (axis-point axis position)
+  (case axis
+    [(x) (point3 position 0 0)]
+    [(y) (point3 0 position 0)]
+    [(z) (point3 0 0 position)]))
+
+(define (capture-slice-constraint slice transform)
+  (define user-point
+    (point->list
+     (axis-point (field-slice-axis slice) (field-slice-position slice))))
+  (define solver-point
+    (transform-point
+     transform
+     (axis-point (field-slice-axis slice) (field-slice-position slice))))
+  (define solver-normal
+    (transform-vector transform (axis-unit-vector (field-slice-axis slice))))
+  (define solver-axis (signed-axis-index solver-normal))
+  (unless solver-axis
+    (raise-user-error
+     'openems-sweep
+     (string-append
+      "field slices must remain aligned with an OpenEMS Yee-grid plane after "
+      "the model-to-solver transform; the requested ~a=~a m plane does not")
+     (field-slice-axis slice) (field-slice-position slice)))
+  (exported-mesh-constraint
+   'plane (field-slice-axis slice) user-point solver-point (list solver-axis)))
+
+(define (capture-excitation-index capture ports)
+  (and capture
+       (let ([requested (field-capture-excitation capture)])
+         (if (not requested)
+             1
+             (let* ([requested-name (format "~a" requested)]
+                    [matches
+                     (for/list ([port (in-list ports)] [index (in-naturals 1)]
+                                #:when
+                                (string=? requested-name
+                                          (format "~a" (lumped-port-name port))))
+                       index)])
+               (unless (= (length matches) 1)
+                 (raise-arguments-error
+                  'openems-sweep
+                  "field-capture excitation must name exactly one model port"
+                  "requested excitation" requested
+                  "available ports" (map lumped-port-name ports)))
+               (first matches))))))
+
+(define (expanded-capture-bounds minimum maximum padding domain-minimum domain-maximum)
+  (values
+   (map (lambda (value limit) (max limit (- value padding)))
+        minimum domain-minimum)
+   (map (lambda (value limit) (min limit (+ value padding)))
+        maximum domain-maximum)))
+
+(define (capture-dumps capture capture-constraints geometry
+                       domain-minimum domain-maximum shell-offset)
+  (if (not capture)
+      '()
+      (append
+       (if (field-capture-current capture)
+           (let ([conductors
+                  (for/list ([item (in-list geometry)]
+                             [geometry-index (in-naturals 1)]
+                             #:when
+                             (memq (em-material-kind (geometry-material item))
+                                   '(pec conductor conducting-sheet)))
+                    (cons geometry-index item))])
+             (append-map
+              (lambda (indexed-item conductor-index)
+                (define geometry-index (car indexed-item))
+                (define item (cdr indexed-item))
+                (define name
+                  (format "~a" (if (exported-body? item)
+                                    (exported-body-name item)
+                                    (exported-sheet-name item))))
+                (if (exported-body? item)
+                    (let* ([positive-spans
+                            (filter positive?
+                                    (map - (geometry-maximum item)
+                                         (geometry-minimum item)))]
+                           [body-offset
+                            (if (null? positive-spans)
+                                shell-offset
+                                (min shell-offset
+                                     (/ (apply min positive-spans) 3)))])
+                      (let-values ([(minimum maximum)
+                                  (expanded-capture-bounds
+                                   (geometry-minimum item)
+                                   (geometry-maximum item)
+                                   (* 2 body-offset)
+                                   domain-minimum domain-maximum)])
+                      (define two-sided?
+                        (or (eq? (exported-body-form item) 'surface)
+                            (eq? (em-material-kind (geometry-material item))
+                                 'conductor)))
+                      (define reconstruction
+                        (hash 'method "yee-shell"
+                              'geometry_index geometry-index
+                              'sample_offset_m body-offset
+                              'two_sided two-sided?))
+                      (list
+                       (exported-field-dump
+                        (format "at_surface_h_conductor_~a" conductor-index)
+                        'surface-magnetic 11 2 minimum maximum "A/m"
+                        (format "magnetic shell around conductor ~a" name)
+                        (field-capture-max-samples capture) reconstruction)
+                       (exported-field-dump
+                        (format "at_surface_d_conductor_~a" conductor-index)
+                        'surface-charge-flux 14 2 minimum maximum "C/m^2"
+                        (format "electric-flux shell around conductor ~a" name)
+                        (field-capture-max-samples capture) reconstruction))))
+                    (list
+                     (exported-field-dump
+                      (format "at_current_conductor_~a" conductor-index)
+                      'current 13 0
+                      (geometry-minimum item) (geometry-maximum item) "A/m^2"
+                      (format "surface current on conductor ~a" name)
+                      (field-capture-max-samples capture)
+                      (hash 'method "planar-direct"
+                            'geometry_index geometry-index))
+                     (exported-field-dump
+                      (format "at_charge_flux_conductor_~a" conductor-index)
+                      'charge-flux 14 2
+                      (geometry-minimum item) (geometry-maximum item) "C/m^2"
+                      (format "normal electric flux on conductor ~a" name)
+                      (field-capture-max-samples capture)
+                      (hash 'method "planar-direct"
+                            'geometry_index geometry-index)))))
+              conductors (range 1 (add1 (length conductors)))))
+           '())
+       (for/list ([slice (in-list (field-capture-slices capture))]
+                  [constraint (in-list capture-constraints)]
+                  [index (in-naturals 1)])
+         (define solver-axis (first (exported-mesh-constraint-axes constraint)))
+         (define coordinate
+           (list-ref (exported-mesh-constraint-solver-point constraint)
+                     solver-axis))
+         (unless (<= (list-ref domain-minimum solver-axis)
+                     coordinate
+                     (list-ref domain-maximum solver-axis))
+           (raise-arguments-error
+            'openems-sweep
+            "field slice lies outside the automatically padded simulation domain"
+            "slice" slice
+            "solver coordinate" coordinate))
+         (define minimum
+           (for/list ([value (in-list domain-minimum)] [axis (in-naturals)])
+             (if (= axis solver-axis) coordinate value)))
+         (define maximum
+           (for/list ([value (in-list domain-maximum)] [axis (in-naturals)])
+             (if (= axis solver-axis) coordinate value)))
+         (define quantity (field-slice-quantity slice))
+         (exported-field-dump
+          (format "at_~a_slice_~a" quantity index)
+          quantity
+          (if (eq? quantity 'electric) 10 11)
+          ;; Use one cell-interpolated Yee plane for both quantities so E/H
+          ;; captures requested at the same user plane remain co-registered.
+          ;; The normal-H caveat at permeability transitions is immaterial in
+          ;; revision 1, which deliberately has no magnetic-material model.
+          2
+          minimum maximum
+          (if (eq? quantity 'electric) "V/m" "A/m")
+          (format "user ~a=~a m plane"
+                  (field-slice-axis slice) (field-slice-position slice))
+          (field-capture-max-samples capture) (hash)))
+       ;; A volume retains one complex frequency-domain phasor at every
+       ;; sampled voxel.  The browser derives all three axis-aligned slice
+       ;; families and every animation phase from this one recording.
+       (for/list ([quantity (in-list (field-capture-volume capture))])
+         (exported-field-dump
+          (format "at_~a_volume" quantity)
+          quantity
+          (if (eq? quantity 'electric) 10 11)
+          2
+          domain-minimum domain-maximum
+          (if (eq? quantity 'electric) "V/m" "A/m")
+          "full simulation volume"
+          (field-capture-max-samples capture) (hash))))))
 
 (define (mesh-constraint-manifest constraint)
   (hash 'kind (symbol->string (exported-mesh-constraint-kind constraint))
@@ -586,11 +781,11 @@
            "body" (solid-body-name body)
            "material" (solid-body-material body)))
         (define boundary-export? (or conductor? surface?))
-        (define filename
-          (and (not boundary-export?) (format "body-~a.stl" index)))
-        (define path (and filename (build-path directory filename)))
-        (unless boundary-export?
-          (m:write-stl transformed path #:name (sanitize-label (solid-body-name body))))
+        ;; Keep a canonical triangle mesh for reports even when the solver
+        ;; receives an axis-aligned polygon boundary instead of ImportSTL.
+        (define filename (format "body-~a.stl" index))
+        (define path (build-path directory filename))
+        (m:write-stl transformed path #:name (sanitize-label (solid-body-name body)))
         (define-values (minimum maximum) (m:solid-bounds transformed))
         (exported-body
          (solid-body-name body)
@@ -599,7 +794,7 @@
          (or (solid-body-priority body) 10)
          (m-point->list minimum)
          (m-point->list maximum)
-         (and path (file-sha1 path))
+         (file-sha1 path)
          (m:solid-num-triangles transformed)
          (solid-body-metal-thickness body)
          (if boundary-export?
@@ -1297,7 +1492,9 @@
                              required-x required-y required-z
                              mesh-grading maximum-timesteps end-criteria
                              geometry-minimum geometry-maximum wavelength-min
-                             record-radiation?)
+                             record-radiation?
+                             field-dumps capture-frequency-hz
+                             capture-excitation-index)
   (define path (build-path directory "run-openems.m"))
   (define port-count (length ports))
   (define budget-frequency-hz (* (model-frequency) 1e6))
@@ -1591,12 +1788,65 @@
         (when lossy-dielectric?
           (line "CSX = AddDump(CSX, 'dielectric_loss', 'DumpType', 29, 'Frequency', budget_frequency, 'FileType', 1, 'DumpMode', 2);")
           (line "CSX = AddBox(CSX, 'dielectric_loss', 0, geometry_min, geometry_max);"))
+        (when (and capture-excitation-index
+                   (= active-index capture-excitation-index))
+          (for ([dump (in-list field-dumps)])
+            (define name (exported-field-dump-name dump))
+            (define minimum (exported-field-dump-minimum dump))
+            (define maximum (exported-field-dump-maximum dump))
+            (line "capture_min = ~a;" (octave-vector minimum))
+            (line "capture_max = ~a;" (octave-vector maximum))
+            (line "capture_counts = [sum(mesh.x >= capture_min(1) & mesh.x <= capture_max(1)), sum(mesh.y >= capture_min(2) & mesh.y <= capture_max(2)), sum(mesh.z >= capture_min(3) & mesh.z <= capture_max(3))];")
+            ;; Reduce the longest retained axis first.  Unlike one isotropic
+            ;; stride, this keeps the densely refined transverse axes of a
+            ;; transmission line intact whenever the longitudinal axis alone
+            ;; can satisfy the report budget.
+            (line "capture_stride = [1, 1, 1];")
+            (line "while prod(ceil(capture_counts ./ capture_stride)) > ~a"
+                  (exported-field-dump-max-samples dump))
+            (line "  capture_retained = ceil(capture_counts ./ capture_stride);")
+            (line "  capture_candidates = capture_retained; capture_candidates(capture_counts <= 2) = 0;")
+            (line "  [capture_longest, capture_axis] = max(capture_candidates);")
+            (line "  if capture_longest <= 2, break; end")
+            (line "  capture_ratio = ceil(prod(capture_retained) / ~a);"
+                  (exported-field-dump-max-samples dump))
+            (line "  capture_stride(capture_axis) = min(capture_counts(capture_axis)-1, max(capture_stride(capture_axis)+1, capture_stride(capture_axis)*capture_ratio));")
+            (line "end")
+            (line "capture_subsampling = sprintf('%d,%d,%d', capture_stride(1), capture_stride(2), capture_stride(3));")
+            (line "CSX = AddDump(CSX, '~a', 'DumpType', ~a, 'Frequency', ~a, 'FileType', 1, 'DumpMode', ~a, 'SubSampling', capture_subsampling);"
+                  name (exported-field-dump-dump-type dump)
+                  (number-string capture-frequency-hz)
+                  (exported-field-dump-dump-mode dump))
+            (line "CSX = AddBox(CSX, '~a', 0, capture_min, capture_max);" name)))
         (line "WriteOpenEMS([Sim_Path '/' Sim_XML], FDTD, CSX);")
         (line "settings.LogFile = 'openems.log'; settings.Silent = 0;")
         (line "RunOpenEMS(Sim_Path, Sim_XML, '--dump-statistics', settings);")
         (for ([port-index (in-range 1 (add1 port-count))])
           (line "port{~a} = calcPort(port{~a}, Sim_Path, freq);"
                 port-index port-index))
+        (when (and capture-excitation-index
+                   (= active-index capture-excitation-index))
+          ;; Normalize every phasor to one watt of incident power at the
+          ;; capture frequency.  This removes the arbitrary Gaussian-pulse
+          ;; spectrum while retaining component-to-component complex phase.
+          (line "capture_port = calcPort(port{~a}, Sim_Path, ~a);"
+                active-index (number-string capture-frequency-hz))
+          (line "if capture_port.P_inc(1) <= 0, error('field-capture incident power is not positive'); end")
+          (line "capture_scale = 1 / sqrt(capture_port.P_inc(1));")
+          ;; Normalize openEMS's HDF5 dialect through its supported Octave
+          ;; reader.  The binary sidecars give the report exporter a stable,
+          ;; documented array order independent of HDF5 library details.
+          (for ([dump (in-list field-dumps)])
+            (define name (exported-field-dump-name dump))
+            (line "[capture_field, capture_mesh] = ReadHDF5Dump([Sim_Path '/~a.h5']);" name)
+            (line "capture_values = capture_field.FD.values{1} .* capture_scale;")
+            (line "capture_shape = size(capture_values); capture_shape(end+1:4) = 1;")
+            (line "fid = fopen([Sim_Path '/~a-real.f32'], 'wb'); fwrite(fid, real(capture_values(:)), 'float32'); fclose(fid);" name)
+            (line "fid = fopen([Sim_Path '/~a-imag.f32'], 'wb'); fwrite(fid, imag(capture_values(:)), 'float32'); fclose(fid);" name)
+            (line "dlmwrite([Sim_Path '/~a-x.csv'], capture_mesh.lines{1}(:)', 'precision', '%.17g');" name)
+            (line "dlmwrite([Sim_Path '/~a-y.csv'], capture_mesh.lines{2}(:)', 'precision', '%.17g');" name)
+            (line "dlmwrite([Sim_Path '/~a-z.csv'], capture_mesh.lines{3}(:)', 'precision', '%.17g');" name)
+            (line "dlmwrite([Sim_Path '/~a-shape.csv'], [capture_shape(1:4), capture_field.FD.frequency(1)], 'precision', '%.17g');" name)))
         ;; Preserve absolute port powers at the exact model frequency.  These
         ;; are safer than deriving power solely from S-parameters and remain
         ;; valid for passive output ports, whose accepted power is negative.
@@ -2371,6 +2621,7 @@
                        #:keep-artifacts? [keep? #t]
                        #:progress? [progress? #t]
                        #:record-radiation? [record-radiation? #t]
+                       #:field-capture [capture #f]
                        #:timeout [timeout #f])
   (call-with-derived-wire-scene
    (lambda (derivation)
@@ -2389,6 +2640,7 @@
       #:keep-artifacts? keep?
       #:progress? progress?
       #:record-radiation? record-radiation?
+      #:field-capture capture
       #:timeout timeout
       #:wire-derivation derivation))
    #:segments wire-segments))
@@ -2412,6 +2664,7 @@
                        #:keep-artifacts? [keep? #t]
                        #:progress? [progress? #t]
                        #:record-radiation? [record-radiation? #t]
+                       #:field-capture [capture #f]
                        #:timeout [timeout #f]
                        #:wire-derivation [wire-derivation #f])
   (positive-real 'openems-sweep start-mhz "start frequency in MHz")
@@ -2448,6 +2701,16 @@
     (raise-argument-error 'openems-sweep "boolean?" progress?))
   (unless (boolean? record-radiation?)
     (raise-argument-error 'openems-sweep "boolean?" record-radiation?))
+  (unless (or (not capture) (field-capture? capture))
+    (raise-argument-error 'openems-sweep "(or/c #f field-capture?)" capture))
+  (when (and capture
+             (not (<= start-mhz (field-capture-frequency capture) stop-mhz)))
+    (raise-arguments-error
+     'openems-sweep
+     "field-capture frequency must be inside the simulation sweep"
+     "capture frequency (MHz)" (field-capture-frequency capture)
+     "sweep start (MHz)" start-mhz
+     "sweep stop (MHz)" stop-mhz))
   (unless (or (not timeout) (and (finite-real? timeout) (> timeout 0)))
     (raise-argument-error 'openems-sweep "(or/c #f positive-real?)" timeout))
   (validate-model!)
@@ -2463,10 +2726,20 @@
   ;; One-port models retain automatic convenience alignment. Multiport models
   ;; deliberately preserve user coordinates and must already be grid-aligned.
   (define transform (simulation-transform user-ports))
+  (define capture-excitation
+    (capture-excitation-index capture user-ports))
+  (define capture-constraints
+    (if capture
+        (map (lambda (slice)
+               (capture-slice-constraint slice transform))
+             (field-capture-slices capture))
+        '()))
   (define mesh-constraints
-    (map (lambda (constraint)
-           (transform-mesh-constraint constraint transform))
-         (model-mesh-constraints)))
+    (append
+     (map (lambda (constraint)
+            (transform-mesh-constraint constraint transform))
+          (model-mesh-constraints))
+     capture-constraints))
   (define octave (resolve-octave requested-octave))
   (define directory
     (make-temporary-file "antenna-turtle-openems~a" 'directory))
@@ -2559,6 +2832,15 @@
          (model-frequency)))))
   (flush-output)
   (define geometry (append bodies sheets))
+  (when (and capture (field-capture-current capture)
+             (not (for/or ([item (in-list geometry)])
+                    (memq (em-material-kind (geometry-material item))
+                          '(pec conductor conducting-sheet)))))
+    (raise-user-error
+     'openems-sweep
+     (string-append
+      "field-capture requested conductor currents, but the exported scene "
+      "contains no PEC or finite-conductivity conductor geometry")))
   ;; The derived capsule union contains many axis-aligned facets very close to
   ;; the mathematical radius because its circular cross-section is polygonal.
   ;; Those facets are OpenEMS geometry, not independently required mesh
@@ -2627,6 +2909,9 @@
          (* 10 max-resolution)))
   (define domain-min (map (lambda (value) (- value padding)) minimum))
   (define domain-max (map (lambda (value) (+ value padding)) maximum))
+  (define field-dumps
+    (capture-dumps capture capture-constraints geometry
+                   domain-min domain-max metal-edge-resolution))
   (validate-mesh-constraint-domain! mesh-constraints domain-min domain-max)
   (define wire-mesh-values
     (if wire-derivation
@@ -2672,7 +2957,10 @@
                        (mesh-constraint-axis-values mesh-constraints 1)
                        (mesh-constraint-axis-values mesh-constraints 2)
                        mesh-grading maximum-timesteps end-criteria
-                       minimum maximum wavelength-min record-radiation?)
+                       minimum maximum wavelength-min record-radiation?
+                       field-dumps
+                       (and capture (* 1e6 (field-capture-frequency capture)))
+                       capture-excitation)
   (define initial-manifest
     (hash
      'format_version 1
@@ -2778,6 +3066,42 @@
                'postprocess_default_frequency_mhz
                (exact->inexact (model-frequency)))
          (hash 'enabled #f 'recording "disabled"))
+     'field_capture
+     (if capture
+         (hash
+          'enabled #t
+          'frequency_mhz (exact->inexact (field-capture-frequency capture))
+          'excitation_index capture-excitation
+          'excitation_port
+          (format "~a"
+                  (lumped-port-name
+                   (list-ref user-ports (sub1 capture-excitation))))
+          'phasor_convention "instantaneous = real(phasor * exp(+j*phase))"
+          'normalization "one watt incident power at the selected excitation"
+          'coordinate_space "solver; use solver_to_user_transform for reports"
+          'dumps
+          (for/list ([dump (in-list field-dumps)])
+            (hash
+             'name (exported-field-dump-name dump)
+             'quantity (symbol->string (exported-field-dump-quantity dump))
+             'units (exported-field-dump-units dump)
+             'source (exported-field-dump-source dump)
+             'hdf5 (format "~a.h5" (exported-field-dump-name dump))
+             'real_f32 (format "~a-real.f32" (exported-field-dump-name dump))
+             'imag_f32 (format "~a-imag.f32" (exported-field-dump-name dump))
+             'shape (format "~a-shape.csv" (exported-field-dump-name dump))
+             'axes
+             (for/list ([axis (in-list '(x y z))])
+               (format "~a-~a.csv" (exported-field-dump-name dump) axis))
+             'array_order "x-fastest, then y, z, component"
+             'components '("x" "y" "z")
+             'dump_mode (exported-field-dump-dump-mode dump)
+             'max_samples (exported-field-dump-max-samples dump)
+             'surface_reconstruction
+             (if (hash-empty? (exported-field-dump-metadata dump))
+                 'null
+                 (exported-field-dump-metadata dump)))))
+         (hash 'enabled #f))
      'power_accounting
      (hash 'frequency_mhz (exact->inexact (model-frequency))
            'port_power "port-power.csv"

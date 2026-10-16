@@ -461,7 +461,10 @@
   (file-or-directory-permissions mock-octave #o755)
   (define failure
     (with-handlers ([exn:fail:openems? values])
-      (openems-sweep 900 1100 #:octave mock-octave #:progress? #f)
+      (openems-sweep
+       900 1100 #:octave mock-octave #:progress? #f
+       #:field-capture
+       (field-capture #:frequency 1000 #:current 'conductors))
       #f))
   (check-true (exn:fail:openems? failure))
   (define run (exn:fail:openems-run-info failure))
@@ -471,6 +474,10 @@
   (check-true (positive? (length (regexp-match* #rx"body_1_facet_[0-9]+ =" driver))))
   (check-false (regexp-match? #rx"ImportSTL\\(CSX, 'body_1'" driver))
   (check-false (regexp-match? #rx"copyfile\\('body-1.stl'" driver))
+  (check-regexp-match #rx"AddDump\\(CSX, 'at_surface_h_conductor_1'.*'DumpType', 11"
+                      driver)
+  (check-regexp-match #rx"AddDump\\(CSX, 'at_surface_d_conductor_1'.*'DumpType', 14"
+                      driver)
   (define manifest (openems-run-info-manifest run))
   (define body-description (first (hash-ref manifest 'geometry)))
   (check-equal? (hash-ref body-description 'representation)
@@ -478,8 +485,20 @@
   (check-equal? (hash-ref body-description 'form) "surface")
   (check-equal? (hash-ref body-description 'material_source)
                 "forced-by-surface-form")
-  (check-equal? (hash-ref body-description 'file) 'null)
+  (check-equal? (hash-ref body-description 'file) "body-1.stl")
+  (check-true
+   (file-exists?
+    (build-path (openems-artifacts-directory artifacts) "body-1.stl")))
   (check-true (positive? (hash-ref body-description 'surface_facet_count)))
+  (define capture-description (hash-ref manifest 'field_capture))
+  (define surface-dumps (hash-ref capture-description 'dumps))
+  (check-equal? (length surface-dumps) 2)
+  (for ([dump (in-list surface-dumps)])
+    (define reconstruction (hash-ref dump 'surface_reconstruction))
+    (check-equal? (hash-ref reconstruction 'method) "yee-shell")
+    (check-equal? (hash-ref reconstruction 'geometry_index) 1)
+    (check-true (hash-ref reconstruction 'two_sided))
+    (check-true (positive? (hash-ref reconstruction 'sample_offset_m))))
   ;; Both outer and subtracted inner boundaries contribute required mesh
   ;; planes, even though the latter no longer exists as a source primitive.
   (define all-critical

@@ -15,6 +15,49 @@ whenever practical.
 
 * Likely next milestones
 
+** Interactive simulation reports
+
+Milestones 0 and 1 export a portable HTML file with geometry, metadata, complex
+frequency-domain captures, current magnitude/direction and surface charge,
+phase controls, grouped E/H field slices, sparse vectors, linear/log scales,
+PML annotation, and movable X/Y/Z slices through retained complex field
+volumes. Extend that foundation without coupling the browser schema to OpenEMS.
+
+*** DONE Milestone 2 -- power flow and report metadata
+
+- [X] render derived time-average and instantaneous Poynting magnitude,
+  through-plane power, vectors, and projected flow lines, with physical plane
+  integration, optional current overlay, and explicit color legends;
+- [X] add complete S-parameter/port-sample tables, exact-frequency port power,
+  solver convergence, and mesh summaries to the backend-neutral schema.
+
+*** DONE Milestone 3 -- triangulated conductor surfaces
+
+- [X] reconstruct complex surface current on arbitrary PEC/STL geometry from H
+  samples on a thin shell, surface normals, and ~K = n × (H_out - H_in)~;
+- [X] render triangulated conductors with shared-vertex scalar interpolation,
+  model-global log/symlog normalization, free surface charge from the normal D
+  jump, and an unambiguous instantaneous-current magnitude in place of vector
+  arrows or a fictitious global tangent on curved/branching conductors;
+- [X] validate the result on both an explicit solid dipole and an ordinary-wire
+  Moxon array converted to triangulated capsule geometry.
+
+*** TODO Milestone 4 -- volumetric and report-scale presentation
+
+- [ ] render volumetric density plots and richer combined charge/current
+  presentations;
+- [ ] add derived power-budget and radiation-pattern summaries to the report
+  UI;
+- [ ] expand quantitative traveling-wave and radiating-array validation beyond
+  the initial two-conductor and Moxon E/H direction, phase, and power-flow
+  checks; and
+- [ ] investigate exporter-selected multiresolution field data when inline gzip
+  reports become too large, while retaining direct-open single-file HTML as
+  the portable default.
+
+The detailed Milestone 0 boundary, HDF5 decision, packaging analysis, and
+acceptance tests are recorded in ~docs/HTML-REPORTS-M0.md~.
+
 ** Planar and distributed ports
 
 The first OpenEMS backend has axis-aligned lumped ports.  Add explicit planar
