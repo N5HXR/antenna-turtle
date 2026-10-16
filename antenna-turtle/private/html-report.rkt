@@ -9,13 +9,17 @@
          racket/math
          racket/match
          racket/path
+         racket/port
          racket/runtime-path
          racket/string
+         racket/system
          "openems.rkt")
 
 (provide write-html-report)
 
 (define-runtime-path viewer-bundle "report-assets/viewer.bundle.js")
+
+(define native-gzip (find-executable-path "gzip"))
 
 (define (result-run result)
   (cond
@@ -26,11 +30,36 @@
       'write-html-report
       "(or/c openems-sweep-result? openems-multiport-result?)" result)]))
 
-(define (gzip-base64 bytes)
+(define (gzip-bytes/native bytes)
+  (and native-gzip
+       (with-handlers ([exn:fail? (lambda (_exception) #f)])
+         ;; Read stdout while a helper writes stdin so neither pipe can fill
+         ;; and block the other.  -n omits host-specific name/time metadata;
+         ;; -1 is ample for already-dense float arrays and is dramatically
+         ;; faster than the portable Racket deflater.
+         (define-values (process child-out child-in _child-error)
+           (subprocess #f #f (current-error-port)
+                       native-gzip "-1" "-n" "-c"))
+         (define writer
+           (thread
+            (lambda ()
+              (write-bytes bytes child-in)
+              (close-output-port child-in))))
+         (define compressed (port->bytes child-out))
+         (close-input-port child-out)
+         (thread-wait writer)
+         (subprocess-wait process)
+         (and (zero? (subprocess-status process)) compressed))))
+
+(define (gzip-bytes/portable bytes)
   (define compressed (open-output-bytes))
   (gzip-through-ports (open-input-bytes bytes) compressed #f 0)
+  (get-output-bytes compressed))
+
+(define (gzip-base64 bytes)
   (bytes->string/utf-8
-   (base64-encode (get-output-bytes compressed) #"")))
+   (base64-encode
+    (or (gzip-bytes/native bytes) (gzip-bytes/portable bytes)) #"")))
 
 ;; JSON lives in an HTML script element.  Escaping '<' prevents a model title
 ;; or other user-authored metadata from terminating that element with a literal
@@ -345,7 +374,7 @@ CSS
      'metadata
      (hash 'title (or title (hash-ref manifest 'model_title "Antenna Turtle"))
            'subtitle
-           (format "openEMS · ~a MHz field capture · portable milestone 3"
+           (format "openEMS · ~a MHz field capture · portable report"
                    (hash-ref (hash-ref manifest 'field_capture) 'frequency_mhz))
            'model_frequency_mhz (hash-ref manifest 'model_frequency_mhz)
            'sweep (hash-ref manifest 'sweep)
@@ -384,7 +413,7 @@ CSS
       (display report-css out)
       (display "</style></head><body><header><h1 id=\"title\"></h1><div id=\"subtitle\"></div></header>" out)
       (display "<canvas id=\"viewport\"></canvas><div class=\"scanlines\"></div>" out)
-      (display "<section class=\"panel\" id=\"controls\"><label for=\"capture\">LAYER / SLICE</label><select id=\"capture\"></select><div class=\"row\" id=\"current-mode-row\"><label for=\"current-mode\">COLOR</label><select id=\"current-mode\"><option value=\"magnitude\">|current|</option><option value=\"direction\">dir(current)</option><option value=\"charge\">charge</option></select></div><div id=\"field-controls\" hidden><div class=\"row\" id=\"volume-controls\" hidden><label for=\"slice-axis\">PLANE</label><select id=\"slice-axis\"><option value=\"x\">normal X</option><option value=\"y\">normal Y</option><option value=\"z\">normal Z</option></select><label for=\"slice-position\">POSITION <span id=\"slice-position-value\"></span></label><input id=\"slice-position\" type=\"range\" min=\"0\" max=\"1000\" step=\"1\" value=\"500\"></div><div class=\"row\" id=\"field-mode-row\"><label for=\"field-quantity\">FIELD</label><select id=\"field-quantity\"><option value=\"electric\">E</option><option value=\"magnetic\">H</option></select><label for=\"field-mode\">VIEW</label><select id=\"field-mode\"><option value=\"tangent-instantaneous\">instantaneous tangent intensity</option><option value=\"streamlines\">instantaneous field lines</option><option value=\"tangent-vectors\">tangent vectors</option><option value=\"tangent-magnitude\">tangent envelope (static)</option><option value=\"magnitude\">total envelope (static)</option><option value=\"normal\">normal component</option><option value=\"x\">x component</option><option value=\"y\">y component</option><option value=\"z\">z component</option><option value=\"vectors\">3D vectors</option></select><label for=\"field-range\">RANGE</label><select id=\"field-range\"><option value=\"slice\">slice auto</option><option value=\"volume\">volume</option></select></div><div class=\"row\"><label for=\"field-scale\">SCALE</label><select id=\"field-scale\"><option value=\"linear\">linear</option><option value=\"log\" selected>log</option></select><label for=\"log-floor\">FLOOR <span id=\"log-floor-value\">−40 dB</span></label><input id=\"log-floor\" type=\"range\" min=\"-80\" max=\"-10\" step=\"1\" value=\"-40\"></div><div class=\"row\"><label for=\"field-opacity\">OPACITY</label><input id=\"field-opacity\" type=\"range\" min=\"0.05\" max=\"1\" step=\"0.05\" value=\"0.8\"><label><input id=\"pml-visible\" type=\"checkbox\" checked> PML</label></div></div><div id=\"capture-detail\"></div><div class=\"row\"><button id=\"play\">PAUSE</button><label>PHASE <span id=\"phase-value\">0°</span></label><input id=\"phase\" type=\"range\" min=\"0\" max=\"360\" value=\"0\"></div><div class=\"row\"><label>SPEED <span id=\"speed-value\">1.00×</span></label><input id=\"speed\" type=\"range\" min=\"0.1\" max=\"4\" step=\"0.05\" value=\"1\"><span class=\"checks\"><label><input id=\"model-visible\" type=\"checkbox\" checked> MODEL</label><label><input id=\"field-visible\" type=\"checkbox\" checked> FIELD</label></span></div></section>" out)
+      (display "<section class=\"panel\" id=\"controls\"><label for=\"capture\">LAYER / SLICE</label><select id=\"capture\"></select><div class=\"row\" id=\"current-mode-row\"><label for=\"current-mode\">COLOR</label><select id=\"current-mode\"><option value=\"magnitude\">|current|</option><option value=\"direction\">dir(current)</option><option value=\"charge\">charge</option><option value=\"combined\">charge + current</option></select></div><div id=\"field-controls\" hidden><div class=\"row\" id=\"volume-controls\" hidden><label for=\"slice-axis\">PLANE</label><select id=\"slice-axis\"><option value=\"x\">normal X</option><option value=\"y\">normal Y</option><option value=\"z\">normal Z</option></select><label for=\"slice-position\">POSITION <span id=\"slice-position-value\"></span></label><input id=\"slice-position\" type=\"range\" min=\"0\" max=\"1000\" step=\"1\" value=\"500\"></div><div class=\"row\" id=\"field-mode-row\"><label for=\"field-quantity\">FIELD</label><select id=\"field-quantity\"><option value=\"electric\">E</option><option value=\"magnetic\">H</option></select><label for=\"field-mode\">VIEW</label><select id=\"field-mode\"><option value=\"tangent-instantaneous\">instantaneous tangent intensity</option><option value=\"streamlines\">instantaneous field lines</option><option value=\"tangent-vectors\">tangent vectors</option><option value=\"tangent-magnitude\">tangent envelope (static)</option><option value=\"magnitude\">total envelope (static)</option><option value=\"normal\">normal component</option><option value=\"x\">x component</option><option value=\"y\">y component</option><option value=\"z\">z component</option><option value=\"vectors\">3D vectors</option></select><label for=\"field-range\">RANGE</label><select id=\"field-range\"><option value=\"slice\">slice auto</option><option value=\"volume\">volume</option></select></div><div class=\"row\"><label for=\"field-scale\">SCALE</label><select id=\"field-scale\"><option value=\"linear\">linear</option><option value=\"log\" selected>log</option></select><label for=\"log-floor\">FLOOR <span id=\"log-floor-value\">−40 dB</span></label><input id=\"log-floor\" type=\"range\" min=\"-80\" max=\"-10\" step=\"1\" value=\"-40\"></div><div class=\"row\"><label for=\"field-opacity\">OPACITY</label><input id=\"field-opacity\" type=\"range\" min=\"0.05\" max=\"1\" step=\"0.05\" value=\"0.8\"><label><input id=\"pml-visible\" type=\"checkbox\" checked> PML</label></div></div><div id=\"capture-detail\"></div><div class=\"row\"><button id=\"play\">PAUSE</button><label>PHASE <span id=\"phase-value\">0°</span></label><input id=\"phase\" type=\"range\" min=\"0\" max=\"360\" value=\"0\"></div><div class=\"row\"><label>SPEED <span id=\"speed-value\">1.00×</span></label><input id=\"speed\" type=\"range\" min=\"0.1\" max=\"4\" step=\"0.05\" value=\"1\"><span class=\"checks\"><label><input id=\"model-visible\" type=\"checkbox\" checked> MODEL</label><label><input id=\"field-visible\" type=\"checkbox\" checked> FIELD</label></span></div></section>" out)
       (display "<details class=\"panel\" id=\"metadata-panel\"><summary>SIMULATION METADATA</summary><pre id=\"metadata\"></pre></details>" out)
       (display "<script type=\"application/json\" id=\"antenna-turtle-report-data\">" out)
       (display (json-script-text report-data) out)

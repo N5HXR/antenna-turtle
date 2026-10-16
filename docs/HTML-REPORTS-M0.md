@@ -116,6 +116,16 @@ interpolates those colors across the triangles (Gouraud-style shading). This
 hides artificial polygon banding without adding electromagnetic samples or
 changing the values used for normalization.
 
+The viewer retains a second planar presentation for broad conductors.
+`surface density` assigns every display-cell vertex its local retained Yee
+sample instead of copying the width-integrated station value across the sheet;
+the companion charge grid is interpolated onto those current vertices in the
+physical solver coordinates. This exposes lateral PCB return-current and
+surface-charge structure. `auto` uses this representation for the complete
+planar group when a broad sheet is present and otherwise uses the original
+`transport current` presentation, avoiding mixed units and normalization in a
+single view.
+
 The display surface is offset a small, scale-relative distance from the model
 only in WebGL. Stored coordinates remain exact. This avoids depth-buffer
 fighting without inventing samples on both faces of a zero-thickness sheet.
@@ -149,6 +159,28 @@ corresponding symmetric-log transfer. Curved conductors intentionally use
 instantaneous current magnitude rather than vector arrows or a fabricated
 global tangent direction. The stored complex vectors and physical units remain
 linear and unchanged by these presentation choices.
+
+## Milestone 4 exploratory volume and combined surfaces
+
+Milestone 4 deliberately keeps the portable viewer focused on education,
+exploration, model gut checks, and finding spatial mistakes. Rigorous numerical
+comparison remains in the solver results and existing plots.
+
+Full E/H captures can be shown as bounded 3-D isosurfaces. These opt-in choices
+are last in the view menu because rebuilding a surface costs more than drawing
+a slice. A dedicated dB threshold selects the surface; marching tetrahedra
+linearly interpolate each threshold crossing within the retained nonuniform
+Yee cells rather than snapping triangles to samples. A bounded cell budget and
+throttled animation keep browser work predictable. Static phasor envelopes and
+animated instantaneous magnitudes share the existing opacity, quantity
+palettes, and phase convention. Co-registered E/H data also supports average
+and instantaneous Poynting-magnitude isosurfaces.
+
+The conductor layer adds a combined charge/current view. Charge polarity owns
+the bipolar hue and instantaneous current magnitude adds a neutral white
+highlight. Charge and current remain independently normalized and retain their
+different physical units; the combined color is explicitly a bivariate visual
+encoding rather than a new measured quantity.
 
 ## HDF5 dependency decision
 

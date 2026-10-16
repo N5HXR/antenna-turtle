@@ -10,6 +10,7 @@ import {
   surfaceCharge,
   surfaceCurrent,
 } from "./surface-math.js";
+import { marchingTetrahedra } from "./isosurface.js";
 
 async function main() {
 const data = JSON.parse(document.getElementById("antenna-turtle-report-data").textContent);
@@ -86,9 +87,14 @@ for (const item of data.geometry) {
     roughness: item.metal ? 0.28 : 0.72,
     transparent: true,
     opacity: item.opacity ?? 0.78,
+    // Transparent dielectrics are context, not occluders.  Writing their
+    // front surface into the depth buffer hides field slices and isosurfaces
+    // that are physically inside the material volume.
+    depthWrite: Boolean(item.metal),
     side: THREE.DoubleSide,
   });
   const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = item.metal ? 1 : 0;
   mesh.name = item.name;
   modelGroup.add(mesh);
   reportGeometry.set(item.index, { item, mesh });
@@ -149,6 +155,7 @@ let active = null;
 let displayObject = null;
 let currentOverlay = null;
 let currentMode = "magnitude";
+let currentMap = "auto";
 let currentScale = "log";
 let currentLogFloor = -40;
 let fieldQuantity = "electric";
@@ -157,12 +164,21 @@ let fieldRange = "slice";
 let fieldScale = "log";
 let logFloor = -40;
 let fieldOpacity = 0.8;
+let isosurfaceThresholdDb = -24;
 let sliceAxis = "x";
 let slicePosition = 0.5;
 let phaseDegrees = 0;
 let playing = true;
 let speed = 1;
 let priorTime = performance.now();
+
+const currentModeSelect = document.getElementById("current-mode");
+if (!currentModeSelect.querySelector("option[value=combined]")) {
+  const combinedOption = document.createElement("option");
+  combinedOption.value = "combined";
+  combinedOption.textContent = "charge + current";
+  currentModeSelect.append(combinedOption);
+}
 
 const fieldQuantitySelect = document.getElementById("field-quantity");
 const powerOption = document.createElement("option");
@@ -199,12 +215,27 @@ currentScaleRow.innerHTML = `<label for="current-scale">SCALE</label>
   <select id="current-scale"><option value="linear">linear</option><option value="log" selected>log</option></select>
   <label for="current-log-floor">FLOOR <span id="current-log-floor-value">−40 dB</span></label>
   <input id="current-log-floor" type="range" min="-80" max="-10" step="1" value="-40">`;
-document.getElementById("current-mode-row").after(currentScaleRow);
+const currentMapRow = document.createElement("div");
+currentMapRow.id = "current-map-row";
+currentMapRow.className = "row";
+currentMapRow.innerHTML = `<label for="current-map">CURRENT MAP</label>
+  <select id="current-map"><option value="auto">auto</option><option value="transport">transport current</option><option value="surface">surface density</option></select>`;
+document.getElementById("current-mode-row").after(currentMapRow);
+currentMapRow.after(currentScaleRow);
 currentScaleRow.after(currentLegend);
 const currentOverlayLabel = document.createElement("label");
 currentOverlayLabel.hidden = true;
 currentOverlayLabel.innerHTML = `<input id="current-overlay" type="checkbox"> CURRENT`;
 document.querySelector(".checks").prepend(currentOverlayLabel);
+
+const isosurfaceRow = document.createElement("div");
+isosurfaceRow.id = "isosurface-row";
+isosurfaceRow.className = "row";
+isosurfaceRow.hidden = true;
+isosurfaceRow.innerHTML = `<label for="isosurface-threshold">THRESHOLD
+  <span id="isosurface-threshold-value">−24 dB</span></label>
+  <input id="isosurface-threshold" type="range" min="-60" max="-3" step="1" value="-24">`;
+document.getElementById("field-mode-row").after(isosurfaceRow);
 
 const electromagneticModes = [
   ["tangent-instantaneous", "instantaneous tangent intensity"],
@@ -215,6 +246,8 @@ const electromagneticModes = [
   ["normal", "normal component"],
   ["x", "x component"], ["y", "y component"], ["z", "z component"],
   ["vectors", "3D vectors"],
+  ["volume-envelope", "3D envelope isosurface (static)"],
+  ["volume-instantaneous", "3D instantaneous isosurface"],
 ];
 const powerModes = [
   ["power-average-magnitude", "average power intensity"],
@@ -225,11 +258,22 @@ const powerModes = [
   ["power-instantaneous-normal", "instantaneous through-plane power"],
   ["power-instantaneous-vectors", "instantaneous power vectors"],
   ["power-instantaneous-streamlines", "instantaneous power-flow lines"],
+  ["power-volume-average", "3D average power isosurface"],
+  ["power-volume-instantaneous", "3D instantaneous power isosurface"],
 ];
 
-function setModeOptions() {
+function isosurfaceMode() {
+  return fieldMode === "volume-envelope"
+    || fieldMode === "volume-instantaneous"
+    || fieldMode === "power-volume-average"
+    || fieldMode === "power-volume-instantaneous";
+}
+
+function setModeOptions(volume = active?.volume ?? false) {
   const select = document.getElementById("field-mode");
-  const choices = fieldQuantity === "power" ? powerModes : electromagneticModes;
+  const allChoices = fieldQuantity === "power" ? powerModes : electromagneticModes;
+  const choices = volume ? allChoices
+    : allChoices.filter(([value]) => !value.includes("volume"));
   select.replaceChildren(...choices.map(([value, label]) => {
     const option = document.createElement("option");
     option.value = value;
@@ -295,7 +339,10 @@ function cachedCaptureData(capture) {
 function disposeDisplay(object) {
   object.traverse(child => {
     if (child.geometry) child.geometry.dispose();
-    if (child.material) child.material.dispose();
+    if (child.material) {
+      if (child.material.map) child.material.map.dispose();
+      child.material.dispose();
+    }
   });
 }
 
@@ -337,38 +384,54 @@ async function createCurrentGroup(layer) {
     return buildSurfaceHeatmap(geometry, magnetic, electricFlux, reconstruction);
   });
   const items = [...planarItems, ...surfaceItems];
-  let displayMaximum = 0, chargeMaximum = 0;
+  const maxima = {
+    transport: { current: 0, charge: 0, units: "A/m" },
+    surface: { current: 0, charge: 0, units: "A/m²" },
+  };
   for (const item of items) {
     if (item.kind === "surface-current-heatmap") {
       for (const node of item.nodes) {
-        displayMaximum = Math.max(displayMaximum, complexVectorMagnitude(node.current));
-        chargeMaximum = Math.max(chargeMaximum,
-          Math.hypot(node.charge.real, node.charge.imaginary));
+        const current = complexVectorMagnitude(node.current);
+        const charge = Math.hypot(node.charge.real, node.charge.imaginary);
+        maxima.transport.current = Math.max(maxima.transport.current, current);
+        maxima.surface.current = Math.max(maxima.surface.current, current);
+        maxima.transport.charge = Math.max(maxima.transport.charge, charge);
+        maxima.surface.charge = Math.max(maxima.surface.charge, charge);
       }
     } else {
       for (const node of item.nodes.values())
-        displayMaximum = Math.max(displayMaximum,
+        maxima.transport.current = Math.max(maxima.transport.current,
           Math.hypot(node.real, node.imaginary));
       for (const node of item.chargeNodes.values())
-        chargeMaximum = Math.max(chargeMaximum,
+        maxima.transport.charge = Math.max(maxima.transport.charge,
           Math.hypot(node.real, node.imaginary));
+      for (const cell of item.cells)
+        for (let vertex = 0; vertex < cell.vertexSamples.length; ++vertex) {
+          const sample = cell.vertexSamples[vertex];
+          const offset = sample + item.sampleCount * item.dominantComponent;
+          maxima.surface.current = Math.max(maxima.surface.current,
+            Math.hypot(item.real[offset], item.imaginary[offset]));
+          const charge = cell.vertexCharge[vertex];
+          maxima.surface.charge = Math.max(maxima.surface.charge,
+            Math.hypot(charge.real, charge.imaginary));
+        }
     }
   }
-  for (const item of items) {
-    item.currentMaximum = displayMaximum;
-    item.chargeMaximum = chargeMaximum;
-    item.mixedSurfaceGroup = surfaceItems.length > 0;
-  }
+  for (const item of items) item.mixedSurfaceGroup = surfaceItems.length > 0;
   const object = new THREE.Group();
   for (const item of items) object.add(item.object);
-  return {
+  const group = {
     kind: "current-group", object, items,
     frequencyMHz: (loaded[0] || loadedSurfaceH[0]).capture.frequency_mhz,
     conductorCount: items.length,
     cellCount: items.reduce((sum, item) => sum + item.cells.length, 0),
-    currentUnits: "A/m",
+    maxima,
+    autoCurrentMap: planarItems.some(item => item.broadSheet) ? "surface" : "transport",
+    hasPlanarItems: planarItems.length > 0,
     hasSurfaceItems: surfaceItems.length > 0,
   };
+  setCurrentMapForGroup(group);
+  return group;
 }
 
 async function loadCapture(index) {
@@ -390,7 +453,7 @@ async function loadCapture(index) {
     if (fieldQuantity === "power" && !hasPower) fieldQuantity = available[0];
     if (fieldQuantity !== "power" && !layer.fields[fieldQuantity])
       fieldQuantity = available[0];
-    setModeOptions();
+    setModeOptions(layer.kind === "field-volume");
     document.getElementById("field-quantity").value = fieldQuantity;
     for (const option of document.getElementById("field-quantity").options)
       option.disabled = option.value === "power"
@@ -412,12 +475,14 @@ async function loadCapture(index) {
   fieldGroup.add(displayObject);
   const modeRow = document.getElementById("current-mode-row");
   modeRow.hidden = active.kind !== "current-group";
+  currentMapRow.hidden = active.kind !== "current-group" || !active.hasPlanarItems;
   currentScaleRow.hidden = active.kind !== "current-group";
   const directionOption = document.querySelector("#current-mode option[value=direction]");
   directionOption.textContent = active.kind === "current-group" && active.hasSurfaceItems
     ? "instantaneous |current|" : "dir(current)";
   document.getElementById("field-controls").hidden = active.kind !== "field-slice";
   fieldLegend.hidden = active.kind !== "field-slice";
+  isosurfaceRow.hidden = active.kind !== "field-slice" || !isosurfaceMode();
   document.getElementById("volume-controls").hidden = !active.volume;
   currentOverlayLabel.hidden = active.kind === "current-group"
     || (currentCaptures.length === 0 && surfaceMagneticCaptures.length === 0);
@@ -433,6 +498,9 @@ async function showCurrentOverlay() {
       || (currentCaptures.length === 0 && surfaceMagneticCaptures.length === 0)) return;
   const layer = displayLayers.find(candidate => candidate.kind === "current-group");
   currentOverlay = await createCurrentGroup(layer);
+  currentOverlay.object.traverse(child => {
+    if (child.material) child.material.opacity = Math.min(child.material.opacity, 0.68);
+  });
   for (const item of currentOverlay.items) updateCurrentHeatmap(item);
   fieldGroup.add(currentOverlay.object);
 }
@@ -546,21 +614,67 @@ function buildFieldDisplay(loaded, volume = false, fields = {}) {
   const material = new THREE.MeshBasicMaterial({
     vertexColors: true, side: THREE.DoubleSide, transparent: true,
     opacity: fieldOpacity, depthWrite: false,
+    depthFunc: THREE.LessEqualDepth,
+    // A requested slice may exactly coincide with a PEC sheet or dielectric
+    // face.  Pull only its rasterized depth toward the camera so equal-depth
+    // fragments do not alternate; physical/report coordinates stay exact.
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
   const plane = new THREE.Mesh(geometry, material);
+  plane.renderOrder = 10;
   const arrows = buildFieldArrows(
     loaded, varyingAxes, normalAxis, lower, upper, mix, fixedCoordinates);
   const streamlines = buildStreamlineDisplay(loaded);
   const pml = buildPmlOutline(normalAxis, fixedCoordinates);
+  const isosurface = volume ? buildVolumeIsosurface(loaded) : new THREE.Group();
   const object = new THREE.Group();
-  object.add(plane, arrows, streamlines, pml);
+  object.add(plane, arrows, streamlines, pml, isosurface);
   return {
     kind: "field-slice", volume, object, plane, arrows, streamlines, pml,
+    isosurface,
     loaded, fields, samples, colors,
     rangeCache: new Map(),
     normalAxis, normalVector, normalUserAxis, varyingAxes, userPosition,
     lower, upper, mix, coordinates, fixedCoordinates, dimensions,
   };
+}
+
+function buildVolumeIsosurface(loaded) {
+  const dimensions = [loaded.nx, loaded.ny, loaded.nz];
+  const cellCount = dimensions.reduce((product, length) =>
+    product * Math.max(1, length - 1), 1);
+  const targetCells = 70000;
+  const stride = Math.max(1, Math.ceil(Math.cbrt(cellCount / targetCells)));
+  const rangeSamples = [];
+  for (let z = 0; z < loaded.nz; z += stride)
+    for (let y = 0; y < loaded.ny; y += stride)
+      for (let x = 0; x < loaded.nx; x += stride) {
+        const index = sampleIndex(loaded, [x, y, z]);
+        rangeSamples.push({ lower: index, upper: index, mix: 0 });
+      }
+  const geometry = new THREE.BufferGeometry();
+  // Isosurfaces are scalar-level sets, so lighting them with independently
+  // generated tetrahedron normals introduces a false diagonal facet pattern
+  // on broad, nearly planar shells.  Use an unlit material: geometry still
+  // supplies the shape and occlusion, while color represents only the field.
+  const material = new THREE.MeshBasicMaterial({
+    color: 0x35dcff,
+    transparent: true,
+    opacity: fieldOpacity,
+    depthWrite: false,
+    depthFunc: THREE.LessEqualDepth,
+    side: THREE.DoubleSide,
+    // Level sets can likewise become locally coplanar with model faces.
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = 10;
+  mesh.visible = false;
+  mesh.userData.rangeSamples = rangeSamples;
+  mesh.userData.stride = stride;
+  mesh.userData.lastKey = null;
+  mesh.userData.lastBuildTime = -Infinity;
+  return mesh;
 }
 
 function buildFieldArrows(loaded, varyingAxes, normalAxis, lower, upper, mix,
@@ -658,10 +772,11 @@ function buildCurrentHeatmap(loaded, singletonAxis, dominantComponent) {
     const indices = [0, 0, 0];
     indices[axisA] = a;
     indices[axisB] = b;
+    const solverPoint = coordinates.map((axis, index) => axis[indices[index]]);
     const point = transformPoint(matrix,
       coordinates[0][indices[0]], coordinates[1][indices[1]], coordinates[2][indices[2]]);
     for (let axis = 0; axis < 3; ++axis) point[axis] += visualOffset[axis];
-    return { point, sample: sampleAt(indices) };
+    return { point, solverPoint, sample: sampleAt(indices) };
   };
   for (let a = 0; a < dimensions[axisA] - 1; a += stride) {
     const nextA = Math.min(a + stride, dimensions[axisA] - 1);
@@ -679,6 +794,8 @@ function buildCurrentHeatmap(loaded, singletonAxis, dominantComponent) {
         : [startStation, startStation, endStation, endStation];
       cells.push({
         samples: corners.map(value => value.sample),
+        vertexSamples: vertexOrder.map(vertex => corners[vertex].sample),
+        vertexSolverPoints: vertexOrder.map(vertex => corners[vertex].solverPoint),
         station: startStation,
         endStation,
         vertexStations: vertexOrder.map(vertex => cornerStations[vertex]),
@@ -724,16 +841,56 @@ function buildCurrentHeatmap(loaded, singletonAxis, dominantComponent) {
     side: THREE.DoubleSide,
     transparent: true,
     opacity: 0.96,
-    depthWrite: true,
+    depthWrite: false,
+    depthFunc: THREE.LessEqualDepth,
+    polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
   });
   const object = new THREE.Mesh(geometry, material);
+  object.renderOrder = 100;
   return {
     kind: "current-heatmap", object, capture, real, imaginary,
     cells, stations, nodes, chargeNodes: new Map(), colors,
     maximum, currentMaximum: 0, chargeMaximum: 0,
     dominantComponent, lengthAxis, singletonAxis, coordinates,
+    broadSheet: Math.max(...spans) / Math.max(Math.min(...spans), Number.EPSILON) < 4,
     sampleCount, nx, ny, nz,
   };
+}
+
+function coordinateBracket(values, coordinate) {
+  if (values.length === 1) return { lower: 0, upper: 0, mix: 0 };
+  const ascending = values[0] <= values.at(-1);
+  if ((ascending && coordinate <= values[0]) || (!ascending && coordinate >= values[0]))
+    return { lower: 0, upper: 0, mix: 0 };
+  const last = values.length - 1;
+  if ((ascending && coordinate >= values[last]) || (!ascending && coordinate <= values[last]))
+    return { lower: last, upper: last, mix: 0 };
+  let upper = 1;
+  while (ascending ? values[upper] < coordinate : values[upper] > coordinate) ++upper;
+  const lower = upper - 1;
+  return {
+    lower, upper,
+    mix: (coordinate - values[lower]) / (values[upper] - values[lower]),
+  };
+}
+
+function planarPhasorAt(loaded, component, point) {
+  const brackets = ["x", "y", "z"].map((axis, index) =>
+    coordinateBracket(loaded.capture[axis], point[index]));
+  let real = 0, imaginary = 0;
+  const choices = brackets.map(bracket => bracket.lower === bracket.upper
+    ? [[bracket.lower, 1]]
+    : [[bracket.lower, 1 - bracket.mix], [bracket.upper, bracket.mix]]);
+  for (const [x, xWeight] of choices[0])
+    for (const [y, yWeight] of choices[1])
+      for (const [z, zWeight] of choices[2]) {
+        const sample = x + loaded.nx * (y + loaded.ny * z);
+        const offset = sample + loaded.sampleCount * component;
+        const weight = xWeight * yWeight * zWeight;
+        real += loaded.real[offset] * weight;
+        imaginary += loaded.imaginary[offset] * weight;
+      }
+  return { real, imaginary };
 }
 
 function attachChargeNodes(item, loaded) {
@@ -744,6 +901,9 @@ function attachChargeNodes(item, loaded) {
     throw new Error("Surface-charge capture requires one singleton axis");
   if (singletonAxis !== item.singletonAxis)
     throw new Error("Surface-charge and current planes do not have the same normal");
+  for (const cell of item.cells)
+    cell.vertexCharge = cell.vertexSolverPoints.map(point =>
+      planarPhasorAt(loaded, singletonAxis, point));
   const widthAxis = [0, 1, 2].find(axis =>
     axis !== singletonAxis && axis !== item.lengthAxis);
   const lengthCoordinates = coordinates[item.lengthAxis];
@@ -898,8 +1058,8 @@ function buildSurfaceHeatmap(geometryItem, magnetic, electricFlux, reconstructio
   geometry.computeVertexNormals();
   const material = new THREE.MeshBasicMaterial({
     vertexColors: true, side: THREE.DoubleSide, transparent: true,
-    opacity: 1, depthWrite: true,
-    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+    opacity: 1, depthWrite: false, depthFunc: THREE.LessEqualDepth,
+    polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
   });
   const object = new THREE.Mesh(geometry, material);
   // All model materials are transparent.  Force the scalar surface to render
@@ -969,6 +1129,14 @@ function signedCurrentRamp(value) {
   const magnitude = Math.pow(Math.abs(clipped), 1.5);
   return interpolateStops(
     clipped < 0 ? signedNegativeStops : signedPositiveStops, magnitude);
+}
+
+function combinedCurrentRamp(charge, current) {
+  // Charge polarity owns hue; instantaneous current adds a neutral highlight.
+  // This keeps charge visible at current nodes and current visible where the
+  // charge crosses zero without pretending the two quantities share units.
+  return signedCurrentRamp(charge).lerp(
+    new THREE.Color("#f4fbff"), 0.78 * Math.pow(Math.max(0, current), 0.72));
 }
 
 function magnitudeCurrentRamp(value) {
@@ -1101,7 +1269,13 @@ function updateCurrentLegend() {
   const middle = currentLegend.querySelector(".legend-mid");
   const high = currentLegend.querySelector(".legend-high");
   const units = currentLegend.querySelector(".legend-units");
-  if (currentMode === "magnitude"
+  if (currentMode === "combined") {
+    bar.style.background = "linear-gradient(90deg,#00e6ff,#11162c 50%,#fff45c)";
+    low.textContent = "−charge";
+    middle.textContent = "current → white";
+    high.textContent = "+charge";
+    units.textContent = "ρ / |K|";
+  } else if (currentMode === "magnitude"
       || (currentMode === "direction" && active.hasSurfaceItems)) {
     bar.style.background = "linear-gradient(90deg,#0c14b4,#0064ff,#00e6ff,#00ee5f,#ebff12,#ffc012,#ff3a12,#ff14cd)";
     low.textContent = currentScale === "log" ? `${currentLogFloor} dB` : "0";
@@ -1121,29 +1295,52 @@ function updateCurrentLegend() {
   }
 }
 
+function setCurrentMapForGroup(group) {
+  const map = !group.hasPlanarItems ? "transport"
+    : currentMap === "auto" ? group.autoCurrentMap : currentMap;
+  const selected = group.maxima[map];
+  group.resolvedCurrentMap = map;
+  group.currentUnits = map === "surface" && group.hasPlanarItems && group.hasSurfaceItems
+    ? "A/m² sheets · A/m solids" : selected.units;
+  for (const item of group.items) {
+    item.currentMap = map;
+    item.currentMaximum = selected.current;
+    item.chargeMaximum = selected.charge;
+  }
+}
+
 function currentDetail() {
   const base = `${active.frequencyMHz.toFixed(4)} MHz · ${active.conductorCount} conductors · ${active.cellCount.toLocaleString()} cells`;
+  const map = active.hasPlanarItems
+    ? ` · ${active.resolvedCurrentMap === "surface" ? "local Yee-cell surface density" : "width-integrated transport current"}`
+    : "";
   if (currentMode === "magnitude")
-    return `${base} · |surface current phasor| · phase-independent · ${currentScale}`
+    return `${base}${map} · |surface current phasor| · phase-independent · ${currentScale}`
       + `${currentScale === "log" ? ` (${currentLogFloor} dB floor)` : ""} · ${active.currentUnits}`;
   if (currentMode === "direction") {
     if (active.hasSurfaceItems)
-      return `${base} · instantaneous |surface current| on triangulated conductors; signed longitudinal current on sheets · ${currentScale} · ${active.currentUnits}`;
+      return `${base}${map} · instantaneous |surface current| on triangulated conductors; signed longitudinal current on sheets · ${currentScale} · ${active.currentUnits}`;
     const axes = [...new Set(active.items.map(item => "xyz"[item.dominantComponent]))];
-    return `${base} · signed current direction (${axes.map(axis => `J${axis}`).join("/")}) · bipolar γ1.5 · animated · ${active.currentUnits}`;
+    return `${base}${map} · signed current direction (${axes.map(axis => `J${axis}`).join("/")}) · bipolar γ1.5 · animated · ${active.currentUnits}`;
   }
-  return `${base} · free surface charge (normal D jump) · bipolar ${currentScale}`
+  if (currentMode === "combined")
+    return `${base}${map} · combined instantaneous surface view: charge polarity controls hue; current magnitude adds white highlight · ${currentScale}`
+      + `${currentScale === "log" ? ` (${currentLogFloor} dB floor)` : ""} · animated`;
+  return `${base}${map} · free surface charge (normal D jump) · bipolar ${currentScale}`
     + `${currentScale === "log" ? ` (${currentLogFloor} dB floor)` : ""} · animated · C/m²`;
 }
 
 function updateCapture() {
   if (!active) return;
-  if (active.kind === "current-group")
+  if (active.kind === "current-group") {
+    setCurrentMapForGroup(active);
     for (const item of active.items) updateCurrentHeatmap(item);
-  else updateFieldDisplay();
+  } else updateFieldDisplay();
   updateCurrentLegend();
-  if (currentOverlay)
+  if (currentOverlay) {
+    setCurrentMapForGroup(currentOverlay);
     for (const item of currentOverlay.items) updateCurrentHeatmap(item);
+  }
   document.getElementById("capture-detail").textContent =
     active.kind === "current-group" ? currentDetail() : fieldDetail();
   document.getElementById("phase-value").textContent = `${phaseDegrees.toFixed(0)}°`;
@@ -1159,6 +1356,8 @@ function fieldDetail() {
   const quantity = fieldQuantity === "power" ? "S"
     : capture.quantity === "electric" ? "E" : "H";
   const powerLabels = {
+    "power-volume-average": "3D time-average power isosurface",
+    "power-volume-instantaneous": "3D instantaneous power isosurface",
     "power-average-magnitude": "time-average |S|",
     "power-average-normal": "time-average signed through-plane S",
     "power-average-vectors": "time-average power vectors",
@@ -1169,6 +1368,8 @@ function fieldDetail() {
     "power-instantaneous-streamlines": "instantaneous power-flow lines",
   };
   const mode = fieldQuantity === "power" ? powerLabels[fieldMode]
+    : fieldMode === "volume-envelope" ? `3D |${quantity}| envelope isosurface (static)`
+    : fieldMode === "volume-instantaneous" ? `3D instantaneous |${quantity}| isosurface`
     : fieldMode === "tangent-instantaneous"
     ? `instantaneous |tangent(${quantity})|`
     : fieldMode === "streamlines" ? `instantaneous tangent(${quantity}) field lines`
@@ -1180,17 +1381,23 @@ function fieldDetail() {
   const signed = !magnitudeFieldMode();
   const transfer = fieldScale === "log"
     ? (signed ? "symlog" : "log") : "linear";
-  const scale = ` · ${signed ? "bipolar " : ""}${transfer}`
-    + `${fieldScale === "log" ? ` (${logFloor} dB floor)` : ""}`;
-  const range = fieldRange === "slice" ? " · slice-auto p98 range" : " · volume range";
-  const location = active.volume
+  const scale = isosurfaceMode() ? ""
+    : ` · ${signed ? "bipolar " : ""}${transfer}`
+      + `${fieldScale === "log" ? ` (${logFloor} dB floor)` : ""}`;
+  const range = isosurfaceMode()
+    ? ` · ${isosurfaceThresholdDb} dB interpolated isosurface · sampled-volume p98 range`
+    : fieldRange === "slice" ? " · slice-auto p98 range" : " · volume range";
+  const location = active.volume && !isosurfaceMode()
     ? ` · ${sliceAxis.toUpperCase()}=${(active.userPosition * 1000).toFixed(3)} mm`
       + ` · ${active.loaded.nx}×${active.loaded.ny}×${active.loaded.nz} voxels`
-    : "";
+    : active.volume
+      ? ` · ${active.loaded.nx}×${active.loaded.ny}×${active.loaded.nz} voxels`
+      : "";
   document.getElementById("slice-position-value").textContent = active.volume
+    && !isosurfaceMode()
     ? `${(active.userPosition * 1000).toFixed(3)} mm` : "";
   const units = fieldQuantity === "power" ? "W/m²" : capture.units;
-  const integral = fieldQuantity === "power"
+  const integral = fieldQuantity === "power" && !isosurfaceMode()
     ? ` · sampled ∬<S>·+${sliceAxis.toUpperCase()} dA ≈ ${formatPower(integratedAveragePower())}`
     : "";
   return `${capture.frequency_mhz.toFixed(4)} MHz · ${capture.source}${location} · ${mode}${scale}${range}${integral} · ${units}`;
@@ -1267,13 +1474,33 @@ function updateSurfaceHeatmap(item, cosine, sine) {
       const instantaneous = instantaneousVector(node.current, Math.atan2(sine, cosine));
       color = magnitudeCurrentRamp(currentScaledMagnitude(
         Math.hypot(...instantaneous), item.currentMaximum));
-    } else {
+    } else if (currentMode === "charge") {
       const charge = node.charge.real * cosine - node.charge.imaginary * sine;
       color = signedCurrentRamp(currentScaledSigned(charge, item.chargeMaximum));
+    } else {
+      const charge = node.charge.real * cosine - node.charge.imaginary * sine;
+      const instantaneous = instantaneousVector(node.current, Math.atan2(sine, cosine));
+      color = combinedCurrentRamp(
+        currentScaledSigned(charge, item.chargeMaximum),
+        currentScaledMagnitude(Math.hypot(...instantaneous), item.currentMaximum));
     }
     item.colors.set([color.r, color.g, color.b], vertex * 3);
   }
   item.object.geometry.attributes.color.needsUpdate = true;
+}
+
+function planarCurrentNode(item, cell, vertex) {
+  if (item.currentMap !== "surface")
+    return item.nodes.get(cell.vertexStations[vertex]);
+  const sample = cell.vertexSamples[vertex];
+  const offset = sample + item.sampleCount * item.dominantComponent;
+  return { real: item.real[offset], imaginary: item.imaginary[offset] };
+}
+
+function planarChargeNode(item, cell, vertex) {
+  return item.currentMap === "surface"
+    ? cell.vertexCharge[vertex]
+    : item.chargeNodes.get(cell.vertexStations[vertex]);
 }
 
 function updateCurrentHeatmap(item) {
@@ -1286,7 +1513,8 @@ function updateCurrentHeatmap(item) {
   for (let cell = 0; cell < item.cells.length; ++cell) {
     const colorOffset = cell * 18;
     for (let vertex = 0; vertex < 6; ++vertex) {
-      const node = item.nodes.get(item.cells[cell].vertexStations[vertex]);
+      const displayCell = item.cells[cell];
+      const node = planarCurrentNode(item, displayCell, vertex);
       let color;
       if (currentMode === "magnitude") {
         color = magnitudeCurrentRamp(
@@ -1299,11 +1527,18 @@ function updateCurrentHeatmap(item) {
             Math.abs(signedCurrent), item.currentMaximum))
           : signedCurrentRamp(
             currentScaledSigned(signedCurrent, item.currentMaximum));
-      } else {
-        const charge = item.chargeNodes.get(item.cells[cell].vertexStations[vertex]);
+      } else if (currentMode === "charge") {
+        const charge = planarChargeNode(item, displayCell, vertex);
         const signedCharge = charge.real * cosine - charge.imaginary * sine;
         color = signedCurrentRamp(
           currentScaledSigned(signedCharge, item.chargeMaximum));
+      } else {
+        const charge = planarChargeNode(item, displayCell, vertex);
+        const signedCharge = charge.real * cosine - charge.imaginary * sine;
+        const signedCurrent = node.real * cosine - node.imaginary * sine;
+        color = combinedCurrentRamp(
+          currentScaledSigned(signedCharge, item.chargeMaximum),
+          currentScaledMagnitude(Math.abs(signedCurrent), item.currentMaximum));
       }
       item.colors.set([color.r, color.g, color.b], colorOffset + vertex * 3);
     }
@@ -1336,7 +1571,9 @@ function poyntingVector(sample, instantaneous, cosine = 1, sine = 0) {
 }
 
 function powerModeInstantaneous() {
-  return fieldQuantity === "power" && fieldMode.startsWith("power-instantaneous-");
+  return fieldQuantity === "power"
+    && (fieldMode.startsWith("power-instantaneous-")
+      || fieldMode === "power-volume-instantaneous");
 }
 
 function powerModeNormal() {
@@ -1395,7 +1632,8 @@ function robustMaximum(values) {
 function magnitudeFieldMode() {
   if (fieldQuantity === "power") return !powerModeNormal();
   return ["magnitude", "vectors", "tangent-magnitude", "tangent-vectors",
-    "tangent-instantaneous", "streamlines"]
+    "tangent-instantaneous", "streamlines", "volume-envelope",
+    "volume-instantaneous"]
     .includes(fieldMode);
 }
 
@@ -1407,7 +1645,8 @@ function tangentFieldMode() {
 
 function staticFieldMode() {
   if (fieldQuantity === "power") return !powerModeInstantaneous();
-  return fieldMode === "magnitude" || fieldMode === "tangent-magnitude";
+  return fieldMode === "magnitude" || fieldMode === "tangent-magnitude"
+    || fieldMode === "volume-envelope";
 }
 
 function phasorMagnitude(phasor, tangent = false) {
@@ -1425,6 +1664,14 @@ function phasorMagnitude(phasor, tangent = false) {
 
 function magnitudeDisplayMaximum() {
   if (fieldQuantity === "power") return powerDisplayMaximum();
+  if (isosurfaceMode()) {
+    const cacheKey = "volume-isosurface-envelope";
+    if (!active.rangeCache.has(cacheKey))
+      active.rangeCache.set(cacheKey, robustMaximum(
+        active.isosurface.userData.rangeSamples.map(sample =>
+          phasorMagnitude(userFieldPhasor(active.loaded, sample)))));
+    return active.rangeCache.get(cacheKey);
+  }
   const tangent = tangentFieldMode();
   if (fieldRange === "volume")
     return tangent
@@ -1445,7 +1692,9 @@ function powerDisplayMaximum() {
   const instantaneous = powerModeInstantaneous();
   const cacheKey = instantaneous ? "power-instantaneous-envelope" : "power-average";
   if (!active.rangeCache.has(cacheKey)) {
-    const sampleValues = fieldRange === "slice"
+    const sampleValues = isosurfaceMode()
+      ? active.isosurface.userData.rangeSamples
+      : fieldRange === "slice"
       ? active.samples
       : Array.from({ length: active.loaded.sampleCount }, (_, index) =>
         ({ lower: index, upper: index, mix: 0 }));
@@ -1468,6 +1717,15 @@ function updateFieldDisplay() {
   const { loaded } = active;
   const phase = THREE.MathUtils.degToRad(phaseDegrees);
   const cosine = Math.cos(phase), sine = Math.sin(phase);
+  if (isosurfaceMode()) {
+    updateIsosurface(cosine, sine);
+    return;
+  }
+  active.isosurface.visible = false;
+  active.plane.visible = true;
+  isosurfaceRow.hidden = true;
+  document.getElementById("volume-controls").hidden = !active.volume;
+  document.getElementById("field-range").disabled = false;
   const magnitudeMaximum = magnitudeDisplayMaximum();
   const signedMaximum = fieldQuantity === "power"
     ? magnitudeMaximum
@@ -1523,6 +1781,87 @@ function updateFieldDisplay() {
   if (lines) updateStreamlines(cosine, sine);
   document.getElementById("field-scale").disabled = false;
   document.getElementById("log-floor").disabled = fieldScale !== "log";
+}
+
+function updateIsosurface(cosine, sine) {
+  const maximum = magnitudeDisplayMaximum();
+  updateFieldLegend(maximum, false);
+  const mesh = active.isosurface;
+  const quantity = fieldQuantity === "power"
+    ? "power" : active.loaded.capture.quantity;
+  const threshold = maximum * 10 ** (isosurfaceThresholdDb / 20);
+  const phaseKey = staticFieldMode() ? "static" : Math.round(phaseDegrees / 6);
+  const key = `${fieldMode}:${isosurfaceThresholdDb}:${phaseKey}`;
+  const now = performance.now();
+  const throttled = playing && now - mesh.userData.lastBuildTime < 120;
+  if (mesh.userData.lastKey !== key && !throttled) {
+    const scalarCache = new Float32Array(active.loaded.sampleCount);
+    const scalarKnown = new Uint8Array(active.loaded.sampleCount);
+    const valueAt = (x, y, z) => {
+      const index = sampleIndex(active.loaded, [x, y, z]);
+      if (!scalarKnown[index]) {
+        const sample = { lower: index, upper: index, mix: 0 };
+        scalarCache[index] = isosurfaceScalar(sample, cosine, sine);
+        scalarKnown[index] = 1;
+      }
+      return scalarCache[index];
+    };
+    const positions = marchingTetrahedra({
+      dimensions: active.dimensions,
+      coordinates: active.coordinates,
+      valueAt,
+      threshold,
+      stride: mesh.userData.stride,
+      transform: point => transformPoint(data.solver_to_user_transform, ...point),
+    });
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    if (positions.length) {
+      geometry.computeBoundingSphere();
+    }
+    mesh.geometry.dispose();
+    mesh.geometry = geometry;
+    mesh.userData.lastKey = key;
+    mesh.userData.lastBuildTime = now;
+  }
+  const emphasis = Math.max(0, Math.min(1,
+    (isosurfaceThresholdDb + 60) / 57));
+  const color = fieldMagnitudeRamp(quantity, emphasis);
+  mesh.material.color.copy(color);
+  mesh.material.opacity = fieldOpacity;
+  mesh.visible = true;
+  active.plane.visible = false;
+  active.arrows.visible = false;
+  active.streamlines.visible = false;
+  active.pml.visible = false;
+  document.getElementById("volume-controls").hidden = true;
+  isosurfaceRow.hidden = false;
+  document.getElementById("field-range").disabled = true;
+  document.getElementById("field-scale").disabled = true;
+  document.getElementById("log-floor").disabled = true;
+  const legendBar = fieldLegend.querySelector(".legend-bar");
+  legendBar.style.background = color.getStyle();
+  fieldLegend.querySelector(".legend-low").textContent =
+    `${isosurfaceThresholdDb} dB threshold`;
+  fieldLegend.querySelector(".legend-mid").textContent = "";
+  fieldLegend.querySelector(".legend-high").textContent = engineering(threshold);
+}
+
+/*
+ * Isosurface scalar values are reconstructed from the retained complex field
+ * at each Yee sample.  marchingTetrahedra linearly interpolates every
+ * threshold crossing along the cell edges; surfaces are not snapped to the
+ * displayed grid.
+ */
+function isosurfaceScalar(sample, cosine, sine) {
+  if (fieldQuantity === "power")
+    return poyntingVector(sample, powerModeInstantaneous(), cosine, sine).length();
+  const phasor = userFieldPhasor(active.loaded, sample);
+  if (fieldMode === "volume-envelope") return phasorMagnitude(phasor);
+  return Math.hypot(
+    phasor.real[0] * cosine - phasor.imaginary[0] * sine,
+    phasor.real[1] * cosine - phasor.imaginary[1] * sine,
+    phasor.real[2] * cosine - phasor.imaginary[2] * sine);
 }
 
 function updateFieldArrows(cosine, sine) {
@@ -1618,6 +1957,27 @@ function streamlineSolverField(point, cosine, sine) {
   return result;
 }
 
+function localCoordinateSpacing(coordinates, value) {
+  const [lower, upper] = coordinateBracket(coordinates, value);
+  if (lower !== upper)
+    return Math.abs(coordinates[upper] - coordinates[lower]);
+  if (lower === 0)
+    return Math.abs(coordinates[1] - coordinates[0]);
+  return Math.abs(coordinates[lower] - coordinates[lower - 1]);
+}
+
+function adaptiveStreamlineStep(point, field, axisA, axisB, maximumStep) {
+  const magnitude = Math.hypot(field[axisA], field[axisB]);
+  const unitA = field[axisA] / magnitude;
+  const unitB = field[axisB] / magnitude;
+  const spacingA = localCoordinateSpacing(active.coordinates[axisA], point[axisA]);
+  const spacingB = localCoordinateSpacing(active.coordinates[axisB], point[axisB]);
+  const crossingDistances = [];
+  if (Math.abs(unitA) > 1e-6) crossingDistances.push(spacingA / Math.abs(unitA));
+  if (Math.abs(unitB) > 1e-6) crossingDistances.push(spacingB / Math.abs(unitB));
+  return Math.min(maximumStep, 0.42 * Math.min(...crossingDistances));
+}
+
 function updateStreamlines(cosine, sine) {
   const [axisA, axisB] = active.varyingAxes;
   const coordinateBounds = [0, 1, 2].map(axis => {
@@ -1630,7 +1990,10 @@ function updateStreamlines(cosine, sine) {
   }
   const spanA = coordinateBounds[axisA][1] - coordinateBounds[axisA][0];
   const spanB = coordinateBounds[axisB][1] - coordinateBounds[axisB][0];
-  const step = Math.min(spanA, spanB) / 75;
+  const maximumStep = Math.min(spanA, spanB) / 75;
+  const maximumArcLength = 2.5 * Math.hypot(spanA, spanB);
+  const maximumIterations = 600;
+  const maximumSegments = 90000;
   const seeds = 15;
   const maximum = magnitudeDisplayMaximum();
   const threshold = maximum * (fieldScale === "log"
@@ -1641,6 +2004,7 @@ function updateStreamlines(cosine, sine) {
     && point[axisA] <= coordinateBounds[axisA][1]
     && point[axisB] >= coordinateBounds[axisB][0]
     && point[axisB] <= coordinateBounds[axisB][1];
+  seedLoop:
   for (let seedA = 0; seedA < seeds; ++seedA)
     for (let seedB = 0; seedB < seeds; ++seedB) {
       const seed = [...active.fixedCoordinates];
@@ -1648,13 +2012,27 @@ function updateStreamlines(cosine, sine) {
       seed[axisB] = coordinateBounds[axisB][0] + spanB * (seedB + 0.5) / seeds;
       for (const direction of [-1, 1]) {
         let point = [...seed];
-        for (let iteration = 0; iteration < 28; ++iteration) {
+        let arcLength = 0;
+        for (let iteration = 0; iteration < maximumIterations; ++iteration) {
           const field = streamlineSolverField(point, cosine, sine);
           const magnitude = Math.hypot(field[axisA], field[axisB]);
           if (magnitude < threshold) break;
+          const step = adaptiveStreamlineStep(
+            point, field, axisA, axisB, maximumStep);
+          if (!Number.isFinite(step) || step <= 0) break;
+          const midpoint = [...point];
+          midpoint[axisA] += direction * step * field[axisA] / magnitude / 2;
+          midpoint[axisB] += direction * step * field[axisB] / magnitude / 2;
+          if (!inside(midpoint)) break;
+          const midpointField = streamlineSolverField(midpoint, cosine, sine);
+          const midpointMagnitude = Math.hypot(
+            midpointField[axisA], midpointField[axisB]);
+          if (midpointMagnitude < threshold) break;
           const next = [...point];
-          next[axisA] += direction * step * field[axisA] / magnitude;
-          next[axisB] += direction * step * field[axisB] / magnitude;
+          next[axisA] += direction * step
+            * midpointField[axisA] / midpointMagnitude;
+          next[axisB] += direction * step
+            * midpointField[axisB] / midpointMagnitude;
           if (!inside(next)) break;
           positions.push(
             ...transformPoint(data.solver_to_user_transform, ...point),
@@ -1664,6 +2042,9 @@ function updateStreamlines(cosine, sine) {
             scaledMagnitude(magnitude, maximum));
           colors.push(color.r, color.g, color.b, color.r, color.g, color.b);
           point = next;
+          arcLength += step;
+          if (arcLength >= maximumArcLength) break;
+          if (positions.length / 6 >= maximumSegments) break seedLoop;
         }
       }
     }
@@ -1689,6 +2070,10 @@ function rebuildVolumeSlice() {
 captureSelect.addEventListener("change", () => loadCapture(Number(captureSelect.value)));
 document.getElementById("current-mode").addEventListener("change", event => {
   currentMode = event.target.value;
+  updateCapture();
+});
+document.getElementById("current-map").addEventListener("change", event => {
+  currentMap = event.target.value;
   updateCapture();
 });
 document.getElementById("current-scale").addEventListener("change", event => {
@@ -1733,6 +2118,14 @@ document.getElementById("log-floor").addEventListener("input", event => {
   logFloor = Number(event.target.value);
   document.getElementById("log-floor-value").textContent = `−${Math.abs(logFloor)} dB`;
   updateCapture();
+});
+let isosurfaceUpdateTimer = null;
+document.getElementById("isosurface-threshold").addEventListener("input", event => {
+  isosurfaceThresholdDb = Number(event.target.value);
+  document.getElementById("isosurface-threshold-value").textContent =
+    `−${Math.abs(isosurfaceThresholdDb)} dB`;
+  clearTimeout(isosurfaceUpdateTimer);
+  isosurfaceUpdateTimer = setTimeout(updateCapture, 80);
 });
 document.getElementById("field-opacity").addEventListener("input", event => {
   fieldOpacity = Number(event.target.value);

@@ -1728,6 +1728,19 @@ the primary presentation so ideal PEC edge crowding does not consume the
 palette; charge comes from a companion normal electric-flux dump. Adjacent
 station colors are interpolated across display triangles without changing the
 underlying capture resolution.
+Planar conductor layers also provide an independent current-map choice.
+`transport current` retains the width-integrated station presentation used to
+suppress ideal PEC edge crowding on narrow antenna strips. `surface density`
+colors the two-dimensional Yee-cell mesh from its local samples, preserving
+lateral return-current structure on PCB ground planes. `auto` selects surface
+density for the whole planar group when any conductor is a broad sheet and
+otherwise selects transport current, keeping normalization and units
+consistent within the displayed group. No additional solver capture is needed.
+Triangulated conductor surfaces additionally offer a combined exploratory mode:
+instantaneous charge polarity controls hue while instantaneous current
+magnitude adds a neutral white highlight. The two quantities retain independent
+normalization and units; the combination is a visual encoding, not a derived
+physical scalar.
 
 Report metadata includes solver termination/timing, mesh dimensions and
 spacing, ports and reference impedances, the complete one-port sample or
@@ -1761,6 +1774,16 @@ relationships through the RF cycle. Fixed `#:slices` remain useful when a
 small report needs only predetermined cross-sections. Field lines are
 streamlines of the instantaneous field projected into the selected plane; they
 are a visualization aid, not particle trajectories or independent solver data.
+
+Full-volume captures also provide static-envelope and instantaneous 3-D
+isosurfaces for E and H, plus time-average and instantaneous power-magnitude
+isosurfaces when both fields are present. These heavier views are opt-in and
+appear last in the view menu. Their dedicated dB threshold is linearly
+interpolated along the retained nonuniform Yee-cell edges by marching
+tetrahedra; it is not snapped to grid points. The browser bounds the traversed
+cell count and throttles animated mesh replacement. This remains an
+exploratory spatial overview; movable planes and the existing numerical plots
+remain the clearer tools for quantitative inspection.
 
 When co-registered E and H captures are present, `POWER` derives the Poynting
 vector without another solver run. Time-average power uses

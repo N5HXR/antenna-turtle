@@ -42,18 +42,17 @@ volumes. Extend that foundation without coupling the browser schema to OpenEMS.
 - [X] validate the result on both an explicit solid dipole and an ordinary-wire
   Moxon array converted to triangulated capsule geometry.
 
-*** TODO Milestone 4 -- volumetric and report-scale presentation
+*** DONE Milestone 4 -- volumetric and report-scale presentation
 
-- [ ] render volumetric density plots and richer combined charge/current
-  presentations;
-- [ ] add derived power-budget and radiation-pattern summaries to the report
-  UI;
-- [ ] expand quantitative traveling-wave and radiating-array validation beyond
-  the initial two-conductor and Moxon E/H direction, phase, and power-flow
-  checks; and
-- [ ] investigate exporter-selected multiresolution field data when inline gzip
-  reports become too large, while retaining direct-open single-file HTML as
-  the portable default.
+- [X] render opt-in threshold isosurfaces and richer combined charge/current
+  presentations.
+
+The report viewer is an educational, exploratory, and model-diagnostic aid;
+rigorous numerical comparison remains the job of the existing plots and solver
+results.  Power-budget/radiation dashboards and viewer-facing quantitative
+validation are therefore not Milestone 4 goals.  Exporter-selected
+multiresolution data is deferred until real report size or browser performance
+requires it; direct-open single-file HTML remains the portable default.
 
 The detailed Milestone 0 boundary, HDF5 decision, packaging analysis, and
 acceptance tests are recorded in ~docs/HTML-REPORTS-M0.md~.
