@@ -4,6 +4,15 @@
 simulation report. It is bundled so an exported report never needs a network
 connection, package manager, web server, or `file:` fetch.
 
+The plotting workspace uses a custom Plotly.js build containing only the
+Cartesian scatter and Smith-chart traces. Plotly.js and Three.js are both MIT
+licensed, pinned in `package.json`, and bundled into the checked-in offline
+runtime asset.
+
+Every reported port provides Smith, S11 magnitude, positive return-loss, VSWR,
+and resistance/reactance plots. Multiport reports additionally provide the
+complete S-parameter matrix sweep.
+
 Rebuild with `npm install && npm run build`. The dependency versions are pinned
 in `package.json`; the checked-in bundle is a runtime asset, not a generated
 simulation report. Three.js is MIT licensed; its license is retained beside the

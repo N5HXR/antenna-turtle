@@ -11,9 +11,11 @@ import {
   surfaceCurrent,
 } from "./surface-math.js";
 import { marchingTetrahedra } from "./isosurface.js";
+import { createPlotWorkspace } from "./plot-workspace.js";
 
 async function main() {
 const data = JSON.parse(document.getElementById("antenna-turtle-report-data").textContent);
+const plotWorkspace = createPlotWorkspace(data);
 const canvas = document.getElementById("viewport");
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -188,6 +190,22 @@ fieldQuantitySelect.append(powerOption);
 
 const reportStyle = document.createElement("style");
 reportStyle.textContent = `
+  .row[hidden] { display:none }
+  #workspace-switch { position:fixed; z-index:8; top:18px; right:18px;
+    display:flex; padding:3px; gap:3px; border:1px solid #31efff88; background:#06101de8;
+    box-shadow:0 0 18px #00d9ff2f }
+  #metadata-panel { top:78px }
+  #workspace-switch button { min-width:96px; border:0; color:#79b5c4; box-shadow:none }
+  #workspace-switch button.active { color:#fff; background:#14344b; box-shadow:inset 0 -2px #ff3bd4 }
+  #plots-workspace { position:fixed; z-index:3; inset:78px 20px 18px; }
+  #plots-workspace[hidden] { display:none }
+  .plot-toolbar { position:absolute; z-index:2; left:10px; right:10px; top:0;
+    display:flex; align-items:center; gap:10px; padding:9px 12px }
+  .plot-toolbar #plot-frequency-note { margin-left:auto; color:#fff45c; font-size:10px }
+  #network-plot { position:absolute; inset:58px 0 0; border:1px solid #31efff44;
+    background:radial-gradient(circle at 60% 30%,#151037cc,#030611 60%) }
+  @media(max-width:800px) { #workspace-switch { top:10px; right:10px }
+    #plots-workspace { inset:62px 8px 8px } .plot-toolbar #plot-frequency-note { display:none } }
   .color-legend { margin-top:9px; display:grid; grid-template-columns:1fr auto;
     gap:4px 10px; align-items:center; font-size:10px; color:#b9efff }
   .color-legend[hidden] { display:none }
@@ -236,6 +254,10 @@ isosurfaceRow.innerHTML = `<label for="isosurface-threshold">THRESHOLD
   <span id="isosurface-threshold-value">−24 dB</span></label>
   <input id="isosurface-threshold" type="range" min="-60" max="-3" step="1" value="-24">`;
 document.getElementById("field-mode-row").after(isosurfaceRow);
+const fieldScaleRow = document.getElementById("field-scale").closest(".row");
+const fieldRangeSelect = document.getElementById("field-range");
+const fieldRangeLabel = document.querySelector("label[for=field-range]");
+const pmlLabel = document.getElementById("pml-visible").closest("label");
 
 const electromagneticModes = [
   ["tangent-instantaneous", "instantaneous tangent intensity"],
@@ -1724,6 +1746,10 @@ function updateFieldDisplay() {
   active.isosurface.visible = false;
   active.plane.visible = true;
   isosurfaceRow.hidden = true;
+  fieldScaleRow.hidden = false;
+  fieldRangeLabel.hidden = false;
+  fieldRangeSelect.hidden = false;
+  pmlLabel.hidden = false;
   document.getElementById("volume-controls").hidden = !active.volume;
   document.getElementById("field-range").disabled = false;
   const magnitudeMaximum = magnitudeDisplayMaximum();
@@ -1836,9 +1862,10 @@ function updateIsosurface(cosine, sine) {
   active.pml.visible = false;
   document.getElementById("volume-controls").hidden = true;
   isosurfaceRow.hidden = false;
-  document.getElementById("field-range").disabled = true;
-  document.getElementById("field-scale").disabled = true;
-  document.getElementById("log-floor").disabled = true;
+  fieldScaleRow.hidden = true;
+  fieldRangeLabel.hidden = true;
+  fieldRangeSelect.hidden = true;
+  pmlLabel.hidden = true;
   const legendBar = fieldLegend.querySelector(".legend-bar");
   legendBar.style.background = color.getStyle();
   fieldLegend.querySelector(".legend-low").textContent =
@@ -2170,6 +2197,10 @@ function resize() {
 
 function animate(now) {
   requestAnimationFrame(animate);
+  if (plotWorkspace && !plotWorkspace.isViewerActive()) {
+    priorTime = now;
+    return;
+  }
   const elapsed = Math.min(0.1, (now - priorTime) / 1000);
   priorTime = now;
   const phaseRelevant = active?.kind === "current-group"
