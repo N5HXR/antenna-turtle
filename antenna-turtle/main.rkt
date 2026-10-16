@@ -1,12 +1,12 @@
 #lang racket
 
-(require (except-in "private/core.rkt" feed)
+(require (except-in "private/core.rkt" feed cylinder scale)
+         "private/electrical-units.rkt"
          "private/export-nec2c.rkt"
          "private/export-mmana.rkt"
          "private/export-matlab.rkt"
          "private/export-matlab-loft.rkt"
          "private/nec2c.rkt"
-         "private/nec2c-view.rkt"
          "private/view.rkt"
          k-infix
          (planet jphelps/loop:1:25)
@@ -15,13 +15,69 @@
                      racket/syntax
                      syntax/parse))
 
+;; Manifold is an optional native dependency. Probe it while compiling the
+;; language so a minimal installation can still load the wire DSL and pure
+;; file exporters. The resulting choice is recorded in main.zo; installing or
+;; repairing Manifold later therefore requires `raco setup --pkgs
+;; antenna-turtle` to rebuild this module. Backend names are deliberately
+;; absent, rather than stubbed, in the minimal language so Racket reports its
+;; ordinary unbound-identifier diagnostic when a solid model is attempted.
+(begin-for-syntax
+  (define solid-backend-load-failure
+    (with-handlers ([exn:fail? values])
+      (dynamic-require 'manifold #f)
+      #f)))
+
+(define validate-enabled-scenes! void)
+
+(define-syntax (include-optional-solid-backend stx)
+  (if solid-backend-load-failure
+      #'(begin
+          (eprintf
+           (string-append
+            "Antenna Turtle: Manifold unavailable; solid/OpenEMS support "
+            "disabled.\n")))
+      #'(begin
+          (require (except-in "private/solid-core.rkt" dielectric conductor)
+                   "private/solid-dsl.rkt"
+                   "private/solid-trace-dsl.rkt"
+                   "private/solid-primitives.rkt"
+                   "private/material-catalog.rkt"
+                   "private/simulation-profile.rkt"
+                   "private/simulation-dsl.rkt"
+                   "private/field-capture.rkt"
+                   "private/html-report.rkt"
+                   "private/solid-view.rkt"
+                   "private/openems.rkt"
+                   "private/openems-power.rkt"
+                   "private/measurement.rkt"
+                   "private/nec2c-view.rkt")
+          (provide
+           (all-from-out "private/solid-core.rkt")
+           (all-from-out "private/solid-dsl.rkt")
+           (all-from-out "private/solid-trace-dsl.rkt")
+           (all-from-out "private/solid-primitives.rkt")
+           (all-from-out "private/material-catalog.rkt")
+           (all-from-out "private/simulation-profile.rkt")
+           (all-from-out "private/simulation-dsl.rkt")
+           (all-from-out "private/field-capture.rkt")
+           (all-from-out "private/html-report.rkt")
+           (all-from-out "private/openems.rkt")
+           (all-from-out "private/openems-power.rkt")
+           (all-from-out "private/measurement.rkt")
+           (all-from-out "private/nec2c-view.rkt")
+           show-solid-model)
+          (set! validate-enabled-scenes! validate-solid-scene!))))
+
+(include-optional-solid-backend)
+
 (provide
  (except-out (all-from-out racket) #%module-begin)
  (rename-out [antenna-module-begin #%module-begin])
  #%braces
  (all-from-out (planet jphelps/loop:1:25))
  (all-from-out "private/nec2c.rkt")
- (all-from-out "private/nec2c-view.rkt")
+ (all-from-out "private/electrical-units.rkt")
  wavelength
  half-wave
  quarter-wave
@@ -33,6 +89,8 @@
              call-with-wire call-with-points call-with-scale call-from-here
              call-with-warp call-with-surface call-with-reflection
              call-with-radial-repeat radial-iterations-value
+             register-model-reset-hook! current-turtle-affine-transform
+             current-turtle-event-handler current-wire-active?
              call-with-pen call-with-push)
  model
  turn
@@ -87,7 +145,8 @@
      #'(#%plain-module-begin
         (reset-model!)
         form ...
-        (validate-model!))]))
+        (validate-model!)
+        (validate-enabled-scenes!))]))
 
 (begin-for-syntax
   (define (syntax-pairs who stx description)

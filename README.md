@@ -11,6 +11,33 @@ program. Named feeds support independent voltage amplitude and phase. NEC2C
 models may use free space, perfect ground, or configurable real ground;
 MATLAB exports include a directly runnable far-field directivity stub.
 
+The experimental OpenEMS branch also supports ordinary Turtle wires converted
+to physical Manifold capsule unions, Manifold PEC, lossy dielectric, and
+rectilinear finite-conductivity volume bodies, planar PEC/conducting sheets,
+one- and multiport lumped feeds,
+ideal lumped R/L/C regions, Octave/OpenEMS S-parameter sweeps, a solid-model
+preflight viewer, and the same
+return-loss, impedance, and Smith-chart windows used for NEC2C data. Broadband
+NF2FF recording also feeds the existing 3-D radiation-pattern viewers at the
+model, best-match, or another swept frequency. A model-frequency power-budget
+report combines direct port power, radiation, dielectric heat, lumped-resistor
+heat, and the remaining conductor/numerical loss. See
+[the staged OpenEMS design](docs/OPENEMS-SOLID-DESIGN.md) and
+the volume-body [`examples/openems-dipole.rkt`](examples/openems-dipole.rkt)
+and dielectric/sheet [`examples/openems-patch.rkt`](examples/openems-patch.rkt)
+references. [`examples/openems-wire-yagi.rkt`](examples/openems-wire-yagi.rkt)
+builds one ordinary wire Yagi and compares its NEC2C and OpenEMS patterns.
+[`examples/openems-patch-dsl.rkt`](examples/openems-patch-dsl.rkt) shows the
+turtle-oriented solid layer, scoped units/materials, simulation profiles, and
+data-only `simulate`/`radiation-pattern` workflow.
+For multiport work, [`examples/openems-two-port-microstrip.rkt`](examples/openems-two-port-microstrip.rkt)
+is a compact diagnostic and
+[`examples/openems-interdigital-bandpass.rkt`](examples/openems-interdigital-bandpass.rkt)
+models a three-resonator distributed filter.
+[`examples/openems-lumped-load.rkt`](examples/openems-lumped-load.rkt) and
+[`examples/openems-lumped-bandpass.rkt`](examples/openems-lumped-bandpass.rkt)
+exercise one-port and two-port hybrid lumped/distributed networks.
+
 ![Rendered yagi signal pattern comparison window](docs/comparison-photo.png)
 
 Documentation:
@@ -26,6 +53,23 @@ From this directory:
 ```sh
 raco pkg install --auto --link "$PWD"
 ```
+
+The base installation does not require Manifold. It supports wire models and
+the NEC2C, MMANA, and MATLAB file exporters. When the `racket-manifold`
+package and its native library load successfully, the same `#lang
+antenna-turtle` language also exports the solid-modeling and OpenEMS API. To
+enable that optional backend after installing Antenna Turtle:
+
+```sh
+raco pkg install --auto racket-manifold
+raco setup --pkgs antenna-turtle
+```
+
+Without Manifold, loading an Antenna Turtle model prints a short capability
+warning. Wire-only programs continue normally; solid-modeling names are not
+bound and therefore produce Racket's ordinary unbound-identifier error if
+used. After repairing or installing Manifold, rerun the `raco setup` command
+above so the language is recompiled with the full export set.
 
 Run a model with ordinary Racket to construct and validate its geometry without
 creating output files:
@@ -674,6 +718,7 @@ The `examples` directory includes:
 - three-element Yagi
 - 45-degree end-fed half-wave with counterpoise
 - stacked square, octagonal, and 32-sided loops
+- OpenEMS volume, sheet, wire, two-port, and compact solid-DSL models
 
 NEC2C ground and height are model-level DSL settings. MMANA ground remains a
 saved target-application setting and is preserved when Turtle regenerates an

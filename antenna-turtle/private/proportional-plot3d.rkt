@@ -11,12 +11,14 @@
          racket/gui/base
          racket/math
          racket/match
+         mrlib/snip-canvas
          plot/utils
          plot/private/common/draw
          plot/private/common/parameter-group
          plot/private/gui/lazy-snip-untyped
          plot/private/no-gui/plot3d-utils
-         plot/private/plot3d/plot-area)
+         plot/private/plot3d/plot-area
+         "plot-window-controls.rkt")
 
 (provide show-proportional-plot3d)
 
@@ -32,7 +34,7 @@
        (abs (cos rho))))
   (* aspect-multiplier (/ horizontal-span vertical-span)))
 
-(define (show-proportional-plot3d
+(define (show-proportional-plot3d/current-eventspace
          renderer-tree
          #:x-min [x-min #f] #:x-max [x-max #f]
          #:y-min [y-min #f] #:y-max [y-max #f]
@@ -46,12 +48,14 @@
          #:y-label [y-label (plot-y-label)]
          #:z-label [z-label (plot-z-label)]
          #:aspect-multiplier [aspect-multiplier 1]
-         #:legend-anchor [legend-anchor (plot-legend-anchor)])
+         #:legend-anchor [_legend-anchor (plot-legend-anchor)]
+         #:legend-items [legend-items '()]
+         #:legend? [legend? #f])
   (parameterize ([plot-title title]
                  [plot-x-label x-label]
                  [plot-y-label y-label]
                  [plot-z-label z-label]
-                 [plot-legend-anchor legend-anchor])
+                 [plot-legend-anchor 'no-legend])
     (define saved-plot-parameters (plot-parameters))
     (define renderer-list (get-renderer-list renderer-tree))
     (define bounds-rect
@@ -125,8 +129,103 @@
        angle altitude area requested-width requested-height))
 
     (define frame
-      (make-snip-frame
-       make-snip width height
-       (if title (format "Plot: ~a" title) "Plot")))
+      (new frame%
+           [label (if title (format "Plot: ~a" title) "Plot")]
+           [width (+ width 20)]
+           [height (+ height 48)]))
+    (define root (new vertical-panel% [parent frame] [spacing 0]))
+    (define main
+      (new horizontal-panel%
+           [parent root]
+           [spacing 3]
+           [stretchable-width #t]
+           [stretchable-height #t]))
+    (new snip-canvas%
+         [parent main]
+         [make-snip make-snip]
+         [horiz-margin 5]
+         [vert-margin 5]
+         [horizontal-inset 5]
+         [vertical-inset 5])
+    (define legend-panel
+      (and (pair? legend-items)
+           (make-legend-panel main legend-items
+                              #:background (plot-background)
+                              #:foreground (plot-foreground))))
+    (when legend-panel
+      (set-container-child-visible! main legend-panel legend?))
+    (define controls
+      (new horizontal-panel%
+           [parent root]
+           [alignment '(left center)]
+           [stretchable-height #f]))
+    (new message%
+         [parent controls]
+         [label "left drag: rotate  |  wheel: zoom"]
+         [stretchable-width #t])
+    (when legend-panel
+      (new check-box%
+           [parent controls]
+           [label "Show legend"]
+           [value legend?]
+           [callback
+            (lambda (control _event)
+              (set-container-child-visible!
+               main legend-panel (send control get-value)))]))
     (send frame show #t)
     (void)))
+
+(define (show-proportional-plot3d
+         renderer-tree
+         #:x-min [x-min #f] #:x-max [x-max #f]
+         #:y-min [y-min #f] #:y-max [y-max #f]
+         #:z-min [z-min #f] #:z-max [z-max #f]
+         #:width [width (plot-width)]
+         #:height [height (plot-height)]
+         #:angle [angle (plot3d-angle)]
+         #:altitude [altitude (plot3d-altitude)]
+         #:title [title (plot-title)]
+         #:x-label [x-label (plot-x-label)]
+         #:y-label [y-label (plot-y-label)]
+         #:z-label [z-label (plot-z-label)]
+         #:aspect-multiplier [aspect-multiplier 1]
+         #:legend-anchor [legend-anchor (plot-legend-anchor)]
+         #:legend-items [legend-items '()]
+         #:legend? [legend? #f])
+  (unless (boolean? legend?)
+    (raise-argument-error 'show-proportional-plot3d "boolean?" legend?))
+  ;; A solver call commonly follows immediately after showing geometry and
+  ;; synchronously blocks its caller.  Give each Plot3D frame an independent
+  ;; handler thread so orbit, resize, repaint, and close events remain usable
+  ;; throughout that wait.  Preserve the caller's complete Plot parameter set,
+  ;; but replace its eventspace when the queued callback installs it.
+  (define caller-parameterization (current-parameterization))
+  (define eventspace (make-eventspace))
+  (define ready (make-channel))
+  (parameterize ([current-eventspace eventspace])
+    (queue-callback
+     (lambda ()
+       (with-handlers ([exn:fail? (lambda (failure)
+                                    (channel-put ready failure))])
+         (call-with-parameterization
+          caller-parameterization
+          (lambda ()
+            (parameterize ([current-eventspace eventspace])
+              (show-proportional-plot3d/current-eventspace
+               renderer-tree
+               #:x-min x-min #:x-max x-max
+               #:y-min y-min #:y-max y-max
+               #:z-min z-min #:z-max z-max
+               #:width width #:height height
+               #:angle angle #:altitude altitude
+               #:title title
+               #:x-label x-label #:y-label y-label #:z-label z-label
+               #:aspect-multiplier aspect-multiplier
+               #:legend-anchor legend-anchor
+               #:legend-items legend-items
+               #:legend? legend?))))
+         (channel-put ready #t)))
+     #f))
+  (define result (channel-get ready))
+  (when (exn:fail? result) (raise result))
+  (void))

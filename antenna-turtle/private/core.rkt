@@ -27,6 +27,12 @@
  model-edges
  wire-used
 
+ ;; Extension support. These are consumed by geometry backends rather than
+ ;; intended as surface DSL operations.
+ register-model-reset-hook!
+ current-turtle-affine-transform current-geometry-scale
+ current-turtle-event-handler
+
  ;; Model settings.
  clear-wires
  reset-model!
@@ -65,6 +71,7 @@
  edge-length
  edge-segment-count
  current-wire-diameter
+ current-wire-active?
  current-position)
 
 ;; Unit constants are exact rationals so dimensional arithmetic remains exact
@@ -126,6 +133,16 @@
 (define pending-feed-location (make-parameter #f))
 (define current-coordinate-warp (make-parameter #f))
 (define current-radial-iterations (make-parameter '()))
+(define current-turtle-event-handler (make-parameter #f))
+(define model-reset-hooks '())
+
+(define (register-model-reset-hook! hook)
+  (unless (and (procedure? hook) (procedure-arity-includes? hook 0))
+    (raise-argument-error
+     'register-model-reset-hook! "(procedure-arity-includes/c 0)" hook))
+  (unless (memq hook model-reset-hooks)
+    (set! model-reset-hooks (append model-reset-hooks (list hook))))
+  (void))
 
 ;; Model settings retain the same zero/one-argument interface as ordinary
 ;; Racket parameters. Maximum segment length stores #f internally to mean a
@@ -385,6 +402,7 @@
 (define (reset-model!)
   (check-clear-context 'reset-model!)
   (clear-construction-state! millimeter)
+  (for ([hook (in-list model-reset-hooks)]) (hook))
   (model-title "Turtle Antenna")
   (model-impedance 50)
   (model-ground 'none)
@@ -467,6 +485,30 @@
     (for/list ([column (in-list bt)])
       (for/sum ([x (in-list row)] [y (in-list column)]) (* x y)))))
 
+;; Return the conventional row-major 3x4 affine transform that places local
+;; geometry in the current turtle frame. Nonlinear coordinate warps and radial
+;; replication cannot be represented by one affine matrix; solid backends must
+;; handle those as explicit future operations rather than silently misplacing
+;; geometry.
+(define (current-turtle-affine-transform [who 'antenna-turtle])
+  (when (current-coordinate-warp)
+    (error who "cannot place solid geometry inside with-warp or with-surface"))
+  (when (pair? (current-radial-iterations))
+    (error who "cannot place solid geometry inside radial-repeat"))
+  (define state (current-turtle-state))
+  (define position (turtle-state-position state))
+  (for/list ([row (in-list (turtle-state-orientation state))]
+             [translation (in-list (list (point3-x position)
+                                         (point3-y position)
+                                         (point3-z position)))])
+    (append row (list translation))))
+
+;; Solid-geometry backends use the same scoped factor as turtle movements.
+;; Keeping this accessor read-only prevents them from coupling to the private
+;; turtle-state representation or changing wire-diameter scaling semantics.
+(define (current-geometry-scale)
+  (turtle-state-movement-scale (current-turtle-state)))
+
 (define (exact-quarter-turn-sin-cos degrees)
   (and (exact? degrees)
        (integer? (/ degrees 90))
@@ -509,6 +551,8 @@
 (define (turn-axis degrees x y z)
   (define state (current-turtle-state))
   (define local-rotation (axis-rotation-matrix degrees x y z))
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'turn degrees x y z))
   (current-turtle-state
    (struct-copy turtle-state state
      [orientation (mat*mat (turtle-state-orientation state)
@@ -544,6 +588,8 @@
     (raise-argument-error 'call-with-wire "(procedure-arity-includes/c 0)" thunk))
   (when (turtle-state-pen-down? (current-turtle-state))
     (error 'with-wire "wire is already on"))
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'with-wire))
   (dynamic-wind
     wire-on
     thunk
@@ -573,6 +619,8 @@
     (raise-argument-error 'call-from-here
                           "(procedure-arity-includes/c 0)"
                           thunk))
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'from-here))
   (dynamic-wind push thunk pop))
 
 (define call-with-push call-from-here)
@@ -739,6 +787,9 @@
   (* (turtle-state-base-diameter state)
      (turtle-state-diameter-scale state)))
 
+(define (current-wire-active?)
+  (turtle-state-pen-down? (current-turtle-state)))
+
 (define (current-position)
   (turtle-state-position (current-turtle-state)))
 
@@ -746,11 +797,15 @@
   (current-position))
 
 (define (push)
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'push))
   (current-turtle-stack
    (cons (current-turtle-state) (current-turtle-stack)))
   (void))
 
 (define (pop)
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'pop))
   (when (null? (current-turtle-stack))
     (error 'pop "turtle stack is empty"))
   (current-turtle-state (car (current-turtle-stack)))
@@ -977,6 +1032,8 @@
 (define (perform-movement destination)
   (define state (current-turtle-state))
   (define source (turtle-state-position state))
+  (when (current-turtle-event-handler)
+    ((current-turtle-event-handler) 'move source destination))
   (define draws? (turtle-state-pen-down? state))
   (when (and (pending-feed-location) (not draws?))
     (error 'feed "the movement following feed occurred while the wire was off"))

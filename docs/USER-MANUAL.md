@@ -76,6 +76,23 @@ racket .\examples\dipole.rkt
 raco antenna-turtle --help
 ```
 
+Manifold is optional. If its Racket package or native library is unavailable,
+Antenna Turtle prints a warning and loads the wire-modeling language with the
+NEC2C, MMANA, and MATLAB file exporters; solid-modeling and OpenEMS names are
+not exported. This permits a minimal Windows installation to work without a
+native Manifold build.
+
+After Manifold has been installed or repaired, enable the full language by
+recompiling Antenna Turtle:
+
+```powershell
+raco pkg install --auto racket-manifold
+raco setup --pkgs antenna-turtle
+```
+
+Likewise, rerun `raco setup --pkgs antenna-turtle` after removing Manifold so
+the language is rebuilt in its wire-only configuration.
+
 The first command validates the model and normally prints nothing. The second
 should display the `build` command.
 
@@ -522,8 +539,11 @@ form makes frequency correction concise:
 
 Resonant frequency varies approximately inversely with linear dimensions, so
 `observed-frequency / target-frequency` is a useful first correction. Physical
-wire diameter remains unchanged. Use `scale-all` only when diameter should
-scale with geometry too.
+wire diameter remains unchanged. Newly created solid bodies, sheets, their
+physical sheet thickness, and explicit port dimensions do scale, making the
+same idiom suitable for retuning a complete solid model. Automatic port sizes
+derived from wavelength remain physical SI values. Use `scale-all` only when
+ordinary wire diameter should scale with geometry too.
 
 The conversion helpers remove the unit arithmetic normally needed around this
 workflow:
@@ -601,6 +621,10 @@ To expose the endpoints created by turtle operations:
 (show-model #:vertices? #t)
 ```
 
+The viewer keeps its legend in a side panel so it never covers the geometry.
+The panel starts collapsed; use the **Show legend** checkbox to reveal it, or
+pass `#:legend? #t` to start with the legend visible.
+
 The viewer uses an equal numeric range for X, Y, and Z and dynamically adjusts
 the Plot3D viewport while it rotates, preserving the model's physical
 proportions at every viewing angle. `#:aspect-ratio` defaults to `1`; another
@@ -609,6 +633,394 @@ The viewer shows Antenna Turtle's edges before NEC/MMANA solver subdivision.
 Lines are intentionally screen-visible and do not depict the physical wire
 diameter; use the simulator or MATLAB solid export when surface geometry
 matters.
+
+For a physical Manifold scene or the OpenEMS interpretation of ordinary wire
+geometry, use `show-solid-model` instead. It displays actual triangulated
+volume surfaces, planar conducting sheets, derived or explicit lumped ports
+as red boxes and polarity arrows, and ideal lumped-element regions in violet:
+
+```racket
+(show-solid-model)
+```
+
+The solid-model legend uses the same collapsible side panel. Long lists of
+bodies, sheets, ports, and lumped elements therefore reduce the plot width
+only while the legend is visible instead of obscuring the model.
+
+Wire edges appear as a temporary union of physical capsules with the modeled
+wire diameter. A marked feed appears as the actual gap OpenEMS will use. The
+live centerline model is not changed, so the same construction remains ready
+for NEC2C. Use `#:wire-segments` to trade circular smoothness for triangle
+count. OpenEMS also derives diameter-aware mesh helpers from these capsules:
+straight grid-aligned wires receive transverse lines at their physical edges,
+while bent or oblique paths are resolved at no more than one wire diameter on
+each axis they traverse. This avoids a wavelength-sized grid reducing a thin
+loop or curved wire to a disconnected staircase. Because rectilinear mesh
+planes span the whole simulation domain, a large oblique wire structure can
+still make a simulation substantially more expensive; the exporter reports
+the helper-line counts and records them in the run manifest.
+
+Plot3D viewers run in independent GUI eventspaces and remain responsive
+while `openems-sweep` blocks the calling evaluation thread.
+
+The turtle-oriented solid layer normally avoids direct Manifold boilerplate:
+
+```racket
+(define foam (dielectric name foam er 1.15))
+
+(with-scale millimeter
+  (with-material foam
+    (cuboid name substrate size '(150 150 1.6) anchor bottom))
+  (sheet rect name ground size '(150 150))
+  (move up 1.6)
+  (sheet rect name patch size '(89 70) mesh-edges metal))
+```
+
+Names on bodies, sheets, traces, ports, and lumped elements are optional and
+always use the contextual `name value` pair. Antenna Turtle allocates a fresh
+uninterned symbol when one is omitted. Give an
+object an explicit name when it needs a stable label in a plot or must be
+selected later by a measurement query; reusable geometry procedures can
+usually leave their internal objects anonymous. Bare identifiers are
+literal labels. Arbitrary expressions such as `name (gensym 'fixture)` are
+accepted too.
+
+Solids are centered at the turtle by default. `cuboid` uses length, width, and
+height in the turtle's forward, left, and up directions. `sphere`, `cylinder`,
+and `capsule` provide common volumes; cylinder and capsule axes follow turtle
+up. Face anchors move a bounding-box face to the turtle, and orthogonal faces
+can be combined, for example `anchor '(bottom left)`. A capsule's `start` and
+`end` anchors are the centers of its hemispherical ends, which makes chained
+capsules overlap cleanly.
+
+Imported STL geometry uses the same placement rules:
+
+```racket
+(with-scale millimeter
+  (stl name enclosure path "enclosure.stl" anchor bottom))
+```
+
+STL files do not encode units. Antenna Turtle treats their raw coordinates as
+metres, so use `with-scale` when the producing CAD tool exported another unit.
+Both ASCII and binary STL are accepted. Use `read-stl-solid` when CSG should be
+applied to the imported Manifold solid before `body` registers it.
+
+To place a Yagi element or another arbitrary solid by its midpoint, either construct a
+centered Manifold primitive such as `(m:cylinder length radius #:center? #t)`
+or use `anchor center` in its `body` form. The latter works for arbitrary CSG
+results by placing the center of their bounding box on the current turtle.
+
+Boolean solids can be authored without dropping into the Manifold API. A
+`with-body` scope collects unnamed primitives, unions its top-level shapes, and
+registers only the completed body:
+
+```racket
+(with-scale millimeters
+  (with-body name shield
+    material aluminum
+    metal-thickness 2
+    precedence 100
+    anchor bottom
+    (difference
+      (cuboid size '(80 50 12) anchor bottom)
+      (from-here
+        (move up 2)
+        (cuboid size '(76 46 10) anchor bottom)))))
+```
+
+Use `union` to group operands explicitly, `difference` for a base followed by
+one or more cutters, `intersect` for common volume, and `hull` for a convex
+envelope. Turtle movement and turning position each `cuboid`, `sphere`,
+`cylinder`, `capsule`, or imported `stl`. Primitive and completed-body anchors
+use the same bounding-box rules as ordinary solids. The turtle returns to its
+entry state when `with-body` finishes.
+
+`with-body` normally uses `form solid`: OpenEMS imports the completed body as
+an STL volume. Thin PEC solids receive an interior mesh plane whenever needed
+to guarantee at least two cells across each bounding-box dimension. For a PEC
+enclosure made from distinct wall cuboids, this prevents a wall from collapsing
+to one ambiguous Yee cell. A hollow Boolean `difference` does not expose its
+wall thickness through the completed body's bounding box, so the conservative
+Revision 1 choices are separate wall cuboids or the opt-in boundary form:
+
+```racket
+(with-body name cavity form surface
+  (difference
+    (cuboid size '(80 50 30))
+    (cuboid size '(76 46 26))))
+```
+
+`form surface` converts every surviving axis-aligned triangle of the final
+Manifold boundary into a native PEC polygon. It therefore preserves both the
+outer and subtracted inner faces without importing an STL volume. The form
+implies PEC; when `material` is omitted it overrides any enclosing material
+context and prints a notice. Explicit `material pec` is accepted, while an
+explicit conductor or dielectric is an error. Oblique facets are intentionally
+rejected in Revision 1; use `form solid` for arbitrary PEC STL geometry.
+
+`(scale factor solid-form ...)` uniformly scales those forms about the current
+turtle point. The existing `(scale factor)` call still changes the scale of
+subsequent movement and geometry. Nonuniform stretching is intentionally left
+for a later revision.
+
+PCB traces can be drawn directly with turtle movement instead of assembling a
+chain of centered rectangles:
+
+```racket
+(with-scale millimeters
+  (with-traces 3
+    material copper
+    (move forward 20)
+    (turn left 45)
+    (move forward 12)
+    (turn left 135)
+    (move forward 8)))
+```
+
+One `with-traces` scope creates one constant-width conducting sheet. Arbitrary
+turn angles are supported, with mitered corners and a default miter limit of
+four; use `join bevel` or change `miter-limit` when desired. A path that
+returns to its starting point becomes a hollow closed trace. Open paths have
+butt ends, and separate trace scopes are not joined automatically.
+
+Trace motion must remain in the globally aligned XY, XZ, or YZ plane in which
+the scope began. Branching operations such as `from-here`, turtle-stack
+operations, nested traces, and active wire drawing are rejected with a
+specific error because they cannot describe one continuous swept centerline.
+OpenEMS uses ideal metal-edge treatment on wholly orthogonal outlines. Oblique
+outlines receive width-based Yee-grid refinement—three cells across in the
+`draft` profile and five in `standard`—and mixed outlines combine both modes.
+Oblique edges remain stair-stepped, so convergence testing is prudent.
+
+Planar conductors default to openEMS metal-edge meshing. This replaces an exact
+in-plane edge line with the conventional 1/3-inside, 2/3-outside pair before
+mesh smoothing. Request `mesh-edges exact` explicitly when exact geometric
+planes are preferable for a particular ground plane or boundary.
+`#:metal-edge-resolution` on `openems-sweep` sets the pair's total spacing in
+metres; its default is half the wavelength-based cell limit.
+
+When the model itself reveals a critical coordinate that the automatic mesh
+cannot infer, register a hard constraint at the current turtle position:
+
+```racket
+(mesh-point)       ; require X, Y, and Z coordinates
+(mesh-plane xy)    ; require the current global Z coordinate
+(mesh-plane xz)    ; require the current global Y coordinate
+(mesh-plane yz)    ; require the current global X coordinate
+```
+
+These constraints survive `from-here`, are transformed with the model, and
+are recorded in the OpenEMS manifest. A plane that becomes oblique to the Yee
+grid after one-port alignment is rejected. Manual constraints are exact and
+may create very small cells, so use them sparingly: the smallest cell controls
+the FDTD Courant timestep. `clear-bodies` and `reset-model!` clear them.
+
+Ideal lumped R, L, C, and compound RLC regions use the same centered turtle
+placement idiom as ports:
+
+```racket
+(with-scale millimeters
+  (lumped-element forward
+    name input-coupling
+    capacitance {2.2 * picofarads}
+    gap 1
+    size 3
+    anchor start))
+```
+
+The direction joins the two conductor terminals. `gap` is the terminal-face
+separation. A scalar `size` creates a square transverse profile; a two-element
+list creates a rectangular one. `anchor start` places the negative-direction
+terminal at the turtle, `anchor end` places the positive-direction terminal
+there, and `anchor center` is the default. Anchors are relative to the declared
+direction and work equally for ports and lumped elements. Physical dimensions
+scale with the surrounding geometry, but electrical unit constants remain SI.
+Use `topology series` or `topology parallel` when combining R, L, and C;
+terminal `caps` default to `#t`. The backend requires Yee-grid alignment,
+locks all six box faces into the mesh, and reports a provably disconnected
+terminal before starting OpenEMS. See `examples/openems-lumped-load.rkt` and
+`examples/openems-lumped-bandpass.rkt`.
+
+After an OpenEMS sweep, the returned value works with the ordinary network
+plot functions:
+
+```racket
+(define sweep (openems-sweep 800 1050))
+(show-return-loss-sweep sweep)
+(show-impedance-sweep sweep)
+(show-smith-chart sweep)
+```
+
+The compact simulation frontend separates solver policy from visualization:
+
+```racket
+(define result
+  (simulate engine openems
+            sweep '(800 1050)
+            profile draft))
+
+(show-return-loss-sweep result)
+(define pattern (radiation-pattern result))
+(show-radiation-pattern-opengl pattern #:palette 'electric)
+```
+
+`draft` selects lambda/20, four dielectric cells, 100,000 maximum timesteps,
+and -40 dB termination. `standard` selects lambda/30, six dielectric cells,
+250,000 timesteps, and -50 dB. Use `derive-simulation-profile` to define a
+project-specific profile while preserving all unspecified settings. See
+`examples/openems-patch-dsl.rkt` for a complete solid-DSL example.
+
+With two or more ports, `openems-sweep` performs one independent excitation
+per port and returns the complete S-matrix. Unlike the convenient one-port
+case, a multiport model is not rotated automatically: every port's direction,
+width, and depth axes must already align with global X/Y/Z. The initial
+implementation requires the same reference impedance at every port.
+
+```racket
+(define two-port (openems-sweep 1800 3000))
+(show-s-parameter-magnitude two-port)
+(show-s-parameter-phase two-port)
+```
+
+Plot legends appear beside the plotting viewport when enabled with the
+window's **Show legend** checkbox. They start collapsed by default; every
+plotting procedure accepts `#:legend? #t` when the legend should start open.
+Right-click or right-drag over a 2-D plot places a cursor at the nearest measured sample; its
+full value appears in the two-line status area below the plot rather than in a
+floating label that can cover or overflow the data.
+
+Simulation values can be queried directly without unpacking backend structs:
+
+```racket
+(impedance-at two-port 2400 #:port 'input #:interpolate? #t)
+(s-parameter-db-at two-port 2400
+                   #:from 'input #:to 'output #:interpolate? #t)
+
+(define pattern (radiation-pattern two-port))
+(maximum-gain pattern)
+(maximum-gain-direction pattern) ; '(azimuth elevation)
+(front-to-back-ratio pattern)
+(front-to-side-ratio pattern)
+```
+
+Named ports remove any need to remember S-matrix indexes. Exact samples are
+used by default; interpolation must be requested explicitly and never extends
+beyond the sampled range. See the measurement-query section of `docs/API.md`
+for impedance, matching, polarization, field, and discovery helpers.
+
+The familiar network plots show the diagonal reflection and active input
+impedance for each named port. Radiation postprocessing accepts
+`#:excitation 'port-name` to select the independently recorded field data.
+
+OpenEMS runs can take minutes. The generated driver prints its exact mesh cell
+count, maximum timesteps, and residual-energy stop threshold before launching
+the FDTD engine. Antenna Turtle prints the artifact directory before launch,
+so you can inspect `simulation/model.xml` with AppCSXCAD while the solver is
+running. The progress window plots every residual-energy report so the decay
+envelope and its threshold crossings remain visible during a long run. Its
+**Cancel simulation** button stops both Octave
+and its OpenEMS child and returns an empty sweep result. Simply closing the
+window still only hides it. Retain artifacts when you want them to remain
+available after the result is returned.
+`examples/openems-dipole.rkt` is the explicit PEC-volume reference, while
+`examples/openems-patch.rkt` demonstrates a lossless dielectric substrate with
+PEC ground and patch sheets. `examples/openems-wire-yagi.rkt` builds an
+ordinary wire model once, derives its capsule representation for OpenEMS, and
+compares the resulting pattern with NEC2C. Dielectric scenes automatically use
+the shortest material wavelength when selecting the basic mesh resolution.
+Use `#:minimum-dielectric-cells` on `openems-sweep` to increase the minimum
+number of cells through electrically thin dielectric extents; the default is
+4. This is independent of the broader `#:cells-per-wavelength` limit.
+`examples/openems-two-port-microstrip.rkt` is a simple multiport diagnostic;
+`examples/openems-interdigital-bandpass.rkt` is a three-resonator distributed
+filter modeled from calculator dimensions.
+
+### Realistic material loss
+
+Use a compact `loss` tuple to select a dielectric model:
+
+```racket
+(dielectric name board er 4.4 loss (narrow 0.015 1000))
+(dielectric name board er 4.4 loss (broad 0.015 300 3000))
+(dielectric name measured er 3.7
+            loss (relax (0.42 8e-11) (0.18 1.7e-10)))
+```
+
+`narrow` is the constant-conductivity approximation. `broad` creates a causal
+broadband fit from the tangent and frequency range, using `model-frequency` as
+its reference unless an `at FREQUENCY` suffix is present. `relax` accepts
+explicit `(delta-epsilon relaxation-time-seconds)` poles and interprets `er`
+as epsilon at infinite frequency. The older `loss-tangent` and
+`loss-frequency` settings remain supported.
+
+For the common model-centered case, derive a broadband material from a catalog
+prototype. The default factor 2 spans half through twice the model frequency:
+
+```racket
+(with-material (model-dielectric fr4) ...)
+(with-material (model-dielectric fr4 5) ...)
+```
+
+Or start with the nominal built-in `fr4` material:
+
+```racket
+(with-scale millimeters
+  (with-material fr4
+    (cuboid size '(80 50 1.6) anchor bottom))
+  (with-material copper
+    (sheet rect size '(80 50))
+    (move up 1.6)
+    (with-traces 3 (move forward 40))))
+```
+
+Broadband materials use the CSXCAD Djordjevic--Sarkar/Debye path and are
+recorded in the artifact manifest. Their polarization-relaxation heat is not
+included in the current SAR-based power budget. Built-in
+room-temperature conductors are `silver`, `copper`, `gold`, `aluminum`,
+`brass`, and a nominal nonmagnetic `steel`. A custom material uses
+`(conductor name custom conductivity 2.4e7)`. `copper` carries the common
+one-ounce PCB foil thickness of 35 micrometers, so copper sheets and traces may
+omit `thickness`. This catalog thickness is already in meters and **never**
+changes under `with-scale`. An explicit `thickness` overrides it and is a
+normal geometry dimension in the active scale. Conductive sheets default to
+`mesh-edges metal`; use `mesh-edges exact` explicitly when exact geometric edge
+planes are intentional. Traces also inherit the normal conductor precedence.
+
+Nominal substrate constants are `air`, `fr4`, `fr4-vhf`, `fr4-uhf`, `fr4-shf`,
+`ptfe` (also `teflon`),
+`rogers-4003c`, `rogers-4350b`, and `rogers-5880`. Their permittivity and loss
+tangent are convenient room-temperature starting points; use a custom
+`dielectric` when a particular laminate datasheet or frequency calls for other
+values. The three band-named FR4 choices cover 50--300, 300--3000, and
+3000--10000 MHz respectively.
+
+Rectilinear finite-conductivity bodies additionally require
+`metal-thickness`. Their boundary facets must remain aligned with the Yee grid;
+curved or oblique finite-conductivity bodies are rejected before simulation.
+For metal thicker than OpenEMS's recommended 500-micrometer sheet limit, the
+backend uses ten skin depths numerically while retaining both physical and
+effective values in the manifest. Use PEC for arbitrary STL geometry until a
+volumetric or dispersive conductor backend is added.
+
+### Power accounting
+
+Completed OpenEMS runs retain absolute port powers and, at the model
+frequency, the field data needed to integrate dielectric loss. Combine those
+measurements with the recorded NF2FF surface to print a normalized report:
+
+```racket
+(define budget (power-budget result #:excitation 'input))
+(display-power-budget budget)
+```
+
+The report shows reflected power, power delivered to other ports, radiation,
+dielectric heat, lumped-resistor heat, and a conductor/numerical remainder in
+watts, percent of incident power, and dB relative to incident power. Absolute
+watts follow the solver's arbitrary source amplitude; the ratios are normally
+the useful quantities. The conductor line is obtained by conservation and
+therefore also includes PML and numerical closure error. Loss data is selected
+before FDTD, so simulations made by an older harness must be rerun before they
+can produce this report.
 
 ## 6. Repetition and Layout Tables
 
@@ -764,6 +1176,9 @@ window unless the program explicitly calls a `show-*` operation:
   (nec2c-elevation-pattern #:azimuth 0 #:step 2))
 (define sphere
   (nec2c-radiation-grid #:theta-step 5 #:phi-step 5))
+(define performance
+  (nec2c-gain-sweep 300 2000 #:steps 101
+                    #:theta-step 5 #:phi-step 5))
 
 (show-vswr-sweep sweep)
 (show-return-loss-sweep sweep)
@@ -771,7 +1186,33 @@ window unless the program explicitly calls a `show-*` operation:
 (show-radiation-cut horizontal-cut)
 (show-radiation-pattern-3d sphere)
 (show-radiation-pattern-opengl sphere #:palette 'magma)
+(show-gain-sweep performance)
 ```
+
+`nec2c-gain-sweep` evaluates impedance and a complete spherical pattern at
+every requested frequency in one NEC2C run. Its graph overlays maximum gain,
+maximum gain after mismatch loss, realized maximum gain on the horizon, and
+S11. The distinction catches higher-frequency modes whose absolute peak looks
+strong but has split away from useful horizontal coverage. A right-button
+data tip reports the peak direction, horizon gain, impedance, and VSWR.
+
+The same result supports the ordinary measurement functions and retains each
+complete pattern grid:
+
+```racket
+(maximum-gain-at-frequency performance 906 #:interpolate? #t)
+(realized-horizon-gain-at-frequency performance 906 #:interpolate? #t)
+(impedance-at performance 906 #:interpolate? #t)
+
+(define interesting-mode
+  (radiation-pattern-at-frequency performance 1660))
+(show-radiation-pattern-opengl interesting-mode)
+```
+
+Pattern and lobe-direction lookup requires an exact sampled frequency because
+a lobe can switch discontinuously between samples. Start with a 5- or
+10-degree angular grid for broadband discovery, then calculate a finer pattern
+at the selected frequency.
 
 To compare previously calculated designs in one synchronized view, name each
 grid and pass up to nine of them to the comparison viewer:

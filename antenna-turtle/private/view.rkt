@@ -3,7 +3,8 @@
 (require racket/list
          racket/runtime-path
          plot/no-gui
-         "core.rkt")
+         "core.rkt"
+         "plot-cursor.rkt")
 
 (provide show-model
          ;; Exposed from this private module for non-GUI tests and future
@@ -111,7 +112,8 @@
                     #:wire-color [wire-color default-wire-color]
                     #:width [width 900]
                     #:height [height 700]
-                    #:aspect-ratio [aspect-ratio 1])
+                    #:aspect-ratio [aspect-ratio 1]
+                    #:legend? [legend? #f])
   (unless (antenna-model? model)
     (raise-argument-error 'show-model "antenna-model?" model))
   (unless (exact-positive-integer? width)
@@ -140,6 +142,16 @@
                        'show-proportional-plot3d)))
   (show-proportional
    renderers
+   #:legend-items
+   (append
+    (list (plot-legend-item "wire" wire-color 'solid 'line))
+    (if vertices?
+        (list (plot-legend-item "vertices" vertex-color 'solid 'box))
+        '())
+    (if (ormap wire-edge-feed-location (model-edges model))
+        (list (plot-legend-item "feed" feed-color 'solid 'box))
+        '()))
+   #:legend? legend?
    #:title (model-title)
    #:x-label "x (m)"
    #:y-label "y (m)"

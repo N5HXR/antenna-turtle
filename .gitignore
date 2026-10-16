@@ -8,3 +8,7 @@ compiled/
 .DS_Store
 scratch/
 work/
+node_modules/
+*~
+\#*\#
+*.backup

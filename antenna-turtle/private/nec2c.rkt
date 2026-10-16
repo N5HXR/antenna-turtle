@@ -8,7 +8,8 @@
          racket/string
          "core.rkt"
          "export-common.rkt"
-         "export-nec2c.rkt")
+         "export-nec2c.rkt"
+         "network.rkt")
 
 (provide
  nec2c-executable
@@ -22,6 +23,8 @@
  (struct-out nec2c-pattern-sample)
  (struct-out nec2c-pattern)
  (struct-out nec2c-pattern-grid)
+ (struct-out nec2c-gain-sweep-sample)
+ (struct-out nec2c-gain-sweep-result)
  (struct-out parsed-nec2c-feed)
  (struct-out parsed-nec2c-pattern)
  (struct-out parsed-nec2c-report)
@@ -29,9 +32,12 @@
  parse-nec2c-output
  nec2c-measure-impedance
  nec2c-vswr-sweep
+ nec2c-sweep->network-sweep
  nec2c-azimuth-pattern
  nec2c-elevation-pattern
- nec2c-radiation-grid)
+ nec2c-radiation-grid
+ nec2c-gain-sweep
+ nec2c-gain-sweep->network-sweep)
 
 (struct nec2c-artifacts
   (model-path input-path output-path temporary? available?)
@@ -62,11 +68,26 @@
   (frequency-mhz theta-deg phi-deg elevation-deg azimuth-deg
    vertical-gain-db horizontal-gain-db total-gain-db
    axial-ratio tilt-deg polarization-sense
-   e-theta e-phi)
+   e-theta e-phi [direction #:auto #:mutable])
+  #:auto-value #f
   #:transparent)
 
 (struct nec2c-pattern (run kind fixed-angle samples) #:transparent)
 (struct nec2c-pattern-grid (run theta-values phi-values samples) #:transparent)
+
+;; A gain sweep deliberately retains the complete pattern grid at every
+;; frequency.  Besides supporting the summary curves, that lets callers open
+;; an interesting frequency in the ordinary 3-D pattern viewers without
+;; rerunning NEC2C.
+(struct nec2c-gain-sweep-sample
+  (frequency-mhz feedpoint reflection-coefficient return-loss-db vswr
+   pattern maximum-gain-db realized-maximum-gain-db maximum-gain-direction
+   horizon-gain-db realized-horizon-gain-db)
+  #:transparent)
+
+(struct nec2c-gain-sweep-result
+  (run reference-impedance samples)
+  #:transparent)
 
 ;; Parser-facing values deliberately retain NEC coordinates and source tags.
 ;; The runner enriches these with Antenna Turtle feed names and friendly angles.
@@ -81,6 +102,45 @@
 (struct parsed-nec2c-report (feeds patterns) #:transparent)
 
 (struct exn:fail:nec2c exn:fail (run-info) #:transparent)
+
+(define (nec2c-sweep->network-sweep result)
+  (unless (nec2c-sweep-result? result)
+    (raise-argument-error
+     'nec2c-sweep->network-sweep "nec2c-sweep-result?" result))
+  (network-sweep
+   'nec2c
+   (nec2c-sweep-result-run result)
+   (nec2c-sweep-result-reference-impedance result)
+   (for*/list ([frequency
+                (in-list (nec2c-sweep-result-frequencies result))]
+               [sample
+                (in-list (nec2c-sweep-frequency-feed-samples frequency))])
+     (define feedpoint (nec2c-sweep-sample-feedpoint sample))
+     (network-sample
+      (nec2c-feedpoint-sample-feed-name feedpoint)
+      (nec2c-feedpoint-sample-frequency-mhz feedpoint)
+      (nec2c-sweep-sample-reflection-coefficient sample)
+      (nec2c-feedpoint-sample-impedance feedpoint)
+      (- (nec2c-sweep-sample-return-loss-db sample))
+      (nec2c-sweep-sample-vswr sample)))))
+
+(define (nec2c-gain-sweep->network-sweep result)
+  (unless (nec2c-gain-sweep-result? result)
+    (raise-argument-error
+     'nec2c-gain-sweep->network-sweep "nec2c-gain-sweep-result?" result))
+  (network-sweep
+   'nec2c
+   (nec2c-gain-sweep-result-run result)
+   (nec2c-gain-sweep-result-reference-impedance result)
+   (for/list ([sample (in-list (nec2c-gain-sweep-result-samples result))])
+     (define feedpoint (nec2c-gain-sweep-sample-feedpoint sample))
+     (network-sample
+      (nec2c-feedpoint-sample-feed-name feedpoint)
+      (nec2c-gain-sweep-sample-frequency-mhz sample)
+      (nec2c-gain-sweep-sample-reflection-coefficient sample)
+      (nec2c-feedpoint-sample-impedance feedpoint)
+      (- (nec2c-gain-sweep-sample-return-loss-db sample))
+      (nec2c-gain-sweep-sample-vswr sample)))))
 
 (define nec2c-executable
   (make-parameter
@@ -720,3 +780,128 @@
      model-path executable keep? timeout))
   (define expected (* (length theta-values) (length phi-values)))
   (nec2c-pattern-grid run theta-values phi-values samples))
+
+(define (mismatch-loss-db reflection-coefficient)
+  (define accepted-fraction
+    (- 1.0 (sqr (magnitude reflection-coefficient))))
+  (if (positive? accepted-fraction)
+      (* 10.0 (/ (log accepted-fraction) (log 10.0)))
+      -inf.0))
+
+(define (available-total-gain-samples samples)
+  (filter
+   (lambda (sample)
+     (real? (nec2c-pattern-sample-total-gain-db sample)))
+   samples))
+
+(define (summarize-pattern who pattern reflection-coefficient)
+  (define available
+    (available-total-gain-samples (nec2c-pattern-grid-samples pattern)))
+  (when (null? available)
+    (raise-arguments-error who "a frequency has no available gain samples"
+                           "frequency (MHz)"
+                           (and (pair? (nec2c-pattern-grid-samples pattern))
+                                (nec2c-pattern-sample-frequency-mhz
+                                 (first
+                                  (nec2c-pattern-grid-samples pattern))))))
+  (define maximum-sample
+    (argmax nec2c-pattern-sample-total-gain-db available))
+  (define horizon-samples
+    (filter
+     (lambda (sample)
+       (< (abs (nec2c-pattern-sample-elevation-deg sample)) 1e-6))
+     available))
+  (when (null? horizon-samples)
+    (raise-arguments-error
+     who
+     "the angular grid does not contain the horizon (zero elevation)"))
+  (define horizon-sample
+    (argmax nec2c-pattern-sample-total-gain-db horizon-samples))
+  (define maximum-gain
+    (nec2c-pattern-sample-total-gain-db maximum-sample))
+  (define horizon-gain
+    (nec2c-pattern-sample-total-gain-db horizon-sample))
+  (define mismatch-loss (mismatch-loss-db reflection-coefficient))
+  (values maximum-gain
+          (+ maximum-gain mismatch-loss)
+          (list (normalize-degrees
+                 (nec2c-pattern-sample-azimuth-deg maximum-sample))
+                (nec2c-pattern-sample-elevation-deg maximum-sample))
+          horizon-gain
+          (+ horizon-gain mismatch-loss)))
+
+(define (nec2c-gain-sweep
+         start stop
+         #:steps [steps #f]
+         #:step [step #f]
+         #:theta-step [theta-step 5]
+         #:phi-step [phi-step 5]
+         #:model-path [model-path #f]
+         #:executable [executable #f]
+         #:keep-artifacts? [keep? #f]
+         #:timeout [timeout #f])
+  (define who 'nec2c-gain-sweep)
+  (define feed-count (length (feed-edges)))
+  (unless (= feed-count 1)
+    (raise-arguments-error
+     who
+     "maximum and realized gain sweeps currently require exactly one feed"
+     "feeds" feed-count))
+  (define-values (count increment)
+    (sweep-count-and-increment who start stop steps step))
+  (define grounded? (analysis-grounded? model-path))
+  (define theta-values
+    (angular-sequence who 0 (if grounded? 90 180) theta-step))
+  (unless (ormap (lambda (theta) (approximately=? theta 90)) theta-values)
+    (raise-arguments-error
+     who
+     "#:theta-step must place a sample on the horizon (theta = 90 degrees)"
+     "theta step (degrees)" theta-step))
+  (define phi-values
+    (angular-sequence who 0 (- 360 phi-step) phi-step))
+  (define angular-count (* (length theta-values) (length phi-values)))
+  (define-values (run report)
+    (runner-keywords
+     model-path executable keep? timeout
+     (list (frequency-card start count increment)
+           (radiation-card (length theta-values) (length phi-values)
+                           0 0 theta-step phi-step))
+     (lambda (report)
+       (define feed-rows (parsed-nec2c-report-feeds report))
+       (define pattern-rows (parsed-nec2c-report-patterns report))
+       (unless (= (length feed-rows) count)
+         (error who "expected ~a feed measurements but parsed ~a"
+                count (length feed-rows)))
+       (unless (= (length pattern-rows) (* count angular-count))
+         (error who "expected ~a pattern samples but parsed ~a"
+                (* count angular-count) (length pattern-rows))))))
+  (define feedpoints (map enrich-feed (parsed-nec2c-report-feeds report)))
+  (define patterns (map enrich-pattern (parsed-nec2c-report-patterns report)))
+  (define reference (model-impedance))
+  (define samples
+    (for/list ([feedpoint (in-list feedpoints)])
+      (define frequency (nec2c-feedpoint-sample-frequency-mhz feedpoint))
+      (define frequency-patterns
+        (filter
+         (lambda (sample)
+           (approximately=?
+            frequency (nec2c-pattern-sample-frequency-mhz sample)))
+         patterns))
+      (unless (= (length frequency-patterns) angular-count)
+        (error who
+               "frequency ~a MHz has ~a pattern samples; expected ~a"
+               frequency (length frequency-patterns) angular-count))
+      (define pattern
+        (nec2c-pattern-grid run theta-values phi-values frequency-patterns))
+      (define-values (reflection return-loss vswr)
+        (reflection-metrics
+         (nec2c-feedpoint-sample-impedance feedpoint) reference))
+      (define-values
+        (maximum-gain realized-maximum-gain maximum-direction
+                      horizon-gain realized-horizon-gain)
+        (summarize-pattern who pattern reflection))
+      (nec2c-gain-sweep-sample
+       frequency feedpoint reflection return-loss vswr pattern
+       maximum-gain realized-maximum-gain maximum-direction
+       horizon-gain realized-horizon-gain)))
+  (nec2c-gain-sweep-result run reference samples))

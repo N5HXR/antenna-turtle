@@ -7,19 +7,28 @@
          "plot-cursor.rkt"
          "radiation-case.rkt"
          "visualization-handle.rkt"
-         "nec2c.rkt")
+         "nec2c.rkt"
+         "network.rkt"
+         "openems.rkt")
 
 (provide
  vswr-sweep-renderers
  return-loss-sweep-renderers
+ gain-sweep-renderers
  impedance-sweep-renderers
  smith-chart-renderers
+ s-parameter-magnitude-renderers
+ s-parameter-phase-renderers
  radiation-cut-renderers
  radiation-grid-renderers
  show-vswr-sweep
  show-return-loss-sweep
+ show-gain-sweep
+ show-gain-and-match-sweep
  show-impedance-sweep
  show-smith-chart
+ show-s-parameter-magnitude
+ show-s-parameter-phase
  show-radiation-cut
  show-radiation-pattern-3d
  show-radiation-pattern-opengl
@@ -41,27 +50,50 @@
 (define (color-at index)
   (list-ref colors (modulo index (length colors))))
 
+(define (series-legend-items series-list [styles #f])
+  (for/list ([series (in-list series-list)] [index (in-naturals)])
+    (plot-legend-item
+     (cursor-series-label series)
+     (cursor-series-color series)
+     (if styles (list-ref styles (modulo index (length styles))) 'solid)
+     'line)))
+
+(define (normalize-network-sweep who result)
+  (cond
+    [(network-sweep? result) result]
+    [(nec2c-sweep-result? result) (nec2c-sweep->network-sweep result)]
+    [(nec2c-gain-sweep-result? result)
+     (nec2c-gain-sweep->network-sweep result)]
+    [(or (openems-sweep-result? result)
+         (openems-multiport-result? result))
+     (openems-sweep->network-sweep result)]
+    [else
+     (raise-argument-error
+      who
+      (string-append
+       "(or/c nec2c-sweep-result? nec2c-gain-sweep-result? openems-sweep-result? "
+       "openems-multiport-result? network-sweep?)")
+      result)]))
+
+(define (backend-title result)
+  (case (network-sweep-backend result)
+    [(openems) "OpenEMS"]
+    [(nec2c) "NEC2C"]
+    [else (format "~a" (network-sweep-backend result))]))
+
 (define (sweep-feed-names result)
   (remove-duplicates
-   (for*/list ([frequency (in-list (nec2c-sweep-result-frequencies result))]
-               [sample (in-list (nec2c-sweep-frequency-feed-samples frequency))])
-     (nec2c-feedpoint-sample-feed-name
-      (nec2c-sweep-sample-feedpoint sample)))))
+   (map network-sample-port-name (network-sweep-samples result))))
 
 (define (samples-for-feed result name)
-  (for*/list ([frequency (in-list (nec2c-sweep-result-frequencies result))]
-              [sample (in-list (nec2c-sweep-frequency-feed-samples frequency))]
-              #:when (string=?
-                      name
-                      (nec2c-feedpoint-sample-feed-name
-                       (nec2c-sweep-sample-feedpoint sample))))
+  (for/list ([sample (in-list (network-sweep-samples result))]
+             #:when (string=? name (network-sample-port-name sample)))
     sample))
 
 (define (vswr-points result name max-vswr)
   (for/list ([sample (in-list (samples-for-feed result name))])
-    (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-    (define vswr (nec2c-sweep-sample-vswr sample))
-    (vector (nec2c-feedpoint-sample-frequency-mhz feedpoint)
+    (define vswr (network-sample-vswr sample))
+    (vector (network-sample-frequency-mhz sample)
             (cond [max-vswr (min max-vswr vswr)]
                   ;; Plot treats a NaN point as a break in the line. An
                   ;; infinite VSWR therefore remains present in the data
@@ -77,14 +109,13 @@
                    (color-at index))))
 
 (define (vswr-sweep-renderers result #:max-vswr [max-vswr #f])
-  (unless (nec2c-sweep-result? result)
-    (raise-argument-error 'vswr-sweep-renderers "nec2c-sweep-result?" result))
+  (define normalized (normalize-network-sweep 'vswr-sweep-renderers result))
   (unless (or (not max-vswr)
               (and (rational? max-vswr) (> max-vswr 1)))
     (raise-argument-error
      'vswr-sweep-renderers "(or/c #f (and/c rational? (>/c 1)))" max-vswr))
   (append
-   (for/list ([series (in-list (vswr-cursor-series result max-vswr))])
+   (for/list ([series (in-list (vswr-cursor-series normalized max-vswr))])
      (lines (cursor-series-points series)
       #:color (cursor-series-color series)
       #:width 2
@@ -94,16 +125,11 @@
 
 (define (return-loss-points result name floor-db)
   (for/list ([sample (in-list (samples-for-feed result name))])
-    (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-    (define return-loss (nec2c-sweep-sample-return-loss-db sample))
     (vector
-     (nec2c-feedpoint-sample-frequency-mhz feedpoint)
-     (cond [floor-db (max floor-db (- return-loss))]
-           ;; The data object retains conventional positive return loss.
-           ;; Plot its negative, 20 log10 |Gamma|, so a good match is the
-           ;; familiar downward S11 dip. Break an exact-match infinity in
-           ;; an uncapped line so it cannot force a non-finite axis.
-           [(rational? return-loss) (- return-loss)]
+     (network-sample-frequency-mhz sample)
+     (cond [floor-db (max floor-db (network-sample-s11-db sample))]
+           [(rational? (network-sample-s11-db sample))
+            (network-sample-s11-db sample)]
            [else +nan.0]))))
 
 (define (return-loss-cursor-series result floor-db)
@@ -116,9 +142,7 @@
 (define (return-loss-sweep-renderers
          result
          #:floor-db [floor-db #f])
-  (unless (nec2c-sweep-result? result)
-    (raise-argument-error
-     'return-loss-sweep-renderers "nec2c-sweep-result?" result))
+  (define normalized (normalize-network-sweep 'return-loss-sweep-renderers result))
   (unless (or (not floor-db)
               (and (rational? floor-db) (negative? floor-db)))
     (raise-argument-error
@@ -127,7 +151,7 @@
      floor-db))
   (append
    (for/list ([series (in-list
-                       (return-loss-cursor-series result floor-db))])
+                       (return-loss-cursor-series normalized floor-db))])
      (lines (cursor-series-points series)
       #:color (cursor-series-color series)
       #:width 2
@@ -137,6 +161,61 @@
                 #:color "gray"
                 #:label "-10 dB"))))
 
+(define gain-sweep-series-specs
+  (list
+   (list "maximum gain"
+         nec2c-gain-sweep-sample-maximum-gain-db
+         "steelblue" 'solid)
+   (list "realized maximum gain"
+         nec2c-gain-sweep-sample-realized-maximum-gain-db
+         "darkgreen" 'short-dash)
+   (list "realized horizon gain"
+         nec2c-gain-sweep-sample-realized-horizon-gain-db
+         "darkorange" 'long-dash)
+   (list "S11"
+         (lambda (sample)
+           (- (nec2c-gain-sweep-sample-return-loss-db sample)))
+         "firebrick" 'dot)))
+
+(define (gain-sweep-point sample selected-value)
+  (define feedpoint (nec2c-gain-sweep-sample-feedpoint sample))
+  (define direction (nec2c-gain-sweep-sample-maximum-gain-direction sample))
+  (vector
+   (nec2c-gain-sweep-sample-frequency-mhz sample)
+   (if (rational? selected-value) selected-value +nan.0)
+   (nec2c-gain-sweep-sample-maximum-gain-db sample)
+   (nec2c-gain-sweep-sample-realized-maximum-gain-db sample)
+   (nec2c-gain-sweep-sample-horizon-gain-db sample)
+   (nec2c-gain-sweep-sample-realized-horizon-gain-db sample)
+   (- (nec2c-gain-sweep-sample-return-loss-db sample))
+   (first direction)
+   (second direction)
+   (real-part (nec2c-feedpoint-sample-impedance feedpoint))
+   (imag-part (nec2c-feedpoint-sample-impedance feedpoint))
+   (nec2c-gain-sweep-sample-vswr sample)))
+
+(define (gain-sweep-cursor-series result)
+  (unless (nec2c-gain-sweep-result? result)
+    (raise-argument-error
+     'gain-sweep-renderers "nec2c-gain-sweep-result?" result))
+  (for/list ([spec (in-list gain-sweep-series-specs)])
+    (define accessor (second spec))
+    (cursor-series
+     (first spec)
+     (for/list ([sample (in-list (nec2c-gain-sweep-result-samples result))])
+       (gain-sweep-point sample (accessor sample)))
+     (third spec))))
+
+(define (gain-sweep-renderers result)
+  (define series-list (gain-sweep-cursor-series result))
+  (for/list ([series (in-list series-list)]
+             [spec (in-list gain-sweep-series-specs)])
+    (lines (cursor-series-points series)
+           #:color (cursor-series-color series)
+           #:style (fourth spec)
+           #:width 2
+           #:label (cursor-series-label series))))
+
 (define (impedance-cursor-series result)
   (append*
    (for/list ([name (in-list (sweep-feed-names result))]
@@ -145,18 +224,15 @@
      (define color (color-at index))
      (define (points part)
        (for/list ([sample (in-list samples)])
-         (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-         (vector (nec2c-feedpoint-sample-frequency-mhz feedpoint)
-                 (part (nec2c-feedpoint-sample-impedance feedpoint)))))
+         (vector (network-sample-frequency-mhz sample)
+                 (part (network-sample-impedance sample)))))
      (list (cursor-series (format "~a R" name) (points real-part) color)
            (cursor-series (format "~a X" name) (points imag-part) color)))))
 
 (define (impedance-sweep-renderers result)
-  (unless (nec2c-sweep-result? result)
-    (raise-argument-error
-     'impedance-sweep-renderers "nec2c-sweep-result?" result))
+  (define normalized (normalize-network-sweep 'impedance-sweep-renderers result))
   (append*
-   (for/list ([series (in-list (impedance-cursor-series result))]
+   (for/list ([series (in-list (impedance-cursor-series normalized))]
               [index (in-naturals)])
      (list
       (lines (cursor-series-points series)
@@ -288,17 +364,16 @@
        (<= (magnitude gamma) (+ 1 1e-9))))
 
 (define (smith-sample-point sample)
-  (define feedpoint (nec2c-sweep-sample-feedpoint sample))
-  (define gamma (nec2c-sweep-sample-reflection-coefficient sample))
+  (define gamma (network-sample-reflection-coefficient sample))
   (if (passive-gamma? gamma)
-      (let ([impedance (nec2c-feedpoint-sample-impedance feedpoint)])
+      (let ([impedance (network-sample-impedance sample)])
         (vector (real-part gamma)
                 (imag-part gamma)
-                (nec2c-feedpoint-sample-frequency-mhz feedpoint)
+                (network-sample-frequency-mhz sample)
                 (real-part impedance)
                 (imag-part impedance)
-                (- (nec2c-sweep-sample-return-loss-db sample))
-                (nec2c-sweep-sample-vswr sample)))
+                (network-sample-s11-db sample)
+                (network-sample-vswr sample)))
       ;; NaN causes Plot to break the line and is ignored by the data cursor.
       (vector +nan.0 +nan.0 0 0 0 0 0)))
 
@@ -336,10 +411,9 @@
 (define (smith-chart-renderers result
                                #:markers? [markers? #t]
                                #:theme [theme 'light])
-  (unless (nec2c-sweep-result? result)
-    (raise-argument-error 'smith-chart-renderers "nec2c-sweep-result?" result))
+  (define normalized (normalize-network-sweep 'smith-chart-renderers result))
   (validate-smith-options 'smith-chart-renderers markers? theme)
-  (define series-list (smith-cursor-series result))
+  (define series-list (smith-cursor-series normalized))
   (append
    (smith-grid-renderers theme)
    (for/list ([series (in-list series-list)])
@@ -427,6 +501,28 @@
   (vector (* horizontal (cos phi))
           (* horizontal (sin phi))
           (* radius (cos theta))))
+
+(define (radiation-backend-title grid)
+  (define run (nec2c-pattern-grid-run grid))
+  (if (and (hash? run) (eq? (hash-ref run 'backend #f) 'openems))
+      "OpenEMS"
+      "NEC2C"))
+
+(define (sample-direction sample)
+  (or (nec2c-pattern-sample-direction sample)
+      (let* ([theta (degrees->radians
+                     (nec2c-pattern-sample-theta-deg sample))]
+             [phi (degrees->radians
+                   (nec2c-pattern-sample-phi-deg sample))])
+        (vector (* (sin theta) (cos phi))
+                (* (sin theta) (sin phi))
+                (cos theta)))))
+
+(define (sample-point sample radius)
+  (define direction (sample-direction sample))
+  (vector (* radius (vector-ref direction 0))
+          (* radius (vector-ref direction 1))
+          (* radius (vector-ref direction 2))))
 
 ;; NEC2C can profitably calculate a much finer angular grid than Plot3D can
 ;; profitably draw as thousands of independently colored polygons. Keep the
@@ -524,22 +620,21 @@
           ;; sorter can cause pathological recursion on a fine grid. A single
           ;; shared pole and a triangle describe the same surface cleanly.
           [(zero? theta-a)
-           (list (spherical-point
-                  theta-a phi-a (/ (+ (list-ref radii 0)
-                                      (list-ref radii 1)) 2))
-                 (spherical-point theta-b phi-b (list-ref radii 2))
-                 (spherical-point theta-b phi-a (list-ref radii 3)))]
+           (list (sample-point
+                  (list-ref face-samples 0)
+                  (/ (+ (list-ref radii 0) (list-ref radii 1)) 2))
+                 (sample-point (list-ref face-samples 2) (list-ref radii 2))
+                 (sample-point (list-ref face-samples 3) (list-ref radii 3)))]
           [(= theta-b 180)
-           (list (spherical-point theta-a phi-a (list-ref radii 0))
-                 (spherical-point theta-a phi-b (list-ref radii 1))
-                 (spherical-point
-                  theta-b phi-a (/ (+ (list-ref radii 2)
-                                      (list-ref radii 3)) 2)))]
+           (list (sample-point (list-ref face-samples 0) (list-ref radii 0))
+                 (sample-point (list-ref face-samples 1) (list-ref radii 1))
+                 (sample-point
+                  (list-ref face-samples 2)
+                  (/ (+ (list-ref radii 2) (list-ref radii 3)) 2)))]
         [else
-           (list (spherical-point theta-a phi-a (list-ref radii 0))
-                 (spherical-point theta-a phi-b (list-ref radii 1))
-                 (spherical-point theta-b phi-b (list-ref radii 2))
-                 (spherical-point theta-b phi-a (list-ref radii 3)))])))
+           (for/list ([sample (in-list face-samples)]
+                      [radius (in-list radii)])
+             (sample-point sample radius))])))
   (define cap-polygons
     (if (and (pair? theta-values)
              (< (abs (- (last theta-values) 90)) 1e-6))
@@ -578,7 +673,9 @@
                    #:x-min [x-min #f] #:x-max [x-max #f]
                    #:y-min [y-min #f] #:y-max [y-max #f]
                    #:aspect-ratio [aspect-ratio #f]
-                   #:legend-anchor [legend-anchor 'top-left]
+                   #:legend-anchor [legend-anchor 'bottom-right]
+                   #:legend-items [legend-items (series-legend-items series)]
+                   #:legend? [legend? #f]
                    #:axes? [axes? #t]
                    #:cursor-rule? [cursor-rule? #t]
                    #:theme [theme 'light])
@@ -588,6 +685,8 @@
    #:x-min x-min #:x-max x-max #:y-min y-min #:y-max y-max
    #:aspect-ratio aspect-ratio
    #:legend-anchor legend-anchor
+   #:legend-items legend-items
+   #:legend? legend?
    #:axes? axes?
    #:cursor-rule? cursor-rule?
    #:theme theme))
@@ -607,75 +706,240 @@
 
 (define (sweep-label-proc value-name value-unit)
   (lambda (series point)
-    (format "~a | ~a MHz | ~a: ~a~a"
-            (cursor-series-label series)
-            (cursor-number (vector-ref point 0))
-            value-name
-            (cursor-number (vector-ref point 1))
-            value-unit)))
+    (list
+     (format "~a  |  ~a MHz"
+             (cursor-series-label series)
+             (cursor-number (vector-ref point 0)))
+     (format "~a: ~a~a"
+             value-name
+             (cursor-number (vector-ref point 1))
+             value-unit))))
 
-(define (show-vswr-sweep result #:max-vswr [max-vswr #f])
+(define (s-parameter-series result part)
+  (unless (openems-multiport-result? result)
+    (raise-argument-error
+     's-parameter-series "openems-multiport-result?" result))
+  (define ports (map openems-result-port-name
+                     (openems-multiport-result-ports result)))
+  (define samples (openems-multiport-result-s-parameters result))
+  (define pairs
+    (for*/list ([input (in-list ports)] [output (in-list ports)])
+      (list input output)))
+  (for/list ([pair (in-list pairs)] [series-index (in-naturals)])
+    (define input (first pair))
+    (define output (second pair))
+    (define matching
+      (filter
+       (lambda (sample)
+         (and (equal? input (openems-s-parameter-sample-input-port sample))
+              (equal? output (openems-s-parameter-sample-output-port sample))))
+       samples))
+    (define output-index (add1 (index-of ports output)))
+    (define input-index (add1 (index-of ports input)))
+    (define label
+      (format "S~a~a (~a <- ~a)"
+              output-index input-index output input))
+    (define values
+      (case part
+        [(magnitude)
+         (map openems-s-parameter-sample-db matching)]
+        [(phase)
+         ;; Unwrap in radians before converting to degrees so ordinary branch
+         ;; crossings do not draw misleading full-height vertical segments.
+         (let loop ([remaining matching] [previous #f] [offset 0] [result '()])
+           (if (null? remaining)
+               (reverse result)
+               (let* ([raw (angle (openems-s-parameter-sample-value
+                                   (first remaining)))]
+                      [adjusted (+ raw offset)]
+                      [new-offset
+                       (cond [(and previous (> (- adjusted previous) pi))
+                              (- offset (* 2 pi))]
+                             [(and previous (< (- adjusted previous) (- pi)))
+                              (+ offset (* 2 pi))]
+                             [else offset])]
+                      [value (+ raw new-offset)])
+                 (loop (rest remaining) value new-offset
+                       (cons (* 180 (/ value pi)) result)))))]))
+    (cursor-series
+     label
+     (for/list ([sample (in-list matching)] [value (in-list values)])
+       (vector (openems-s-parameter-sample-frequency-mhz sample) value))
+     (color-at series-index))))
+
+(define (s-parameter-renderers result part)
+  (for/list ([series (in-list (s-parameter-series result part))])
+    (lines (cursor-series-points series)
+           #:color (cursor-series-color series)
+           #:width 1.5
+           #:label (cursor-series-label series))))
+
+(define (s-parameter-magnitude-renderers result)
+  (s-parameter-renderers result 'magnitude))
+
+(define (s-parameter-phase-renderers result)
+  (s-parameter-renderers result 'phase))
+
+(define (show-s-parameter-magnitude result #:legend? [legend? #f])
+  (define series (s-parameter-series result 'magnitude))
   (show-plot
-   (vswr-sweep-renderers result #:max-vswr max-vswr)
-   (vswr-cursor-series result max-vswr)
+   (s-parameter-magnitude-renderers result)
+   series
+   (sweep-label-proc "magnitude" " dB")
+   #:title "OpenEMS S-parameter magnitude"
+   #:legend? legend?
+   #:x-label "frequency (MHz)"
+   #:y-label "S-parameter magnitude (dB)"))
+
+(define (show-s-parameter-phase result #:legend? [legend? #f])
+  (define series (s-parameter-series result 'phase))
+  (show-plot
+   (s-parameter-phase-renderers result)
+   series
+   (sweep-label-proc "phase" " degrees")
+   #:title "OpenEMS S-parameter phase"
+   #:legend? legend?
+   #:x-label "frequency (MHz)"
+   #:y-label "unwrapped phase (degrees)"))
+
+(define (show-vswr-sweep result #:max-vswr [max-vswr #f]
+                         #:legend? [legend? #f])
+  (define normalized (normalize-network-sweep 'show-vswr-sweep result))
+  (define backend (backend-title normalized))
+  (define series (vswr-cursor-series normalized max-vswr))
+  (show-plot
+   (vswr-sweep-renderers normalized #:max-vswr max-vswr)
+   series
    (sweep-label-proc "VSWR" ":1")
-   #:title "NEC2C VSWR sweep"
+   #:title (format "~a VSWR sweep" backend)
+   #:legend-items
+   (append (series-legend-items series)
+           (list (plot-legend-item "2:1" "gray" 'short-dash 'line)
+                 (plot-legend-item "3:1" "darkgray" 'dot 'line)))
+   #:legend? legend?
    #:x-label "frequency (MHz)"
    #:y-label
    (format "VSWR (Z0 = ~a ohms)"
-           (nec2c-sweep-result-reference-impedance result))))
+           (network-sweep-reference-impedance normalized))))
 
 (define (show-return-loss-sweep
          result
-         #:floor-db [floor-db #f])
+         #:floor-db [floor-db #f]
+         #:legend? [legend? #f])
+  (define normalized (normalize-network-sweep 'show-return-loss-sweep result))
+  (define backend (backend-title normalized))
+  (define series (return-loss-cursor-series normalized floor-db))
   (show-plot
    (return-loss-sweep-renderers
-    result
+    normalized
     #:floor-db floor-db)
-   (return-loss-cursor-series result floor-db)
+   series
    (sweep-label-proc "S11" " dB")
-   #:title "NEC2C return-loss sweep"
+   #:title (format "~a return-loss sweep" backend)
+   #:legend-items
+   (append (series-legend-items series)
+           (list (plot-legend-item "-10 dB" "gray" 'short-dash 'line)))
+   #:legend? legend?
    #:x-label "frequency (MHz)"
    #:y-label
    (format "return loss / S11 (dB, Z0 = ~a ohms)"
-           (nec2c-sweep-result-reference-impedance result))))
+           (network-sweep-reference-impedance normalized))))
 
-(define (show-impedance-sweep result)
+(define (gain-sweep-label-proc series point)
+  (list
+   (format "~a  |  ~a MHz  |  ~a dB"
+           (cursor-series-label series)
+           (cursor-number (vector-ref point 0))
+           (cursor-number (vector-ref point 1)))
+   (format "Gmax ~a dBi @ az ~a°, el ~a°  |  realized ~a dBi"
+           (cursor-number (vector-ref point 2))
+           (cursor-number (vector-ref point 7))
+           (cursor-number (vector-ref point 8))
+           (cursor-number (vector-ref point 3)))
+   (format "horizon ~a dBi; realized ~a dBi  |  S11 ~a dB"
+           (cursor-number (vector-ref point 4))
+           (cursor-number (vector-ref point 5))
+           (cursor-number (vector-ref point 6)))
+   (format "Z ~a ohms  |  VSWR ~a:1"
+           (smith-impedance (vector-ref point 9) (vector-ref point 10))
+           (cursor-number (vector-ref point 11)))))
+
+(define (show-gain-sweep result #:legend? [legend? #f])
+  (define series (gain-sweep-cursor-series result))
   (show-plot
-   (impedance-sweep-renderers result)
-   (impedance-cursor-series result)
+   (gain-sweep-renderers result)
+   series
+   gain-sweep-label-proc
+   #:title "NEC2C gain and match over frequency"
+   #:legend-items
+   (for/list ([series (in-list series)]
+              [spec (in-list gain-sweep-series-specs)])
+     (plot-legend-item (cursor-series-label series)
+                       (cursor-series-color series)
+                       (fourth spec) 'line))
+   #:legend? legend?
+   #:x-label "frequency (MHz)"
+   #:y-label
+   (format "gain / S11 (dB, Z0 = ~a ohms)"
+           (nec2c-gain-sweep-result-reference-impedance result))))
+
+;; Descriptive alias retained alongside the concise primary name.
+(define show-gain-and-match-sweep show-gain-sweep)
+
+(define (show-impedance-sweep result #:legend? [legend? #f])
+  (define normalized (normalize-network-sweep 'show-impedance-sweep result))
+  (define backend (backend-title normalized))
+  (define series (impedance-cursor-series normalized))
+  (show-plot
+   (impedance-sweep-renderers normalized)
+   series
    (sweep-label-proc "impedance" " ohms")
-   #:title "NEC2C active impedance"
+   #:title (format "~a input impedance" backend)
+   #:legend-items (series-legend-items series '(solid short-dash))
+   #:legend? legend?
    #:x-label "frequency (MHz)"
    #:y-label "ohms"))
 
 (define (show-smith-chart result
                           #:markers? [markers? #t]
-                          #:theme [theme 'light])
-  (unless (nec2c-sweep-result? result)
-    (raise-argument-error 'show-smith-chart "nec2c-sweep-result?" result))
+                          #:theme [theme 'light]
+                          #:legend? [legend? #f])
+  (define normalized (normalize-network-sweep 'show-smith-chart result))
+  (define backend (backend-title normalized))
   (validate-smith-options 'show-smith-chart markers? theme)
+  (define series (smith-cursor-series normalized))
   (show-plot
-   (smith-chart-renderers result #:markers? markers? #:theme theme)
-   (smith-cursor-series result)
+   (smith-chart-renderers normalized #:markers? markers? #:theme theme)
+   series
    (lambda (series point)
      (list
-      (format "~a @ ~a MHz | Z ~a ohms"
+      (format "~a  |  ~a MHz"
               (cursor-series-label series)
-              (cursor-number (vector-ref point 2))
-              (smith-impedance (vector-ref point 3) (vector-ref point 4)))
-      (format "S11 ~a dB | VSWR ~a:1"
+              (cursor-number (vector-ref point 2)))
+      (format "Z ~a ohms  |  S11 ~a dB  |  VSWR ~a:1"
+              (smith-impedance (vector-ref point 3) (vector-ref point 4))
               (cursor-number (vector-ref point 5))
               (cursor-number (vector-ref point 6)))))
    #:title
-   (format "NEC2C Smith chart (Z0 = ~a ohms)"
-           (nec2c-sweep-result-reference-impedance result))
+   (format "~a Smith chart (Z0 = ~a ohms)"
+           backend
+           (network-sweep-reference-impedance normalized))
    #:x-label #f
    #:y-label #f
    #:x-min -1.08 #:x-max 1.08
    #:y-min -1.08 #:y-max 1.08
    #:aspect-ratio 1
-   #:legend-anchor 'outside-left-top
+   #:legend-items
+   (append
+    (list
+     (plot-legend-item "1.5:1 VSWR"
+                       (hash-ref (smith-theme theme) 'vswr-15)
+                       'short-dash 'line)
+     (plot-legend-item "2.0:1 VSWR"
+                       (hash-ref (smith-theme theme) 'vswr-20)
+                       'long-dash 'line))
+    (series-legend-items series))
+   #:legend? legend?
    #:axes? #f
    #:cursor-rule? #f
    #:theme theme))
@@ -683,23 +947,28 @@
 (define (show-radiation-cut pattern
                             #:component [component 'total]
                             #:floor-db [floor-db -40]
-                            #:normalize? [normalize? #t])
+                            #:normalize? [normalize? #t]
+                            #:legend? [legend? #f])
+  (define series
+    (list
+     (cursor-series
+      (symbol->string component)
+      (radiation-cut-cursor-points pattern component floor-db normalize?)
+      "steelblue")))
   (show-plot
    (radiation-cut-renderers pattern
                             #:component component
                             #:floor-db floor-db
                             #:normalize? normalize?)
-   (list
-    (cursor-series
-     (symbol->string component)
-     (radiation-cut-cursor-points pattern component floor-db normalize?)
-     "steelblue"))
+   series
    (lambda (series point)
-     (format "~a | angle: ~a degrees | gain: ~a dBi"
-             (cursor-series-label series)
-             (cursor-number (vector-ref point 2))
-             (cursor-number (vector-ref point 3))))
+     (list
+      (format "~a  |  angle ~a degrees"
+              (cursor-series-label series)
+              (cursor-number (vector-ref point 2)))
+      (format "gain: ~a dBi" (cursor-number (vector-ref point 3)))))
    #:title (format "NEC2C ~a pattern" (nec2c-pattern-kind pattern))
+   #:legend? legend?
    #:x-label #f
    #:y-label #f))
 
@@ -708,7 +977,8 @@
                                    #:floor-db [floor-db -40]
                                    #:normalize? [normalize? #t]
                                    #:mesh-step [mesh-step 5]
-                                   #:aspect-ratio [aspect-ratio 1])
+                                   #:aspect-ratio [aspect-ratio 1]
+                                   #:legend? [legend? #f])
   (unless (nec2c-pattern-grid? grid)
     (raise-argument-error
      'show-radiation-pattern-3d "nec2c-pattern-grid?" grid))
@@ -744,8 +1014,13 @@
   (define arguments
     (sort
      (list (cons '#:aspect-multiplier aspect-ratio)
-           (cons '#:legend-anchor 'top-left)
-           (cons '#:title "NEC2C 3-D radiation pattern")
+           (cons '#:legend-items
+                 (list (plot-legend-item (symbol->string component)
+                                         "steelblue" 'solid 'box)))
+           (cons '#:legend? legend?)
+           (cons '#:title
+                 (format "~a 3-D radiation pattern"
+                         (radiation-backend-title grid)))
            (cons '#:x-label "x")
            (cons '#:x-min (- radius-limit))
            (cons '#:x-max radius-limit)

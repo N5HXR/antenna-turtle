@@ -11,6 +11,11 @@
                   cursor-series
                   cursor-selection-series
                   cursor-selection-point
+                  plot-legend-item
+                  plot-legend-item-label
+                  plot-legend-item-color
+                  plot-legend-item-style
+                  plot-legend-item-kind
                   nearest-cursor-sample)
          "../antenna-turtle/main.rkt")
 
@@ -73,6 +78,14 @@ REPORT
      101.8 4.1 values))
   (check-eq? (cursor-selection-series selection) first-series)
   (check-equal? (cursor-selection-point selection) (vector 102 4)))
+
+(test-case "headless plot legends preserve external panel presentation"
+  (define item (plot-legend-item "S21 (output <- input)"
+                                 "firebrick" 'short-dash 'line))
+  (check-equal? (plot-legend-item-label item) "S21 (output <- input)")
+  (check-equal? (plot-legend-item-color item) "firebrick")
+  (check-eq? (plot-legend-item-style item) 'short-dash)
+  (check-eq? (plot-legend-item-kind item) 'line))
 
 (test-case "NEC2C report parser preserves multiple feeds and polarization"
   (define report (parse-nec2c-output parser-fixture))
@@ -244,6 +257,47 @@ REPORT
     (check-not-false
      (plot3d-bitmap (radiation-grid-renderers grid)
                     #:width 160 #:height 120))))
+
+(when integration-executable
+  (test-case "NEC2C gain sweep combines patterns, matching, and query APIs"
+    (reset-model!)
+    (model title "Gain-swept dipole"
+           frequency 299.792458
+           impedance 50
+           max-length 0.024)
+    (wire-on)
+    (spread forward 0.5 feed center)
+    (nec2c-executable integration-executable)
+
+    (define result
+      (nec2c-gain-sweep 295 305 #:steps 3
+                        #:theta-step 90 #:phi-step 90))
+    (check-equal? (length (nec2c-gain-sweep-result-samples result)) 3)
+    (check-equal? (measurement-frequencies result) '(295.0 300.0 305.0))
+    (check-equal? (measurement-ports result) '("feed-1"))
+    (check-true (complex? (impedance-at result 300)))
+    (check-true (real? (maximum-gain-at-frequency result 300)))
+    (check-true (real? (realized-maximum-gain-at-frequency result 300)))
+    (check-true (real? (horizon-gain-at-frequency result 300)))
+    (check-true (real? (realized-horizon-gain-at-frequency result 300)))
+    (check-equal? (length (maximum-gain-direction-at-frequency result 300)) 2)
+    (check-true
+     (nec2c-pattern-grid? (radiation-pattern-at-frequency result 300)))
+    (check-equal? (length (gain-sweep-renderers result)) 4)
+    (check-not-false
+     (plot-bitmap (gain-sweep-renderers result)
+                  #:width 240 #:height 160)))
+
+  (test-case "NEC2C gain sweep rejects ambiguous multiple-feed excitation"
+    (reset-model!)
+    (model frequency 299.792458 max-length 0.024)
+    (wire-on)
+    (spread forward 0.5 feed (center "X" 1 0))
+    (spread left 0.5 feed (center "Y" 1 0))
+    (check-exn #rx"exactly one feed"
+               (lambda ()
+                 (nec2c-gain-sweep 295 305 #:steps 3
+                                    #:theta-step 90 #:phi-step 90)))))
 
 (when integration-executable
   (test-case "NEC2C analysis decorates but does not modify an explicit export"

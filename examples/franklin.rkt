@@ -1,19 +1,20 @@
 #lang antenna-turtle
 
-(model
- title "Meshtastic Franklin Array"
- frequency 915)
+(model title "Meshtastic Franklin Array"
+       max-length (* 3 millimeters)
+       impedance 200
+       frequency 915)
 
 ;; Antenna design parameters.
 (define element-count 1)
 
 ;; Empirically determined tuning parameters.
-(define tune-stub 1.05)
-(define tune-scale 1.02)
+(define tune-stub 0.94)
+(define tune-scale 1.01)
 
 ;; Franklin arrays use tuning stubs to align collinear elements.
 (define stub-length (* tune-stub quarter-wave))
-(define stub-width (half centimeter))
+(define stub-width centimeter)
 
 ;; Construct a Franklin array.
 (with-scale tune-scale
@@ -27,19 +28,18 @@
 	    (move right stub-length)
 	    (move up half-wave)))))
 
-;; Test in MMANA-GAL.
-(export-mmana "mmana/franklin.maa")
+;(define impedance (nec2c-measure-impedance))
+(define sweep (nec2c-vswr-sweep 200 2000 #:steps 601))
+(define azimuth (nec2c-azimuth-pattern #:elevation 0 #:step 2))
+(define sphere (nec2c-radiation-grid #:theta-step 1 #:phi-step 1))
 
-(define impedance
-  (nec2c-measure-impedance))
+(show-radiation-pattern-opengl sphere #:palette 'electric)
+(show-return-loss-sweep sweep)
+;(export-mmana "../mmana/franklin.maa")
 
-(define sweep
-  (nec2c-vswr-sweep 120 180 #:steps 51))
+(display (format "Gain: ~a ~n" (maximum-gain sphere)))
+(display (format "Imp:  ~a ~n" (impedance-at sweep 906 #:interpolate? #t)))
+(display (format "RL:   ~a ~n" (return-loss-at sweep 906 #:interpolate? #t)))
+(display (format "VSWR: ~a ~n" (vswr-at sweep 906 #:interpolate? #t)))
 
-(define azimuth
-  (nec2c-azimuth-pattern #:elevation 0 #:step 2))
-
-(define sphere
-  (nec2c-radiation-grid #:theta-step 1 #:phi-step 1))
-
-(show-radiation-pattern-opengl sphere)
+(show-return-loss-sweep sweep)
