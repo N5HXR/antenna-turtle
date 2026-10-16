@@ -42,6 +42,9 @@
      standard #:name 'solid-moxon-report-fixture
      #:frequency-steps 61
      #:maximum-timesteps 80000 #:end-criteria 1e-3
+     #:cells-per-wavelength 50
+     #:minimum-dielectric-cells 10
+     #:minimum-trace-cells 9
      #:wire-segments 20
      ;; A deliberately large domain lets the animated slices show the coupled
      ;; near field transitioning into the array's directional radiation.
@@ -51,7 +54,7 @@
      engine openems
      sweep '(850 1150)
      profile report-fixture
-     progress #f
+     progress #t
      record-radiation #f
      record-fields
      (field-capture #:frequency 1000
