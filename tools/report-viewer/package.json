@@ -4,7 +4,7 @@
   "scripts": {
     "build": "esbuild viewer.js --bundle --minify --format=iife --target=chrome120 --loader:.css=empty --define:global=globalThis --outfile=../../antenna-turtle/private/report-assets/viewer.bundle.js",
     "refresh": "node refresh-report.mjs",
-    "test": "node field-math-test.mjs && node surface-math-test.mjs && node isosurface-test.mjs && node plot-data-test.mjs",
+    "test": "node field-math-test.mjs && node surface-math-test.mjs && node isosurface-test.mjs && node plot-data-test.mjs && node pattern-data-test.mjs",
     "validate:surface": "node validate-surface-report.mjs",
     "validate:power": "node validate-power-report.mjs"
   },

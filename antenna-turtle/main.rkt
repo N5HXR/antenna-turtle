@@ -7,6 +7,7 @@
          "private/export-matlab.rkt"
          "private/export-matlab-loft.rkt"
          "private/nec2c.rkt"
+         "private/nec2c-html-report.rkt"
          "private/view.rkt"
          k-infix
          (planet jphelps/loop:1:25)
@@ -77,6 +78,7 @@
  #%braces
  (all-from-out (planet jphelps/loop:1:25))
  (all-from-out "private/nec2c.rkt")
+ (all-from-out "private/nec2c-html-report.rkt")
  (all-from-out "private/electrical-units.rkt")
  wavelength
  half-wave

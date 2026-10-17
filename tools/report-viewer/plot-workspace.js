@@ -19,6 +19,7 @@
 import Plotly from "plotly.js/lib/core";
 import scatter from "plotly.js/lib/scatter";
 import scatterSmith from "plotly.js/lib/scattersmith";
+import scatterPolar from "plotly.js/lib/scatterpolar";
 import {
   availablePlots,
   interpolatePortSamples,
@@ -32,7 +33,9 @@ import {
   vswrAxisRange,
 } from "./plot-data.js";
 
-Plotly.register([scatter, scatterSmith]);
+Plotly.register([scatter, scatterSmith, scatterPolar]);
+
+export { Plotly };
 
 const colors = ["#39efff", "#ff3bd4", "#fff45c", "#6aff9b", "#ff765d", "#9c78ff"];
 const smithTicks = [0.1, 0.2, 0.3, 0.5, 0.7, 1, 1.5, 2, 3, 5, 10];
@@ -52,7 +55,7 @@ function cartesianLayout(title, yTitle, extra = {}) {
     plot_bgcolor: "rgba(5,14,29,.78)",
     font: { family: '"DejaVu Sans Mono", monospace', color: "#d8fbff" },
     margin: { l: 76, r: 35, t: 62, b: 68 },
-    hovermode: "x unified",
+    hovermode: "x",
     legend: { bgcolor: "rgba(3,6,17,.72)", bordercolor: "#238aa0", borderwidth: 1 },
     xaxis: { ...axis, title: { text: "frequency (MHz)", font: axis.titlefont } },
     yaxis: { ...axis, title: { text: yTitle, font: axis.titlefont } },
@@ -80,8 +83,9 @@ function lineTrace(name, samples, value, color, suffix = "") {
     x: samples.map(sample => sample.frequency_mhz),
     y: samples.map(value),
     customdata: samples.map(sample => sample.interpolated ? "≈ interpolated" : "solver sample"),
+    meta: { suffix },
     line: { color, width: 2.5 },
-    hovertemplate: `%{x:.6g} MHz<br>%{y:.5g}${suffix}<br>%{customdata}<extra>${name}</extra>`,
+    hoverinfo: "none",
   };
 }
 
@@ -90,7 +94,24 @@ function finiteVswr(sample) {
   return Number.isFinite(value) ? value : null;
 }
 
-function tracesAndLayout(kind, measurements, portName, selectedFrequency) {
+function smithPointData(sample) {
+  return [
+    sample.frequency_mhz,
+    sample.impedance_ohms.real,
+    sample.impedance_ohms.imaginary,
+    sample.reflection_coefficient.real,
+    sample.reflection_coefficient.imaginary,
+    sample.interpolated ? "≈ interpolated" : "solver sample",
+  ];
+}
+
+const smithHoverTemplate = "%{customdata[0]:.6g} MHz" +
+  "<br>Z=%{customdata[1]:.5g}%{customdata[2]:+.5g}j Ω" +
+  "<br>z=%{real:.5g}%{imag:+.5g}j" +
+  "<br>Γ=%{customdata[3]:.5g}%{customdata[4]:+.5g}j" +
+  "<br>%{customdata[5]}<extra></extra>";
+
+function tracesAndLayout(kind, measurements, portName, selectedFrequency, modelFrequency) {
   const solverSamples = samplesForPort(measurements, portName);
   const reference = measurements.ports?.find(port => String(port.name) === portName)
     ?.reference_impedance_ohms;
@@ -104,40 +125,49 @@ function tracesAndLayout(kind, measurements, portName, selectedFrequency) {
       real: normalized.map(impedance => impedance.real),
       imag: normalized.map(impedance => impedance.imaginary),
       text: samples.map(sample => `${sample.frequency_mhz.toPrecision(6)} MHz`),
-      customdata: samples.map(sample => [
-        sample.frequency_mhz,
-        sample.impedance_ohms.real,
-        sample.impedance_ohms.imaginary,
-        sample.reflection_coefficient.real,
-        sample.reflection_coefficient.imaginary,
-        sample.interpolated ? "≈ interpolated" : "solver sample",
-      ]),
+      customdata: samples.map(smithPointData),
       line: { color: colors[0], width: 3 },
-      hovertemplate: "%{text}<br>Z=%{customdata[1]:.5g}%{customdata[2]:+.5g}j Ω" +
-        "<br>z=%{real:.5g}%{imag:+.5g}j<br>Γ=%{customdata[3]:.5g}%{customdata[4]:+.5g}j" +
-        "<br>%{customdata[5]}<extra></extra>",
+      hoverinfo: "none",
+      hovertemplate: smithHoverTemplate,
     };
     const selected = nearestSample(samples, selectedFrequency);
+    const modelSample = Number.isFinite(modelFrequency)
+      && modelFrequency >= samples[0]?.frequency_mhz
+      && modelFrequency <= samples.at(-1)?.frequency_mhz
+      ? nearestSample(samples, modelFrequency) : null;
     const solverNormalized = solverSamples.map(sample => normalizedImpedance(sample, reference));
     const traces = [trace, {
       type: "scattersmith", mode: "markers", name: "solver samples",
       real: solverNormalized.map(impedance => impedance.real),
       imag: solverNormalized.map(impedance => impedance.imaginary),
-      customdata: solverSamples.map(sample => [sample.frequency_mhz]),
+      customdata: solverSamples.map(smithPointData),
       marker: { color: colors[1], size: 5 },
-      hovertemplate: "%{customdata[0]:.6g} MHz<br>solver sample<extra></extra>",
+      hoverinfo: "none",
+      hovertemplate: smithHoverTemplate,
       showlegend: false,
     }];
+    if (modelSample) {
+      const modelNormalized = normalizedImpedance(modelSample, reference);
+      traces.push({
+        type: "scattersmith", mode: "markers", name: "model frequency",
+        real: [modelNormalized.real], imag: [modelNormalized.imaginary],
+        customdata: [smithPointData(modelSample)],
+        marker: { color: colors[3], size: 14, symbol: "star", line: { color: "#fff", width: 1 } },
+        hoverinfo: "none",
+        hovertemplate: smithHoverTemplate,
+        showlegend: false,
+      });
+    }
     if (selected) {
       const selectedNormalized = normalizedImpedance(selected, reference);
       traces.push({
       type: "scattersmith", mode: "markers", name: "selected frequency",
       real: [selectedNormalized.real],
       imag: [selectedNormalized.imaginary],
-      customdata: [[selected.frequency_mhz]],
+      customdata: [smithPointData(selected)],
       marker: { color: colors[2], size: 11, symbol: "diamond", line: { color: "#fff", width: 1 } },
-      hovertemplate: `${selected.frequency_mhz.toPrecision(6)} MHz` +
-        `<br>${selected.interpolated ? "≈ interpolated" : "solver sample"}<extra>selected</extra>`,
+      hoverinfo: "none",
+      hovertemplate: smithHoverTemplate,
       showlegend: false,
       });
     }
@@ -195,16 +225,19 @@ function tracesAndLayout(kind, measurements, portName, selectedFrequency) {
     selectedFrequency)];
 }
 
-export function createPlotWorkspace(data) {
+export function createPlotWorkspace(data, options = {}) {
   const measurements = data.metadata?.measurements || {};
   const ports = portNames(measurements);
   if (!ports.length || !(measurements.port_samples || []).length) return null;
 
-  const switcher = document.createElement("nav");
-  switcher.id = "workspace-switch";
-  switcher.innerHTML = `<button type="button" data-workspace="viewer" class="active">3D VIEW</button>
-    <button type="button" data-workspace="plots">PLOTS</button>`;
-  document.body.append(switcher);
+  const managedNavigation = options.managedNavigation !== false;
+  const switcher = managedNavigation ? document.createElement("nav") : null;
+  if (switcher) {
+    switcher.id = "workspace-switch";
+    switcher.innerHTML = `<button type="button" data-workspace="viewer" class="active">3D VIEW</button>
+      <button type="button" data-workspace="plots">PLOTS</button>`;
+    document.body.append(switcher);
+  }
 
   const workspace = document.createElement("section");
   workspace.id = "plots-workspace";
@@ -213,7 +246,8 @@ export function createPlotWorkspace(data) {
       <label for="plot-kind">PLOT</label><select id="plot-kind"></select>
       <label for="plot-port">PORT</label><select id="plot-port"></select>
       <span id="plot-frequency-note"></span>
-    </div><div id="network-plot"></div>`;
+    </div><div id="plot-hover-readout">Hover over the chart to inspect values.</div>
+    <div id="network-plot"></div>`;
   document.body.append(workspace);
 
   const kindSelect = workspace.querySelector("#plot-kind");
@@ -222,14 +256,45 @@ export function createPlotWorkspace(data) {
   const portSelect = workspace.querySelector("#plot-port");
   for (const port of ports) portSelect.add(new Option(port, port));
   const note = workspace.querySelector("#plot-frequency-note");
-  const fieldFrequency = data.metadata?.field_capture?.frequency_mhz;
+  const fieldFrequency = data.metadata?.field_capture?.frequency_mhz
+    ?? data.metadata?.pattern_frequency_mhz;
+  const frequencyContext = data.metadata?.pattern_frequency_mhz != null
+    ? "3D pattern" : "3D field";
   let selectedFrequency = Number.isFinite(fieldFrequency) ? fieldFrequency : null;
   const plot = workspace.querySelector("#network-plot");
+  const hoverReadout = workspace.querySelector("#plot-hover-readout");
   const controlsPanel = document.getElementById("controls");
   const metadataPanel = document.getElementById("metadata-panel");
   const canvas = document.getElementById("viewport");
   let activeWorkspace = "viewer";
   let plotClickBound = false;
+
+  function signed(value) {
+    return `${value < 0 ? "−" : "+"}${Math.abs(value).toPrecision(5)}`;
+  }
+
+  function showHoverReadout(event) {
+    const points = event.points || [];
+    if (!points.length) return;
+    if (kindSelect.value === "smith") {
+      const point = points.find(candidate => candidate.customdata?.length >= 5) || points[0];
+      const detail = point.customdata || [];
+      hoverReadout.textContent = detail.length >= 5
+        ? `${Number(detail[0]).toPrecision(7)} MHz · Z ${Number(detail[1]).toPrecision(6)}` +
+          `${signed(Number(detail[2]))}j Ω · Γ ${Number(detail[3]).toPrecision(5)}` +
+          `${signed(Number(detail[4]))}j · ${detail[5] || ""}`
+        : `${Number(detail[0]).toPrecision(7)} MHz · ${point.data.name}`;
+      return;
+    }
+    const frequency = Number(points[0].x);
+    const values = points.map(point => {
+      const suffix = point.data.meta?.suffix || "";
+      return `${point.data.name} ${Number(point.y).toPrecision(6)}${suffix}`;
+    });
+    const provenance = points.some(point => point.customdata === "≈ interpolated")
+      ? "≈ interpolated" : "solver sample";
+    hoverReadout.textContent = `${frequency.toPrecision(7)} MHz · ${values.join(" · ")} · ${provenance}`;
+  }
 
   function selectFrequency(event) {
     const point = event.points?.[0];
@@ -242,10 +307,11 @@ export function createPlotWorkspace(data) {
 
   function draw() {
     const [traces, layout] = tracesAndLayout(
-      kindSelect.value, measurements, portSelect.value, selectedFrequency);
+      kindSelect.value, measurements, portSelect.value, selectedFrequency,
+      data.metadata?.model_frequency_mhz);
     note.textContent = [
       Number.isFinite(selectedFrequency) ? `selected: ${selectedFrequency.toPrecision(6)} MHz` : null,
-      Number.isFinite(fieldFrequency) ? `3D field: ${fieldFrequency.toPrecision(6)} MHz` : null,
+      Number.isFinite(fieldFrequency) ? `${frequencyContext}: ${fieldFrequency.toPrecision(6)} MHz` : null,
     ].filter(Boolean).join(" · ");
     const rendered = Plotly.react(plot, traces, layout, {
       responsive: true,
@@ -259,6 +325,7 @@ export function createPlotWorkspace(data) {
     rendered.then(() => {
       if (!plotClickBound) {
         plot.on("plotly_click", selectFrequency);
+        plot.on("plotly_hover", showHoverReadout);
         plotClickBound = true;
       }
     });
@@ -269,21 +336,23 @@ export function createPlotWorkspace(data) {
     activeWorkspace = which;
     const plotting = which === "plots";
     workspace.hidden = !plotting;
-    canvas.hidden = plotting;
-    controlsPanel.hidden = plotting;
-    metadataPanel.hidden = plotting;
-    switcher.querySelectorAll("button").forEach(button =>
-      button.classList.toggle("active", button.dataset.workspace === which));
+    if (managedNavigation) {
+      if (canvas) canvas.hidden = plotting;
+      if (controlsPanel) controlsPanel.hidden = plotting;
+      if (metadataPanel) metadataPanel.hidden = plotting;
+      switcher.querySelectorAll("button").forEach(button =>
+        button.classList.toggle("active", button.dataset.workspace === which));
+    }
     if (plotting) draw().then(() => requestAnimationFrame(() => Plotly.Plots.resize(plot)));
   }
 
-  switcher.addEventListener("click", event => {
-    const button = event.target.closest("button[data-workspace]");
-    if (button) {
-      show(button.dataset.workspace);
-      history.replaceState(null, "", button.dataset.workspace === "plots" ? "#plots" : "#viewer");
-    }
-  });
+  if (switcher) switcher.addEventListener("click", event => {
+      const button = event.target.closest("button[data-workspace]");
+      if (button) {
+        show(button.dataset.workspace);
+        history.replaceState(null, "", button.dataset.workspace === "plots" ? "#plots" : "#viewer");
+      }
+    });
   kindSelect.addEventListener("change", () => {
     draw();
     if (activeWorkspace === "plots")
@@ -293,6 +362,13 @@ export function createPlotWorkspace(data) {
   const requestedPlot = location.hash.match(/^#plots\/(.+)$/)?.[1];
   if (requestedPlot && [...kindSelect.options].some(option => option.value === requestedPlot))
     kindSelect.value = requestedPlot;
-  if (location.hash.startsWith("#plots")) show("plots");
-  return { isViewerActive: () => activeWorkspace === "viewer" };
+  if (managedNavigation && location.hash.startsWith("#plots")) show("plots");
+  return {
+    element: workspace,
+    draw,
+    show: () => show("plots"),
+    hide: () => show("viewer"),
+    resize: () => Plotly.Plots.resize(plot),
+    isViewerActive: () => activeWorkspace === "viewer",
+  };
 }

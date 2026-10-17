@@ -605,6 +605,11 @@ returns transparent Racket values without printing or opening a window:
  (list (radiation-case "baseline" sphere)
        (radiation-case "revision" revised-sphere))
  #:aspect-ratio 16/9)
+
+;; One portable file with wire geometry, matching plots, an interactive 3-D
+;; radiation surface with unlit palette colors, opacity and a gain legend, and
+;; interpolated elevation-selectable 2-D pattern cuts.
+(write-nec2c-html-report sweep "yagi-report.html" #:pattern sphere)
 ```
 
 The ordinary 2-D graphs have a built-in data cursor. Left-drag retains Plot's

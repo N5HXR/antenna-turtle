@@ -12,10 +12,17 @@ import {
 } from "./surface-math.js";
 import { marchingTetrahedra } from "./isosurface.js";
 import { createPlotWorkspace } from "./plot-workspace.js";
+import { startNec2cReport } from "./nec2c-report.js";
+import { makeCollapsibleSettingsPanel } from "./panel-collapse.js";
 
 async function main() {
 const data = JSON.parse(document.getElementById("antenna-turtle-report-data").textContent);
+if (String(data.schema || "").startsWith("antenna-turtle-report/nec2c")) {
+  await startNec2cReport(data);
+  return;
+}
 const plotWorkspace = createPlotWorkspace(data);
+makeCollapsibleSettingsPanel(document.getElementById("controls"));
 const canvas = document.getElementById("viewport");
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -202,8 +209,13 @@ reportStyle.textContent = `
   .plot-toolbar { position:absolute; z-index:2; left:10px; right:10px; top:0;
     display:flex; align-items:center; gap:10px; padding:9px 12px }
   .plot-toolbar #plot-frequency-note { margin-left:auto; color:#fff45c; font-size:10px }
-  #network-plot { position:absolute; inset:58px 0 0; border:1px solid #31efff44;
+  #plot-hover-readout { position:absolute; z-index:2; left:10px; right:10px; top:58px; height:38px;
+    display:flex; align-items:center; padding:0 12px; border:1px solid #31efff44;
+    background:#07101ddd; color:#d8fbff; font-size:10px; white-space:nowrap; overflow:auto }
+  #network-plot { position:absolute; inset:102px 0 0; border:1px solid #31efff44;
     background:radial-gradient(circle at 60% 30%,#151037cc,#030611 60%) }
+  #network-plot .hoverlayer .hovertext, #network-plot .hoverlayer .axistext {
+    display:none !important }
   @media(max-width:800px) { #workspace-switch { top:10px; right:10px }
     #plots-workspace { inset:62px 8px 8px } .plot-toolbar #plot-frequency-note { display:none } }
   .color-legend { margin-top:9px; display:grid; grid-template-columns:1fr auto;

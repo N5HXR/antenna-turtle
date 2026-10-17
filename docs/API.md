@@ -2396,6 +2396,84 @@ elevation/azimuth, vertical/horizontal/total gain, axial ratio, polarization
 tilt and sense, and complex E-theta/E-phi fields. NEC's unavailable-gain
 sentinel is represented by `#f`.
 
+### `(write-nec2c-html-report result destination ...)`
+
+```racket
+(write-nec2c-html-report
+ result destination
+ [#:pattern pattern-grid]
+ [#:frequency frequency-mhz]
+ [#:title title-or-#f])
+```
+
+Writes a single self-contained interactive HTML report for the wire-native
+NEC2C backend and returns its complete path. The report contains three
+workspaces: a combined 3-D view with independently switchable antenna geometry
+and radiation pattern, the same Smith/S11/return-loss/VSWR and impedance plot
+viewer used by the OpenEMS report, and an interactive azimuth-pattern cut at a
+continuously selectable elevation angle. The 3-D pattern is centered on the
+feedpoint, or the centroid of all feedpoints, and offers ARRL modified-log,
+fixed-range dB, and linear-power radial scales plus the same MMANA, magma/SDR,
+inferno, viridis, grayscale, and electric color ramps as the native OpenGL
+viewer. Pattern opacity is adjustable. The radiation surface uses unlit colors,
+so scene lighting cannot distort the selected ramp, and an on-screen legend
+labels that ramp in both dB relative to the total-pattern maximum and absolute
+dBi. Total, vertical, and horizontal components all share that total-pattern
+reference; component surfaces therefore preserve their correct size relative
+to each other instead of each being normalized independently. NEC's vertical
+and horizontal values are the local spherical-polarization components E-theta
+and E-phi, respectively; the controls label that basis explicitly rather than
+implying fixed Cartesian axes. The 3-D camera is Z-up, matching Antenna
+Turtle and NEC coordinates; screen orientation therefore no longer makes a
+horizontal Y-axis element appear vertically erected.
+
+The optional `3 dB COLOR BANDS` checkbox matches the native Racket viewer's
+banded presentation: every display triangle receives the palette color for
+the 3 dB interval containing its average relative gain. The legend changes to
+the identical quantized ramp, while radial geometry and simulation data remain
+unchanged.
+The display-settings panel can be hidden for an unobstructed presentation view;
+a compact `SHOW SETTINGS` button restores it without resetting the camera or
+the selected visualization.
+An independently switchable XYZ triad is placed at the pattern origin; its
+legend identifies the example's X boom, Y elements, and physical Z vertical
+without confusing screen-up with world-up. The canonical initial/reset view
+keeps model Z perceptually screen-up and places model Y across the screen, so
+the Yagi elements read horizontally without allowing camera roll to redefine
+physical vertical.
+
+The 2-D cut uses linear-power interpolation between NEC angular samples and
+reports both the plotted value and absolute gain on hover. Relative cuts use
+the total pattern's maximum gain as zero—even while viewing a polarization
+component—and one stable radial range derived
+from the complete grid, so moving the elevation control never renormalizes or
+rescales the chart. The Smith chart permanently marks `model-frequency` in
+addition to its movable selected-frequency marker. Network-plot hover values
+appear in a dedicated strip outside the plotting area, leaving the traces
+unobscured. Solver markers and interpolated Smith points report the same
+frequency, impedance, normalized impedance, reflection coefficient, and sample
+provenance. No network connection is
+required to open the resulting file.
+
+For an ordinary `nec2c-sweep-result`, supply the radiation grid explicitly:
+
+```racket
+(define sweep (nec2c-vswr-sweep 120 180 #:steps 121))
+(define pattern
+  (nec2c-radiation-grid #:frequency 150 #:theta-step 3 #:phi-step 3))
+
+(write-nec2c-html-report
+ sweep "scratch/yagi-report.html"
+ #:pattern pattern)
+```
+
+A `nec2c-gain-sweep-result` already retains a complete grid at every swept
+frequency, so `#:pattern` may be omitted. `#:frequency` then selects the
+nearest retained grid and defaults to the model frequency. The geometry comes
+from the current Antenna Turtle wire model, so write the report before resetting
+or replacing that model. Unlike the solid/OpenEMS writer, NEC2C reports do not
+require retained solver artifacts or the optional Manifold package.
+
 ### `(nec2c-gain-sweep start stop ...)`
 
 ```racket
