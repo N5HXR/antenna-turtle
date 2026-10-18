@@ -1346,6 +1346,48 @@ power in the returned structures. With multiple feeds, those are active
 impedances under simultaneous excitation rather than S-parameters. The
 pattern is the combined field.
 
+`nec2c-radiation-grid` also retains one diagnostic snapshot at its frequency:
+complex current in amperes and complex linear charge density in coulombs/metre
+for every NEC segment, plus the input/radiated/structure-loss/network-loss
+power budget and efficiency. The portable HTML report can color the wire model
+by current magnitude or phase, animate instantaneous signed current or charge,
+and display the power budget. Its 2-D pattern hover readout includes complex
+E-theta/E-phi magnitude and phase, relative phase, axial ratio, tilt, and
+handedness. Ordinary frequency and gain sweeps suppress NEC's default current
+tables; a gain-sweep report requests just one diagnostic snapshot at the chosen
+report frequency rather than retaining segment data at every sweep point.
+
+Portable NEC2C reports also request three near-field sections at the selected
+frequency by default. The X-, Y-, and Z-normal planes cross at the centroid of
+all feedpoints. Each is a 121 by 121 square centered there, at least two
+wavelengths wide, and automatically enlarged until every wire extremum has a
+full wavelength of margin. The `NEAR FIELD` report workspace switches among
+those planes and displays complex E, H, or derived time-average power flow with
+envelope, Cartesian-component, instantaneous-phase, linear, and logarithmic
+views.
+
+Customize or disable this work at report generation time:
+
+```racket
+(write-nec2c-html-report
+ sweep "yagi.html" #:pattern sphere
+ #:near-fields
+ (list (near-field-section #:plane 'xz #:samples '(181 121))
+       (near-field-section #:plane 'z #:position 2.0
+                           #:x-range '(-15 15) #:y-range '(-15 15))))
+
+;; A lightweight network/pattern report with no near-field solver pass:
+(write-nec2c-html-report sweep "yagi-light.html"
+                         #:pattern sphere #:near-fields #f)
+```
+
+The aliases `'x`, `'y`, and `'z` name a plane by its normal; `'yz`, `'xz`, and
+`'xy` name the same planes by their contained axes. Missing positions and
+ranges retain the automatic feed-centered defaults. NEC evaluates these field
+points after solving the segment currents; increasing plane resolution adds
+postprocessing time and report size but does not change the wire segmentation
+or run a time-domain simulation.
+
 NEC2C ground and antenna height belong in the same declarative model block:
 
 ```racket
@@ -1448,6 +1490,19 @@ Load it from `init.el`, using the actual project location. On Windows:
 ```elisp
 (load "C:/Users/YourName/source/antenna-turtle/editors/antenna-turtle-emacs.el")
 ```
+
+On macOS, first install the Emacs `racket-mode` package. The native installer
+generates a complete machine-specific bootstrap, so the only Antenna Turtle
+form needed in `.emacs` or `init.el` is:
+
+```elisp
+(require 'antenna-turtle-macos
+         "/Users/YourName/source/antenna-turtle/.local/macos/antenna-turtle-env.el")
+```
+
+That bootstrap configures Racket Mode with the installed Racket executable,
+sets the native solver and library environment, and loads the indentation and
+font-lock support from the checkout.
 
 After adding the line, restart Emacs. Loading or reloading the helper refreshes
 already-open Antenna Turtle buffers. Its setup command is also available as

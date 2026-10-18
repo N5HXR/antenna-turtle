@@ -4,6 +4,9 @@
 ;;
 ;;   (load "C:/path/to/antenna-turtle/editors/antenna-turtle-emacs.el")
 ;;
+;; The native macOS installer generates a complete bootstrap at
+;; .local/macos/antenna-turtle-env.el; macOS users should load only that file.
+;;
 ;; It augments scheme-mode and racket-mode only in buffers whose first form is
 ;; `#lang antenna-turtle`.  Racket Mode remains an optional dependency.
 
@@ -87,6 +90,7 @@
     "nec2c-executable" "nec2c-measure-impedance" "nec2c-vswr-sweep"
     "nec2c-azimuth-pattern" "nec2c-elevation-pattern"
     "nec2c-radiation-grid" "parse-nec2c-output"
+    "write-html-report" "write-nec2c-html-report" "write-openems-html-report"
     "show-vswr-sweep" "show-return-loss-sweep" "show-impedance-sweep"
     "show-smith-chart"
     "show-radiation-cut"

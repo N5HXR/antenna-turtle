@@ -7,6 +7,7 @@ import {
   gainOf,
   globalGainRange,
   interpolatedGain,
+  interpolatedPolarization,
   patternTable,
   polarDisplayScale,
   quantizedGain,
@@ -53,6 +54,38 @@ function threeColorCss(color) {
   return `rgb(${Math.round(color.r * 255)},${Math.round(color.g * 255)},${Math.round(color.b * 255)})`;
 }
 
+function fieldVector(sample, quantity) {
+  const values = sample?.[quantity];
+  if (!Array.isArray(values) || values.length !== 6) return null;
+  return [[values[0], values[1]], [values[2], values[3]], [values[4], values[5]]];
+}
+
+function complexMagnitude([real, imaginary]) {
+  return Math.hypot(real, imaginary);
+}
+
+function vectorEnvelope(vector) {
+  return vector ? Math.hypot(...vector.map(complexMagnitude)) : 0;
+}
+
+function instantaneousVector(vector, phaseDegrees) {
+  if (!vector) return [0, 0, 0];
+  const phase = phaseDegrees * Math.PI / 180;
+  return vector.map(([real, imaginary]) => real * Math.cos(phase) - imaginary * Math.sin(phase));
+}
+
+function averagePoyntingSample(sample) {
+  const electric = fieldVector(sample, "electric");
+  const magnetic = fieldVector(sample, "magnetic");
+  if (!electric || !magnetic) return null;
+  const multiplyConjugateReal = (a, b) => a[0] * b[0] + a[1] * b[1];
+  return [
+    0.5 * (multiplyConjugateReal(electric[1], magnetic[2]) - multiplyConjugateReal(electric[2], magnetic[1])),
+    0.5 * (multiplyConjugateReal(electric[2], magnetic[0]) - multiplyConjugateReal(electric[0], magnetic[2])),
+    0.5 * (multiplyConjugateReal(electric[0], magnetic[1]) - multiplyConjugateReal(electric[1], magnetic[0])),
+  ];
+}
+
 function feedCentroid(data) {
   const points = data.geometry.wires.filter(wire => wire.feed).map(wire =>
     new THREE.Vector3(...wire.start).lerp(new THREE.Vector3(...wire.end), wire.feed.fraction));
@@ -80,20 +113,27 @@ function addGeometry(data, group) {
   }
   const presentationRadius = Math.max(
     authoredBounds.getSize(new THREE.Vector3()).length() * 0.0012, 1e-7);
-  const material = new THREE.MeshStandardMaterial({
-    color: 0x8eeaff, metalness: 0.72, roughness: 0.25,
-    emissive: 0x073b4d, emissiveIntensity: 0.45,
-    depthTest: false,
-  });
+  const segments = [];
   const feedMaterial = new THREE.MeshStandardMaterial({
     color: 0xff42d0, emissive: 0xff1498, emissiveIntensity: 1.2,
     depthTest: false,
   });
   for (const wire of data.geometry.wires) {
     const radius = Math.max(wire.diameter / 2, presentationRadius);
-    const conductor = cylinderBetween(wire.start, wire.end, radius, material);
-    conductor.renderOrder = 3;
-    group.add(conductor);
+    const count = Math.max(1, Number(wire.segment_count) || 1);
+    const start = new THREE.Vector3(...wire.start);
+    const end = new THREE.Vector3(...wire.end);
+    for (let index = 0; index < count; ++index) {
+      const a = start.clone().lerp(end, index / count);
+      const b = start.clone().lerp(end, (index + 1) / count);
+      const material = new THREE.MeshBasicMaterial({ color: 0x8eeaff, depthTest: false });
+      const conductor = cylinderBetween(a.toArray(), b.toArray(), radius, material);
+      conductor.renderOrder = 3;
+      conductor.userData.segmentKey = `${wire.id}:${index + 1}`;
+      conductor.userData.baseColor = 0x8eeaff;
+      group.add(conductor);
+      segments.push(conductor);
+    }
     if (wire.feed) {
       const point = new THREE.Vector3(...wire.start).lerp(new THREE.Vector3(...wire.end), wire.feed.fraction);
       const marker = new THREE.Mesh(
@@ -115,6 +155,7 @@ function addGeometry(data, group) {
     ground.position.z = 0;
     group.add(ground);
   }
+  return segments;
 }
 
 function fitCamera(camera, controls, object, direction = new THREE.Vector3(1.6, 0, 1.15)) {
@@ -138,6 +179,12 @@ function injectStyles() {
     #nec-tabs button.active{color:#fff;background:#14344b;box-shadow:inset 0 -2px #ff3bd4}
     #nec-controls{left:18px;bottom:18px;width:min(470px,calc(100vw - 36px))}
     #nec-controls .opacity-value{display:inline-block;min-width:42px;text-align:right}
+    #segment-controls[hidden],#segment-phase-row[hidden],#power-budget[hidden]{display:none}
+    #segment-legend{margin-top:8px}.segment-legend-bar{height:10px;border:1px solid #78edff;
+      background:linear-gradient(90deg,#1743ff,#f7fbff,#ff315f)}
+    #segment-legend-labels{display:flex;justify-content:space-between;font-size:10px;color:#9ceeff}
+    #power-budget{margin-top:8px;padding-top:7px;border-top:1px solid #31efff44;
+      color:#fff45c;font-size:10px;line-height:1.45}
     #pattern-legend{margin-top:10px}.pattern-legend-bar{height:12px;border:1px solid #78edff;
       border-radius:2px;box-shadow:0 0 8px #00d9ff25}
     .pattern-legend-scale{display:grid;grid-template-columns:46px 1fr;margin-top:4px;
@@ -150,6 +197,12 @@ function injectStyles() {
     #pattern-2d .pattern-toolbar input[type=range]{flex:1}
     #pattern-polar{position:absolute;inset:58px 0 0;border:1px solid #31efff44}
     #plots-workspace{position:fixed;z-index:3;inset:78px 20px 18px}
+    #near-field-workspace{position:fixed;z-index:3;inset:78px 20px 18px}
+    #near-field-workspace[hidden]{display:none}
+    #near-field-workspace .field-toolbar{position:absolute;z-index:2;left:10px;right:10px;top:0;
+      display:flex;align-items:center;gap:8px;padding:9px 12px;flex-wrap:wrap}
+    #near-field-workspace .field-toolbar input[type=range]{width:140px}
+    #near-field-plot{position:absolute;inset:66px 0 0;border:1px solid #31efff44}
     #plots-workspace[hidden]{display:none}.plot-toolbar{position:absolute;z-index:2;left:10px;right:10px;
       top:0;display:flex;align-items:center;gap:10px;padding:9px 12px}
     .plot-toolbar #plot-frequency-note{margin-left:auto;color:#fff45c;font-size:10px}
@@ -159,7 +212,8 @@ function injectStyles() {
     #network-plot{position:absolute;inset:102px 0 0;border:1px solid #31efff44}
     #network-plot .hoverlayer .hovertext,#network-plot .hoverlayer .axistext{display:none!important}
     @media(max-width:820px){#nec-tabs{top:8px;right:8px;max-width:calc(100vw - 16px);flex-wrap:wrap}
-      #nec-tabs button{min-width:auto}#pattern-2d,#plots-workspace{inset:92px 8px 8px}}
+      #nec-tabs button{min-width:auto}#pattern-2d,#plots-workspace,#near-field-workspace{inset:92px 8px 8px}
+      #near-field-plot{inset:104px 0 0}}
   `;
   document.head.append(style);
 }
@@ -189,7 +243,10 @@ export async function startNec2cReport(data) {
   const patternGroup = new THREE.Group();
   const axisGroup = new THREE.Group();
   scene.add(geometryGroup, patternGroup, axisGroup);
-  addGeometry(data, geometryGroup);
+  const geometrySegments = addGeometry(data, geometryGroup);
+  const diagnostics = data.diagnostics && data.diagnostics !== "null" ? data.diagnostics : null;
+  const segmentSamples = new Map((diagnostics?.segment_samples || []).map(sample =>
+    [`${sample.wire_id}:${sample.segment}`, sample]));
   const geometryBounds = new THREE.Box3().setFromObject(geometryGroup);
   const patternRadius = Math.max(geometryBounds.getSize(new THREE.Vector3()).length() * 0.68, 1e-4);
   const patternOrigin = feedCentroid(data);
@@ -216,6 +273,17 @@ export async function startNec2cReport(data) {
     <option value="mmana">MMANA</option><option value="magma">magma</option><option value="sdr">SDR</option>
     <option value="inferno">inferno</option><option value="viridis">viridis</option>
     <option value="grayscale">grayscale</option><option value="electric">electric</option></select></div>
+    <div id="segment-controls" class="row"><label for="segment-display">CONDUCTORS</label>
+    <select id="segment-display"><option value="geometry">model color</option>
+    <option value="current-magnitude">current magnitude</option><option value="current-phase">current phase</option>
+    <option value="current-instantaneous">instantaneous current</option>
+    <option value="charge-magnitude">charge magnitude</option>
+    <option value="charge-instantaneous">instantaneous charge</option></select></div>
+    <div id="segment-phase-row" class="row" hidden><button id="segment-play" type="button">PAUSE</button>
+    <label for="segment-phase">PHASE <span id="segment-phase-value">0°</span></label>
+    <input id="segment-phase" type="range" min="0" max="359" step="1" value="0"></div>
+    <div id="segment-legend" hidden><div class="segment-legend-bar"></div>
+    <div id="segment-legend-labels"><span></span><span></span><span></span></div></div>
     <div class="row"><label for="pattern-opacity">PATTERN OPACITY
     <span id="pattern-opacity-value" class="opacity-value">100%</span></label>
     <input id="pattern-opacity" type="range" min="0.1" max="1" step="0.05" value="1"></div>
@@ -229,7 +297,7 @@ export async function startNec2cReport(data) {
     <div class="pattern-legend-scale"><span>dBi</span><div class="pattern-legend-ticks" data-scale="absolute"></div></div></div>
     <div id="pattern-detail"></div><div style="font-size:10px;color:#9ceeff;margin-top:4px">
     XYZ: <span style="color:#ff5555">X boom</span> · <span style="color:#55ff55">Y elements</span> ·
-    <span style="color:#6688ff">Z vertical</span></div>`;
+    <span style="color:#6688ff">Z vertical</span></div><div id="power-budget"></div>`;
   document.body.append(controlsPanel);
   makeCollapsibleSettingsPanel(controlsPanel);
   const componentSelect = controlsPanel.querySelector("#pattern-component");
@@ -237,7 +305,95 @@ export async function startNec2cReport(data) {
   const paletteSelect = controlsPanel.querySelector("#pattern-palette");
   const opacitySlider = controlsPanel.querySelector("#pattern-opacity");
   const colorBands = controlsPanel.querySelector("#color-bands");
+  const segmentControls = controlsPanel.querySelector("#segment-controls");
+  const segmentDisplay = controlsPanel.querySelector("#segment-display");
+  const segmentPhaseRow = controlsPanel.querySelector("#segment-phase-row");
+  const segmentPhaseSlider = controlsPanel.querySelector("#segment-phase");
+  const segmentLegend = controlsPanel.querySelector("#segment-legend");
+  const powerBudget = diagnostics?.power_budget;
+  segmentControls.hidden = !segmentSamples.size;
+  const budgetElement = controlsPanel.querySelector("#power-budget");
+  budgetElement.hidden = !powerBudget;
+  if (powerBudget) {
+    const watts = value => Number.isFinite(value) ? `${value.toPrecision(5)} W` : "unavailable";
+    budgetElement.textContent = `POWER · input ${watts(powerBudget.input_power_w)} · ` +
+      `radiated ${watts(powerBudget.radiated_power_w)} · structure loss ${watts(powerBudget.structure_loss_w)} · ` +
+      `network loss ${watts(powerBudget.network_loss_w)} · efficiency ` +
+      `${Number(powerBudget.efficiency_percent).toFixed(2)}%`;
+  }
   let patternMaterial = null;
+  let segmentPhaseDegrees = 0;
+  let segmentPlaying = true;
+
+  const currentMaximum = Math.max(Number.EPSILON, ...[...segmentSamples.values()]
+    .map(sample => sample.current?.magnitude || 0));
+  const chargeMaximum = Math.max(Number.EPSILON, ...[...segmentSamples.values()]
+    .map(sample => sample.charge_density?.magnitude || 0));
+
+  function signedColor(value, maximum) {
+    const amount = Math.min(1, Math.abs(value) / Math.max(maximum, Number.EPSILON));
+    const middle = new THREE.Color(0xf7fbff);
+    const edge = new THREE.Color(value < 0 ? 0x1743ff : 0xff315f);
+    return middle.lerp(edge, Math.sqrt(amount));
+  }
+
+  function phaseColor(value) {
+    const phase = ((value?.phase_degrees || 0) + 360) % 360;
+    return new THREE.Color().setHSL(phase / 360, 0.9, 0.58);
+  }
+
+  function magnitudeColor(value, maximum) {
+    const db = 20 * Math.log10(Math.max(value?.magnitude || 0, maximum * 1e-4) / maximum);
+    return colorAt("viridis", Math.max(-30, db));
+  }
+
+  function instantaneous(value) {
+    const radians = segmentPhaseDegrees * Math.PI / 180;
+    return (value?.real || 0) * Math.cos(radians) - (value?.imaginary || 0) * Math.sin(radians);
+  }
+
+  function updateSegmentDisplay() {
+    const mode = segmentDisplay.value;
+    const instantaneousMode = mode.endsWith("instantaneous");
+    segmentPhaseRow.hidden = !instantaneousMode;
+    segmentLegend.hidden = mode === "geometry";
+    const labels = segmentLegend.querySelectorAll("span");
+    if (mode === "current-magnitude") {
+      labels[0].textContent = "−30 dB"; labels[1].textContent = "current";
+      labels[2].textContent = `${currentMaximum.toPrecision(4)} A`;
+      segmentLegend.querySelector(".segment-legend-bar").style.background =
+        "linear-gradient(90deg,#440154,#21918c,#fde725)";
+    } else if (mode === "charge-magnitude") {
+      labels[0].textContent = "−30 dB"; labels[1].textContent = "charge density";
+      labels[2].textContent = `${chargeMaximum.toPrecision(4)} C/m`;
+      segmentLegend.querySelector(".segment-legend-bar").style.background =
+        "linear-gradient(90deg,#440154,#21918c,#fde725)";
+    } else if (mode === "current-phase") {
+      labels[0].textContent = "−180°"; labels[1].textContent = "phase"; labels[2].textContent = "+180°";
+      segmentLegend.querySelector(".segment-legend-bar").style.background =
+        "linear-gradient(90deg,#00f,#0ff,#0f0,#ff0,#f00,#f0f,#00f)";
+    } else if (instantaneousMode) {
+      const maximum = mode.startsWith("current") ? currentMaximum : chargeMaximum;
+      const units = mode.startsWith("current") ? "A" : "C/m";
+      labels[0].textContent = `−${maximum.toPrecision(3)} ${units}`;
+      labels[1].textContent = "instantaneous"; labels[2].textContent = `+${maximum.toPrecision(3)} ${units}`;
+      segmentLegend.querySelector(".segment-legend-bar").style.background =
+        "linear-gradient(90deg,#1743ff,#f7fbff,#ff315f)";
+    }
+    for (const mesh of geometrySegments) {
+      const sample = segmentSamples.get(mesh.userData.segmentKey);
+      let color = new THREE.Color(mesh.userData.baseColor);
+      if (sample && mode === "current-magnitude") color = magnitudeColor(sample.current, currentMaximum);
+      else if (sample && mode === "current-phase") color = phaseColor(sample.current);
+      else if (sample && mode === "current-instantaneous")
+        color = signedColor(instantaneous(sample.current), currentMaximum);
+      else if (sample && mode === "charge-magnitude")
+        color = magnitudeColor(sample.charge_density, chargeMaximum);
+      else if (sample && mode === "charge-instantaneous")
+        color = signedColor(instantaneous(sample.charge_density), chargeMaximum);
+      mesh.material.color.copy(color);
+    }
+  }
 
   function updateLegend() {
     const selected = palettes[paletteSelect.value] || palettes.mmana;
@@ -351,6 +507,19 @@ export async function startNec2cReport(data) {
       patternMaterial.needsUpdate = true;
     }
   });
+  segmentDisplay.addEventListener("change", updateSegmentDisplay);
+  segmentPhaseSlider.addEventListener("input", () => {
+    segmentPhaseDegrees = Number(segmentPhaseSlider.value);
+    segmentPlaying = false;
+    controlsPanel.querySelector("#segment-play").textContent = "PLAY";
+    controlsPanel.querySelector("#segment-phase-value").textContent = `${Math.round(segmentPhaseDegrees)}°`;
+    updateSegmentDisplay();
+  });
+  controlsPanel.querySelector("#segment-play").addEventListener("click", event => {
+    segmentPlaying = !segmentPlaying;
+    event.currentTarget.textContent = segmentPlaying ? "PAUSE" : "PLAY";
+  });
+  updateSegmentDisplay();
   rebuildPattern();
 
   const polarWorkspace = document.createElement("section");
@@ -375,6 +544,8 @@ export async function startNec2cReport(data) {
     const absolute = polarWorkspace.querySelector("#cut-reference").value === "absolute";
     const angles = Array.from({ length: 361 }, (_, index) => index);
     const gains = angles.map(angle => interpolatedGain(data.pattern, table, elevation, angle, component));
+    const polarization = angles.map(angle =>
+      interpolatedPolarization(data.pattern, table, elevation, angle));
     const globalRange = componentGainRange(data.pattern, component);
     const shown = absolute ? gains : gains.map(gain => gain - globalRange.referencePeak);
     const radialRange = absolute
@@ -385,9 +556,19 @@ export async function startNec2cReport(data) {
     return Plotly.react(polarWorkspace.querySelector("#pattern-polar"), [{
       type: "scatterpolar", mode: "lines", theta: angles, r: displayScale.radius,
       line: { color: "#39efff", width: 3 }, name: component,
-      customdata: gains.map((gain, index) => [gain, shown[index]]),
+      customdata: gains.map((gain, index) => {
+        const state = polarization[index];
+        return [gain, shown[index], state.eThetaMagnitude, state.eThetaPhaseDegrees,
+          state.ePhiMagnitude, state.ePhiPhaseDegrees, state.phaseDifferenceDegrees,
+          state.axialRatio, state.tiltDegrees, state.sense || "unclassified"];
+      }),
       hovertemplate: `azimuth %{theta:.1f}°<br>${absolute ? "gain" : "relative"} %{customdata[1]:.3f} dB` +
-        `<br>absolute %{customdata[0]:.3f} dBi<extra>${elevation}° elevation</extra>`,
+        `<br>absolute %{customdata[0]:.3f} dBi` +
+        `<br>|Eθ| %{customdata[2]:.4g} ∠ %{customdata[3]:.1f}°` +
+        `<br>|Eφ| %{customdata[4]:.4g} ∠ %{customdata[5]:.1f}°` +
+        `<br>Δphase %{customdata[6]:.1f}° · axial %{customdata[7]:.4g}` +
+        `<br>tilt %{customdata[8]:.1f}° · %{customdata[9]}` +
+        `<extra>${elevation}° elevation</extra>`,
     }], {
       title: { text: `Azimuth pattern · ${elevation}° elevation · ${component}`,
         font: { color: "#7df9ff", size: 19 }, x: 0.02 },
@@ -406,11 +587,160 @@ export async function startNec2cReport(data) {
   polarWorkspace.querySelector("#cut-component").addEventListener("change", drawPolar);
   polarWorkspace.querySelector("#cut-reference").addEventListener("change", drawPolar);
 
+  const nearFieldSections = Array.isArray(data.near_fields) ? data.near_fields : [];
+  const fieldWorkspace = document.createElement("section");
+  fieldWorkspace.id = "near-field-workspace";
+  fieldWorkspace.hidden = true;
+  fieldWorkspace.innerHTML = `<div class="field-toolbar panel">
+    <label for="near-field-plane">PLANE</label><select id="near-field-plane"></select>
+    <label for="near-field-quantity">FIELD</label><select id="near-field-quantity">
+      <option value="electric">E</option><option value="magnetic">H</option>
+      <option value="power">POWER</option></select>
+    <label for="near-field-mode">VIEW</label><select id="near-field-mode">
+      <option value="envelope">total envelope</option><option value="instantaneous">instantaneous magnitude</option>
+      <option value="x">X component</option><option value="y">Y component</option>
+      <option value="z">Z component</option></select>
+    <label for="near-field-scale">SCALE</label><select id="near-field-scale">
+      <option value="log">log</option><option value="linear">linear</option></select>
+    <button id="near-field-play" type="button">PAUSE</button>
+    <label for="near-field-phase">PHASE <span id="near-field-phase-value">0°</span></label>
+    <input id="near-field-phase" type="range" min="0" max="359" step="1" value="0">
+    <label for="near-field-floor">FLOOR <span id="near-field-floor-value">−40 dB</span></label>
+    <input id="near-field-floor" type="range" min="-80" max="-10" step="1" value="-40">
+    </div><div id="near-field-plot"></div>`;
+  document.body.append(fieldWorkspace);
+  const fieldPlaneSelect = fieldWorkspace.querySelector("#near-field-plane");
+  for (const [index, section] of nearFieldSections.entries()) {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = `${String(section.normal_axis).toUpperCase()}-normal · ` +
+      `${section.normal_axis}=${Number(section.position).toPrecision(5)} m`;
+    fieldPlaneSelect.append(option);
+  }
+  const fieldQuantitySelect = fieldWorkspace.querySelector("#near-field-quantity");
+  const fieldModeSelect = fieldWorkspace.querySelector("#near-field-mode");
+  const fieldScaleSelect = fieldWorkspace.querySelector("#near-field-scale");
+  const fieldPhaseSlider = fieldWorkspace.querySelector("#near-field-phase");
+  const fieldFloorSlider = fieldWorkspace.querySelector("#near-field-floor");
+  let fieldPhaseDegrees = 0;
+  let fieldPlaying = true;
+
+  function fieldAvailability() {
+    const section = nearFieldSections[Number(fieldPlaneSelect.value) || 0];
+    const fields = new Set(section?.fields || []);
+    for (const option of fieldQuantitySelect.options) {
+      option.disabled = option.value === "power"
+        ? !(fields.has("electric") && fields.has("magnetic"))
+        : !fields.has(option.value);
+    }
+    if (fieldQuantitySelect.selectedOptions[0]?.disabled) {
+      fieldQuantitySelect.value = fields.has("electric") ? "electric" : "magnetic";
+    }
+    const phaseRelevant = fieldModeSelect.value === "instantaneous" && fieldQuantitySelect.value !== "power";
+    fieldPhaseSlider.disabled = !phaseRelevant;
+    fieldWorkspace.querySelector("#near-field-play").disabled = !phaseRelevant;
+  }
+
+  function fieldValue(sample, quantity, mode, phaseDegrees) {
+    if (quantity === "power") {
+      const vector = averagePoyntingSample(sample) || [0, 0, 0];
+      const component = { x: 0, y: 1, z: 2 }[mode];
+      return component === undefined ? Math.hypot(...vector) : Math.abs(vector[component]);
+    }
+    const vector = fieldVector(sample, quantity);
+    if (!vector) return 0;
+    if (mode === "instantaneous") return Math.hypot(...instantaneousVector(vector, phaseDegrees));
+    const component = { x: 0, y: 1, z: 2 }[mode];
+    return component === undefined ? vectorEnvelope(vector) : complexMagnitude(vector[component]);
+  }
+
+  function fieldReferenceMaximum(quantity, mode) {
+    const referenceMode = mode === "instantaneous" ? "envelope" : mode;
+    return Math.max(Number.EPSILON, ...nearFieldSections.flatMap(section =>
+      section.samples.map(sample => fieldValue(sample, quantity, referenceMode, 0))));
+  }
+
+  function fieldHover(sample, quantity, value, relativeDb) {
+    const units = quantity === "electric" ? "V/m" : quantity === "magnetic" ? "A/m" : "W/m²";
+    const vector = quantity === "power" ? averagePoyntingSample(sample) : fieldVector(sample, quantity);
+    const detail = quantity === "power"
+      ? `S=(${vector.map(component => component.toPrecision(4)).join(", ")}) ${units}`
+      : ["X", "Y", "Z"].map((axis, index) => {
+        const component = vector?.[index] || [0, 0];
+        const magnitude = complexMagnitude(component);
+        const phase = Math.atan2(component[1], component[0]) * 180 / Math.PI;
+        return `${axis} ${magnitude.toPrecision(4)} ∠ ${phase.toFixed(1)}°`;
+      }).join("<br>");
+    return `${value.toPrecision(5)} ${units}<br>${relativeDb.toFixed(2)} dB relative<br>${detail}`;
+  }
+
+  function drawNearField() {
+    if (!nearFieldSections.length) return Promise.resolve();
+    fieldAvailability();
+    const section = nearFieldSections[Number(fieldPlaneSelect.value) || 0];
+    const quantity = fieldQuantitySelect.value;
+    const mode = fieldModeSelect.value;
+    const logarithmic = fieldScaleSelect.value === "log";
+    const floor = Number(fieldFloorSlider.value);
+    const maximum = fieldReferenceMaximum(quantity, mode);
+    const dbFactor = quantity === "power" ? 10 : 20;
+    const width = section.u_values.length;
+    const rows = [], hover = [];
+    for (let v = 0; v < section.v_values.length; ++v) {
+      const row = [], hoverRow = [];
+      for (let u = 0; u < width; ++u) {
+        const sample = section.samples[u + v * width];
+        const value = fieldValue(sample, quantity, mode, fieldPhaseDegrees);
+        const relativeDb = dbFactor * Math.log10(Math.max(value, maximum * 1e-12) / maximum);
+        row.push(logarithmic ? Math.max(floor, relativeDb) : value);
+        hoverRow.push(fieldHover(sample, quantity, value, relativeDb));
+      }
+      rows.push(row); hover.push(hoverRow);
+    }
+    const units = quantity === "electric" ? "V/m" : quantity === "magnetic" ? "A/m" : "W/m²";
+    const colorscale = [[0, "#030611"], [.2, "#35116e"], [.45, "#007fb0"],
+      [.7, "#20dfb3"], [.88, "#fff04b"], [1, "#ff3b52"]];
+    return Plotly.react(fieldWorkspace.querySelector("#near-field-plot"), [{
+      type: "heatmap", x: section.u_values, y: section.v_values, z: rows,
+      customdata: hover, hovertemplate: `%{customdata}<extra></extra>`,
+      colorscale, zmin: logarithmic ? floor : 0, zmax: logarithmic ? 0 : maximum,
+      colorbar: { title: logarithmic ? "relative dB" : units, tickfont: { color: "#9ceeff" } },
+      zsmooth: "best",
+    }], {
+      title: { text: `${quantity === "power" ? "Average power flow" : quantity.toUpperCase() + " field"} · ` +
+        `${String(section.normal_axis).toUpperCase()}-normal at ${Number(section.position).toPrecision(5)} m`,
+        font: { color: "#7df9ff", size: 18 }, x: .02 },
+      paper_bgcolor: "rgba(3,6,17,0)", plot_bgcolor: "#030611",
+      font: { family: '"DejaVu Sans Mono", monospace', color: "#d8fbff" },
+      margin: { l: 75, r: 80, t: 62, b: 62 },
+      xaxis: { title: `${String(section.u_axis).toUpperCase()} (m)`, gridcolor: "#245069",
+        scaleanchor: "y", scaleratio: 1 },
+      yaxis: { title: `${String(section.v_axis).toUpperCase()} (m)`, gridcolor: "#245069" },
+    }, { responsive: true, displaylogo: false, scrollZoom: true,
+      toImageButtonOptions: { format: "png", filename: "nec2c-near-field" } });
+  }
+  [fieldPlaneSelect, fieldQuantitySelect, fieldModeSelect, fieldScaleSelect]
+    .forEach(element => element.addEventListener("change", drawNearField));
+  fieldFloorSlider.addEventListener("input", () => {
+    fieldWorkspace.querySelector("#near-field-floor-value").textContent = `−${Math.abs(Number(fieldFloorSlider.value))} dB`;
+    drawNearField();
+  });
+  fieldPhaseSlider.addEventListener("input", () => {
+    fieldPhaseDegrees = Number(fieldPhaseSlider.value); fieldPlaying = false;
+    fieldWorkspace.querySelector("#near-field-play").textContent = "PLAY";
+    fieldWorkspace.querySelector("#near-field-phase-value").textContent = `${Math.round(fieldPhaseDegrees)}°`;
+    drawNearField();
+  });
+  fieldWorkspace.querySelector("#near-field-play").addEventListener("click", event => {
+    fieldPlaying = !fieldPlaying; event.currentTarget.textContent = fieldPlaying ? "PAUSE" : "PLAY";
+  });
+
   const plotWorkspace = createPlotWorkspace(data, { managedNavigation: false });
   const tabs = document.createElement("nav");
   tabs.id = "nec-tabs";
   tabs.innerHTML = `<button data-view="viewer3d" class="active">3D VIEW</button>
-    <button data-view="plots">PLOTS</button><button data-view="pattern2d">2D PATTERN</button>`;
+    <button data-view="plots">PLOTS</button><button data-view="pattern2d">2D PATTERN</button>` +
+    (nearFieldSections.length ? `<button data-view="nearfield">NEAR FIELD</button>` : "");
   document.body.append(tabs);
   let activeView = "viewer3d";
   function show(view) {
@@ -419,11 +749,13 @@ export async function startNec2cReport(data) {
     canvas.hidden = !canvasView;
     controlsPanel.hidden = !canvasView;
     polarWorkspace.hidden = view !== "pattern2d";
+    fieldWorkspace.hidden = view !== "nearfield";
     if (plotWorkspace) view === "plots" ? plotWorkspace.show() : plotWorkspace.hide();
     document.getElementById("metadata-panel").hidden = !canvasView;
     tabs.querySelectorAll("button").forEach(button => button.classList.toggle("active", button.dataset.view === view));
     if (canvasView) fitCamera(camera, controls, scene);
     if (view === "pattern2d") drawPolar().then(() => Plotly.Plots.resize(polarWorkspace.querySelector("#pattern-polar")));
+    if (view === "nearfield") drawNearField().then(() => Plotly.Plots.resize(fieldWorkspace.querySelector("#near-field-plot")));
     history.replaceState(null, "", `#${view}`);
   }
   tabs.addEventListener("click", event => {
@@ -433,11 +765,33 @@ export async function startNec2cReport(data) {
 
   const requestedHash = location.hash.slice(1);
   const requested = ["geometry", "pattern3d"].includes(requestedHash) ? "viewer3d" : requestedHash;
-  show(["viewer3d", "plots", "pattern2d"].includes(requested) ? requested : "viewer3d");
+  show(["viewer3d", "plots", "pattern2d", "nearfield"].includes(requested) ? requested : "viewer3d");
 
-  function animate() {
+  let previousFrame = performance.now();
+  let lastFieldAnimationDraw = 0;
+  let fieldAnimationPending = false;
+  function animate(now = performance.now()) {
     requestAnimationFrame(animate);
+    const elapsed = Math.min(0.1, Math.max(0, (now - previousFrame) / 1000));
+    previousFrame = now;
+    if (activeView === "nearfield" && fieldPlaying && fieldModeSelect.value === "instantaneous" &&
+        fieldQuantitySelect.value !== "power") {
+      fieldPhaseDegrees = (fieldPhaseDegrees + elapsed * 90) % 360;
+      fieldPhaseSlider.value = String(Math.round(fieldPhaseDegrees));
+      fieldWorkspace.querySelector("#near-field-phase-value").textContent = `${Math.round(fieldPhaseDegrees)}°`;
+      if (!fieldAnimationPending && now - lastFieldAnimationDraw >= 80) {
+        lastFieldAnimationDraw = now;
+        fieldAnimationPending = true;
+        drawNearField().finally(() => { fieldAnimationPending = false; });
+      }
+    }
     if (activeView !== "viewer3d") return;
+    if (segmentPlaying && segmentDisplay.value.endsWith("instantaneous")) {
+      segmentPhaseDegrees = (segmentPhaseDegrees + elapsed * 90) % 360;
+      segmentPhaseSlider.value = String(Math.round(segmentPhaseDegrees));
+      controlsPanel.querySelector("#segment-phase-value").textContent = `${Math.round(segmentPhaseDegrees)}°`;
+      updateSegmentDisplay();
+    }
     const width = canvas.clientWidth, height = canvas.clientHeight;
     if (canvas.width !== width * renderer.getPixelRatio() || canvas.height !== height * renderer.getPixelRatio()) {
       renderer.setSize(width, height, false); camera.aspect = width / height; camera.updateProjectionMatrix();

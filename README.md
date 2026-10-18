@@ -619,10 +619,20 @@ returns transparent Racket values without printing or opening a window:
  #:aspect-ratio 16/9)
 
 ;; One portable file with wire geometry, matching plots, an interactive 3-D
-;; radiation surface with unlit palette colors, opacity and a gain legend, and
-;; interpolated elevation-selectable 2-D pattern cuts.
-(write-nec2c-html-report sweep "yagi-report.html" #:pattern sphere)
+;; radiation surface with unlit palette colors, opacity and a gain legend,
+;; animated per-segment current/charge, a power budget, polarization phasors,
+;; interpolated elevation-selectable 2-D pattern cuts, and selectable
+;; X/Y/Z-normal near-field sections.
+(write-html-report sweep "yagi-report.html" #:pattern sphere)
 ```
+
+By default, a NEC2C report samples electric and magnetic fields on three
+orthogonal planes through the feedpoint centroid. Each plane is at least two
+wavelengths square and leaves at least one wavelength beyond the model's
+geometric extrema. The report can display E, H, and time-average power flow on
+linear or logarithmic scales. Use `#:near-fields #f` for the lighter report, or
+pass explicit `near-field-section` values to choose planes, bounds, and sample
+counts; see the API manual for the full form.
 
 The ordinary 2-D graphs have a built-in data cursor. Left-drag retains Plot's
 normal zoom behavior and left-click unzooms once. Right-click or right-drag

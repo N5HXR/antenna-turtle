@@ -15,7 +15,7 @@
          racket/system
          "openems.rkt")
 
-(provide write-html-report)
+(provide write-openems-html-report)
 
 (define-runtime-path viewer-bundle "report-assets/viewer.bundle.js")
 
@@ -338,13 +338,13 @@
 CSS
   )
 
-(define (write-html-report result destination #:title [title #f])
+(define (write-openems-html-report result destination #:title [title #f])
   (unless (path-string? destination)
-    (raise-argument-error 'write-html-report "path-string?" destination))
+    (raise-argument-error 'write-openems-html-report "path-string?" destination))
   (define run (result-run result))
   (define artifacts (openems-run-info-artifacts run))
   (unless (openems-artifacts-available? artifacts)
-    (raise-user-error 'write-html-report "the simulation artifacts are closed"))
+    (raise-user-error 'write-openems-html-report "the simulation artifacts are closed"))
   (define root (openems-artifacts-directory artifacts))
   (define manifest (openems-run-info-manifest run))
   (define mesh (hash-ref manifest 'mesh (hash)))

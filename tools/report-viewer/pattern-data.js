@@ -54,6 +54,79 @@ export function interpolatedGain(pattern, table, elevation, azimuth, component) 
   return dbPowerInterpolate(a, b, tf);
 }
 
+function interpolationCell(pattern, elevation, azimuth) {
+  const theta = 90 - elevation;
+  const [ta, tb, tf] = bracket(pattern.theta_values, theta);
+  const phis = pattern.phi_values;
+  const normalized = ((azimuth % 360) + 360) % 360;
+  let pa = 0;
+  while (pa + 1 < phis.length && phis[pa + 1] <= normalized) ++pa;
+  const pb = (pa + 1) % phis.length;
+  const phiA = phis[pa];
+  const phiB = pb === 0 ? phis[0] + 360 : phis[pb];
+  const pf = phiB === phiA ? 0 : (normalized - phiA) / (phiB - phiA);
+  return { ta, tb, tf, pa, pb, pf };
+}
+
+function linear(a, b, fraction) {
+  if (!Number.isFinite(a)) return b;
+  if (!Number.isFinite(b)) return a;
+  return a * (1 - fraction) + b * fraction;
+}
+
+function complexLinear(a, b, fraction) {
+  return {
+    real: linear(a?.real, b?.real, fraction) ?? 0,
+    imaginary: linear(a?.imaginary, b?.imaginary, fraction) ?? 0,
+  };
+}
+
+function complexMagnitude(value) {
+  return Math.hypot(value.real, value.imaginary);
+}
+
+function complexPhase(value) {
+  return Math.atan2(value.imaginary, value.real) * 180 / Math.PI;
+}
+
+function wrapPhase(value) {
+  return ((value + 180) % 360 + 360) % 360 - 180;
+}
+
+export function interpolatedPolarization(pattern, table, elevation, azimuth) {
+  const { ta, tb, tf, pa, pb, pf } = interpolationCell(pattern, elevation, azimuth);
+  const aa = sampleAt(pattern, table, ta, pa);
+  const ab = sampleAt(pattern, table, ta, pb);
+  const ba = sampleAt(pattern, table, tb, pa);
+  const bb = sampleAt(pattern, table, tb, pb);
+  const interpolateField = field => complexLinear(
+    complexLinear(aa?.[field], ab?.[field], pf),
+    complexLinear(ba?.[field], bb?.[field], pf), tf);
+  const interpolateScalar = field => linear(
+    linear(aa?.[field], ab?.[field], pf),
+    linear(ba?.[field], bb?.[field], pf), tf);
+  const eTheta = interpolateField("e_theta");
+  const ePhi = interpolateField("e_phi");
+  const thetaPhase = complexPhase(eTheta);
+  const phiPhase = complexPhase(ePhi);
+  const weighted = [
+    [aa, (1 - tf) * (1 - pf)], [ab, (1 - tf) * pf],
+    [ba, tf * (1 - pf)], [bb, tf * pf],
+  ].sort((a, b) => b[1] - a[1]);
+  return {
+    eTheta,
+    ePhi,
+    eThetaMagnitude: complexMagnitude(eTheta),
+    ePhiMagnitude: complexMagnitude(ePhi),
+    eThetaPhaseDegrees: thetaPhase,
+    ePhiPhaseDegrees: phiPhase,
+    phaseDifferenceDegrees: wrapPhase(phiPhase - thetaPhase),
+    axialRatio: interpolateScalar("axial_ratio"),
+    tiltDegrees: interpolateScalar("tilt_degrees"),
+    sense: weighted[0][0]?.polarization ?? null,
+  };
+}
+
 export function globalGainRange(pattern, component) {
   const gains = pattern.samples.map(sample => gainOf(sample, component)).filter(Number.isFinite);
   if (!gains.length) return null;

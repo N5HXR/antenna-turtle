@@ -20,6 +20,7 @@ import Plotly from "plotly.js/lib/core";
 import scatter from "plotly.js/lib/scatter";
 import scatterSmith from "plotly.js/lib/scattersmith";
 import scatterPolar from "plotly.js/lib/scatterpolar";
+import heatmap from "plotly.js/lib/heatmap";
 import {
   availablePlots,
   interpolatePortSamples,
@@ -33,7 +34,7 @@ import {
   vswrAxisRange,
 } from "./plot-data.js";
 
-Plotly.register([scatter, scatterSmith, scatterPolar]);
+Plotly.register([scatter, scatterSmith, scatterPolar, heatmap]);
 
 export { Plotly };
 

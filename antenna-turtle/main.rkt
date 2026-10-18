@@ -20,8 +20,8 @@
 ;; Manifold is an optional native dependency. Probe it while compiling the
 ;; language so a minimal installation can still load the wire DSL and pure
 ;; file exporters. The resulting choice is recorded in main.zo; installing or
-;; repairing Manifold later therefore requires `raco setup --pkgs
-;; antenna-turtle` to rebuild this module. Backend names are deliberately
+;; repairing Manifold later therefore requires `raco setup antenna-turtle` to
+;; rebuild this module. Backend names are deliberately
 ;; absent, rather than stubbed, in the minimal language so Racket reports its
 ;; ordinary unbound-identifier diagnostic when a solid model is attempted.
 (begin-for-syntax

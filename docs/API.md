@@ -1706,13 +1706,18 @@ selected excitation and frequency. The manifest records the reconstruction
 convention as `instantaneous = real(phasor * exp(+j*phase))`, coordinates,
 units, component order, normalization, and source dump details.
 
-### `(write-html-report result destination [#:title title-or-#f])`
+### `(write-html-report result destination ...)`
 
 Writes a single self-contained interactive HTML report and returns its complete
-path. `result` must be an `openems-sweep-result` or
-`openems-multiport-result` created with `record-fields`; its retained artifacts
-must still be available. `destination` is a path string. `#:title` defaults to
-the model title recorded in the manifest.
+path. This common entry point accepts either an OpenEMS result or a NEC2C sweep
+result. NEC2C report generation is always available and does not load Manifold
+or OpenEMS; its optional `#:pattern` and `#:frequency` arguments have the same
+meaning as for `write-nec2c-html-report`. OpenEMS report support is resolved
+only when passed an `openems-sweep-result` or `openems-multiport-result`.
+
+An OpenEMS result must have been created with `record-fields`, and its retained
+artifacts must still be available. `destination` is a path string. `#:title`
+defaults to the model title recorded in the manifest.
 
 ```racket
 (define report-path
@@ -2387,7 +2392,9 @@ models default to the above-ground 0 through 180 degree arc.
 
 Returns a `nec2c-pattern-grid` covering theta 0–180 degrees in free space or
 0–90 degrees over ground, and phi 0 up to but excluding 360 degrees. The seam
-is not duplicated.
+is not duplicated. The same solve also retains complex current and linear
+charge density for every NEC wire segment plus the NEC power budget in
+`nec2c-pattern-grid-diagnostics`; no additional solver pass is required.
 The optional `#:frequency` defaults to the current `model-frequency`, including
 the value established by `(model frequency ...)`.
 
@@ -2396,6 +2403,74 @@ elevation/azimuth, vertical/horizontal/total gain, axial ratio, polarization
 tilt and sense, and complex E-theta/E-phi fields. NEC's unavailable-gain
 sentinel is represented by `#f`.
 
+### `(nec2c-segment-diagnostics ...)`
+
+```racket
+(nec2c-segment-diagnostics
+ [frequency (model-frequency)]
+ [#:model-path path-or-#f]
+ [#:executable path-or-#f]
+ [#:keep-artifacts? boolean]
+ [#:timeout seconds-or-#f])
+```
+
+Runs one frequency without a radiation-pattern request and returns a
+`nec2c-diagnostics` snapshot containing complex current in amperes and complex
+linear charge density in coulombs/meter for every wire segment, together with
+input power, radiated power, structure loss, network loss, and efficiency.
+This is segment current, not volumetric current density. Ordinary impedance
+and gain sweeps suppress NEC's default segment-current printing to keep their
+solver reports compact.
+
+### `(near-field-section ...)` and `(nec2c-near-field-planes ...)`
+
+```racket
+(near-field-section
+ #:plane [plane 'xy]
+ #:position [normal-coordinate #f]
+ #:x-range [meters-or-#f #f]
+ #:y-range [meters-or-#f #f]
+ #:z-range [meters-or-#f #f]
+ #:samples [count-or-pair 121]
+ #:fields [quantities '(electric magnetic)])
+
+(nec2c-near-field-planes
+ #:frequency [frequency (model-frequency)]
+ #:planes [sections #f]
+ #:max-samples [count 250000]
+ common-keywords ...)
+```
+
+Requests complex near electric and/or magnetic fields from NEC2C on explicit
+rectangular planes. `#:plane 'x`, `'y`, or `'z` names the normal axis; the
+equivalent contained-axis names are `'yz`, `'xz`, and `'xy`. A missing
+`#:position` places the plane through the centroid of all model feedpoints.
+
+Automatic in-plane bounds form a square centered on that centroid. It is at
+least two wavelengths wide and expands as necessary to leave one full
+wavelength between every model extremum and the square boundary. Wire radii
+are included in the extrema. An axis-specific range overrides that automatic
+axis. `#:samples` accepts one count for both axes or `(list u-count v-count)`;
+each count must be at least two.
+
+With no `#:planes`, the runner requests X-, Y-, and Z-normal planes, each at
+121 by 121 samples with both E and H. It returns a
+`nec2c-near-field-result`; every sample contains complex Cartesian vectors in
+V/m and A/m. The result also retains segment diagnostics and the power budget
+from the same NEC run. `#:max-samples` counts field rows, so requesting both E
+and H consumes twice the spatial point count.
+
+```racket
+(define fields
+  (nec2c-near-field-planes
+   #:planes
+   (list (near-field-section #:plane 'xz #:samples '(181 121))
+         (near-field-section #:plane 'z #:position 3.0
+                             #:x-range '(-20 20)
+                             #:y-range '(-20 20)
+                             #:fields '(electric)))))
+```
+
 ### `(write-nec2c-html-report result destination ...)`
 
 ```racket
@@ -2403,15 +2478,27 @@ sentinel is represented by `#f`.
  result destination
  [#:pattern pattern-grid]
  [#:frequency frequency-mhz]
+ [#:near-fields near-field-request]
  [#:title title-or-#f])
 ```
 
 Writes a single self-contained interactive HTML report for the wire-native
-NEC2C backend and returns its complete path. The report contains three
+NEC2C backend and returns its complete path. The report contains four
 workspaces: a combined 3-D view with independently switchable antenna geometry
 and radiation pattern, the same Smith/S11/return-loss/VSWR and impedance plot
 viewer used by the OpenEMS report, and an interactive azimuth-pattern cut at a
-continuously selectable elevation angle. The 3-D pattern is centered on the
+continuously selectable elevation angle, plus selectable planar near fields.
+The near-field workspace displays E, H, and time-average Poynting magnitude;
+total envelope, instantaneous magnitude, and Cartesian components; phase
+animation; and linear or relative-dB scaling. Hover reports the complete
+complex vector. All planes of one quantity share a stable reference maximum.
+
+When `#:near-fields` is omitted, the writer makes one selected-frequency NEC
+run for the default X-, Y-, and Z-normal sections described above. Pass `#f`
+to omit near fields, a list of `near-field-section` requests to customize the
+capture, or an existing `nec2c-near-field-result` to reuse prior work. This
+field run also supplies conductor diagnostics, avoiding another diagnostic
+solve. The 3-D pattern is centered on the
 feedpoint, or the centroid of all feedpoints, and offers ARRL modified-log,
 fixed-range dB, and linear-power radial scales plus the same MMANA, magma/SDR,
 inferno, viridis, grayscale, and electric color ramps as the native OpenGL
@@ -2432,6 +2519,14 @@ banded presentation: every display triangle receives the palette color for
 the 3 dB interval containing its average relative gain. The legend changes to
 the identical quantized ramp, while radial geometry and simulation data remain
 unchanged.
+The 3-D model can also color its NEC segments by current magnitude or phase,
+animate instantaneous signed current, and display charge-density magnitude or
+instantaneous signed charge. A compact legend reports the applicable peak and
+units. The report shows NEC's input/radiated/loss/efficiency power budget below
+the geometry controls. These diagnostics come from the supplied radiation grid;
+when a gain sweep supplies the report pattern, the writer performs one compact
+diagnostic solve at the selected report frequency rather than retaining current
+tables at every sweep frequency.
 The display-settings panel can be hidden for an unobstructed presentation view;
 a compact `SHOW SETTINGS` button restores it without resetting the camera or
 the selected visualization.
@@ -2443,7 +2538,9 @@ the Yagi elements read horizontally without allowing camera roll to redefine
 physical vertical.
 
 The 2-D cut uses linear-power interpolation between NEC angular samples and
-reports both the plotted value and absolute gain on hover. Relative cuts use
+reports both the plotted value and absolute gain on hover. Its polarization
+readout additionally reports interpolated complex E-theta and E-phi magnitude
+and phase, their relative phase, axial ratio, tilt, and handedness. Relative cuts use
 the total pattern's maximum gain as zero—even while viewing a polarization
 component—and one stable radial range derived
 from the complete grid, so moving the elevation control never renormalizes or
@@ -2879,7 +2976,11 @@ lifecycle calls.
                       axial-ratio tilt-deg polarization-sense e-theta e-phi
                       [direction #f])
 (nec2c-pattern run kind fixed-angle samples)
-(nec2c-pattern-grid run theta-values phi-values samples)
+(nec2c-pattern-grid run theta-values phi-values samples [diagnostics #:auto])
+(nec2c-segment-sample frequency-mhz wire-id segment current charge-density)
+(nec2c-power-budget frequency-mhz input-power radiated-power structure-loss
+                     network-loss efficiency-percent)
+(nec2c-diagnostics frequency-mhz segments power-budget)
 (nec2c-gain-sweep-sample frequency-mhz feedpoint reflection-coefficient
                          return-loss-db vswr pattern maximum-gain-db
                          realized-maximum-gain-db maximum-gain-direction
@@ -2895,7 +2996,15 @@ The raw parser uses:
 (parsed-nec2c-pattern frequency-mhz theta-deg phi-deg
                      vertical-gain-db horizontal-gain-db total-gain-db
                      axial-ratio tilt-deg polarization-sense e-theta e-phi)
-(parsed-nec2c-report feeds patterns)
+(parsed-nec2c-segment-current frequency-mhz segment tag x-wavelengths
+                               y-wavelengths z-wavelengths length-wavelengths current)
+(parsed-nec2c-segment-charge frequency-mhz segment tag x-wavelengths
+                              y-wavelengths z-wavelengths length-wavelengths
+                              charge-density)
+(parsed-nec2c-power-budget frequency-mhz input-power radiated-power
+                            structure-loss network-loss efficiency-percent)
+(parsed-nec2c-report feeds patterns [currents #:auto] [charges #:auto]
+                      [power-budgets #:auto])
 (parse-nec2c-output input-port-or-string-or-path)
 ```
 

@@ -26,7 +26,7 @@
 (define pattern
   (nec2c-radiation-grid #:frequency 150 #:theta-step 3 #:phi-step 3))
 
-(write-nec2c-html-report
+(write-html-report
  sweep
  "scratch/html-report-nec2c-yagi.html"
  #:pattern pattern)

@@ -48,6 +48,7 @@
 ;; Manifold was absent.  Resolve only the OpenEMS-specific operations lazily,
 ;; so wire/NEC2C models keep their plotting support in a minimal install.
 (define optional-openems-bindings (make-hasheq))
+(define-runtime-path openems-path "openems.rkt")
 
 (define (optional-openems-binding name)
   (hash-ref!
@@ -55,7 +56,7 @@
    name
    (lambda ()
      (with-handlers ([exn:fail? (lambda (_) #f)])
-       (dynamic-require "openems.rkt" name)))))
+       (dynamic-require openems-path name)))))
 
 (define (openems-predicate? name value)
   (define predicate (optional-openems-binding name))

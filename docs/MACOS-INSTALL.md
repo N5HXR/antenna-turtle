@@ -48,15 +48,21 @@ prints the command needed to activate a terminal manually. The current
 installation process always uses the environment directly, so its validation
 does not depend on accepting the profile change.
 
-When `~/.emacs` already exists, the installer separately asks permission to
-load its generated `antenna-turtle-env.el` and to append a `(load "...")`
-call for `editors/antenna-turtle-emacs.el`. The generated environment supplies
+When `~/.emacs` already exists, the installer asks permission to add one
+`require` form for its generated `antenna-turtle-env.el`. That single
+bootstrap supplies
 GUI Emacs with the Racket, NEC2C, openEMS, GNU coreutils, and Homebrew binary
-directories plus `RACKET_MANIFOLDC_LIB`, `NEC2C`, `OCTAVE`, and
-`OPENEMS_ROOT`. This is needed by Emacs instances launched from Finder or the
-Dock, which do not normally inherit `~/.zprofile`. Rerunning the installer
-refreshes the generated file. The installer creates a backup before editing
-and never creates `.emacs` or changes it without confirmation.
+directories; sets `RACKET_MANIFOLDC_LIB`, `NEC2C`, `OCTAVE`, and
+`OPENEMS_ROOT`; points Racket Mode's `racket-program` directly at the installed
+Racket; and loads `editors/antenna-turtle-emacs.el`. The only separate Emacs
+prerequisite is installing the `racket-mode` package. This explicit bootstrap
+is needed by Emacs instances launched from Finder or the Dock, which do not
+normally inherit `~/.zprofile`.
+
+Rerunning the installer refreshes the generated file. The installer creates a
+backup before editing and never creates `.emacs` or changes it without
+confirmation. If `~/.emacs` does not exist, it prints the one `require` form
+to add to the user's preferred Emacs initialization file.
 
 ## Options
 

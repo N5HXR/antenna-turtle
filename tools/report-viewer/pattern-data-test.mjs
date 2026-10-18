@@ -4,6 +4,7 @@ import {
   dbPowerInterpolate,
   globalGainRange,
   interpolatedGain,
+  interpolatedPolarization,
   patternTable,
   polarDisplayScale,
   quantizedGain,
@@ -19,7 +20,10 @@ const pattern = {
 for (const theta of pattern.theta_values) {
   for (const phi of pattern.phi_values) {
     pattern.samples.push({ theta_deg: theta, phi_deg: phi,
-      total_gain_db: theta / 9 + phi / 90 });
+      total_gain_db: theta / 9 + phi / 90,
+      e_theta: { real: theta / 90, imaginary: phi / 90 },
+      e_phi: { real: 1 + theta / 90, imaginary: 1 + phi / 90 },
+      axial_ratio: 2, tilt_degrees: 30, polarization: "right" });
   }
 }
 const table = patternTable(pattern);
@@ -37,6 +41,13 @@ const expectedMidpoint = dbPowerInterpolate(
 assert.ok(Math.abs(interpolatedGain(pattern, table, 45, 45, "total")
   - expectedMidpoint) < 1e-10);
 assert.equal(interpolatedGain(pattern, table, 0, 360, "total"), 10);
+const polarization = interpolatedPolarization(pattern, table, 45, 45);
+assert.ok(Math.abs(polarization.eTheta.real - 0.5) < 1e-12);
+assert.ok(Math.abs(polarization.eTheta.imaginary - 0.5) < 1e-12);
+assert.ok(Math.abs(polarization.phaseDifferenceDegrees) < 1e-12);
+assert.equal(polarization.axialRatio, 2);
+assert.equal(polarization.tiltDegrees, 30);
+assert.equal(polarization.sense, "right");
 
 assert.deepEqual(polarDisplayScale([-72, -60, -25, 0, 3], [-60, 0]), {
   radius: [0, 0, 35, 60, 60], range: [0, 60],

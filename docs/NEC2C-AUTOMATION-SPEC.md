@@ -1,13 +1,15 @@
 # NEC2C Automation Specification
 
-Status: **Implemented in Antenna Turtle 0.5.0 (revision 1)**
+Status: **Implemented in Antenna Turtle 0.5.0 (revision 2)**
 Target: Antenna Turtle 0.5+
 Reference engine inspected: `nec2c 1.3`
 
-Revision 1 implements the runner, typed data objects, multi-feed impedance and
+Revision 2 adds segment current/charge and power diagnostics plus rectangular
+near-field sections. The runner, typed data objects, multi-feed impedance and
 VSWR measurements, azimuth/elevation cuts, spherical sampling, headless Plot
-renderers, and explicit Plot/Plot3D viewers described below. The speculative
-batch/coalescing API and Phase 4 optimization conveniences remain future work.
+renderers, and explicit Plot/Plot3D viewers described below are implemented.
+The speculative batch/coalescing API and Phase 4 optimization conveniences
+remain future work.
 
 ## 1. Goals
 
@@ -21,7 +23,9 @@ Provide an end-to-end NEC2C workflow from an in-memory Antenna Turtle model:
    - azimuth and elevation radiation-pattern cuts;
    - impedance, reflection coefficient, return loss, and VSWR over a frequency
      sweep;
-   - a full spherical radiation grid suitable for 3-D rendering.
+   - a full spherical radiation grid suitable for 3-D rendering;
+   - complex electric and magnetic fields on explicit rectangular planes;
+   - per-segment complex current and charge plus the solver power budget.
 4. Parse every requested measurement into transparent Racket data objects.
 5. Render measurements with Racket Plot: 2-D Plot for cuts and sweeps, and
    Plot3D for the spherical pattern.
@@ -34,7 +38,6 @@ Provide an end-to-end NEC2C workflow from an in-memory Antenna Turtle model:
 - Treating the human-readable `.out` report as a public Antenna Turtle format.
 - General support for arbitrary hand-authored NEC cards.
 - Network synthesis, matching-network optimization, or Smith-chart editing.
-- Near-field sampling.
 - A simulator-independent result abstraction. The initial parser and runner
   are explicitly versioned around NEC2C; common abstractions can be extracted
   after a second solver exists.
@@ -175,6 +178,23 @@ Each function operates on the current Antenna Turtle model.
  [#:theta-step 5] [#:phi-step 5]
  [common runner keywords ...])
   -> nec2c-pattern-grid
+
+(near-field-section
+ [#:plane 'x | 'y | 'z | 'xy | 'xz | 'yz]
+ [#:position coordinate]
+ [#:x-range (list minimum maximum)]
+ [#:y-range (list minimum maximum)]
+ [#:z-range (list minimum maximum)]
+ [#:samples count | (list u-count v-count)]
+ [#:fields '(electric magnetic)])
+  -> near-field-section?
+
+(nec2c-near-field-planes
+ [#:frequency (model-frequency)]
+ [#:planes (listof near-field-section?) | #f]
+ [#:max-samples 250000]
+ [common runner keywords ...])
+  -> nec2c-near-field-result
 ```
 
 All frequencies are MHz, matching `model-frequency` and NEC2C’s `FR` card.
@@ -195,6 +215,13 @@ The new `(model-impedance)` parameter has the same direct getter/setter style
 as `(model-frequency)`. It must be a positive real number and is reset to 50
 by `reset-model!`. Raw complex active impedance is always retained, so callers
 remain free to derive other matching metrics without rerunning NEC2C.
+
+With no `#:planes` argument, near-field sampling produces X-, Y-, and Z-normal
+planes through the centroid of all feedpoints. Their automatic square bounds
+are at least two wavelengths across and extend at least one wavelength beyond
+all in-plane geometry extrema. Explicit requests can override the plane
+position, either in-plane range, resolution, and E/H quantities. All requested
+sections are emitted as `NE`/`NH` cards in one selected-frequency solver pass.
 
 ### 6.1 Possible batch API
 
@@ -260,13 +287,45 @@ match, serialize, filter, and optimize against results.
   #:transparent)
 
 (struct nec2c-pattern-grid
-  (run theta-values phi-values samples)
+  (run theta-values phi-values samples [diagnostics #:auto #:mutable])
+  #:auto-value #f
+  #:transparent)
+
+(struct nec2c-segment-sample
+  (frequency-mhz wire-id segment current charge-density)
+  #:transparent)
+
+(struct nec2c-power-budget
+  (frequency-mhz input-power radiated-power structure-loss network-loss
+                 efficiency-percent)
+  #:transparent)
+
+(struct nec2c-diagnostics
+  (frequency-mhz segments power-budget)
+  #:transparent)
+
+(struct nec2c-near-field-sample
+  (x y z electric magnetic)
+  #:transparent)
+
+(struct nec2c-near-field-section
+  (plane normal-axis position u-axis v-axis u-values v-values samples fields)
+  #:transparent)
+
+(struct nec2c-near-field-result
+  (run frequency-mhz sections diagnostics)
   #:transparent)
 ```
 
-Complex voltage, current, impedance, reflection coefficient, `e-theta`, and
-`e-phi` use Racket complex numbers. NEC2C’s `-999.99` unavailable-gain sentinel
-is parsed as `#f`, not mistaken for a physical gain.
+Complex voltage, current, impedance, reflection coefficient, `e-theta`,
+`e-phi`, and Cartesian near-field vector components use Racket complex
+numbers. NEC2C’s `-999.99` unavailable-gain sentinel is parsed as `#f`, not
+mistaken for a physical gain.
+
+The diagnostics attached to a radiation grid contain the per-segment complex
+current and charge density plus NEC2C's power budget. Network-only sweeps ask
+NEC2C to suppress those large tables; `nec2c-segment-diagnostics` requests them
+explicitly for one frequency.
 
 Convenience accessors may include:
 

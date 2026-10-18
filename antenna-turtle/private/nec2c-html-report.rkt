@@ -11,15 +11,38 @@
          "core.rkt"
          "nec2c.rkt")
 
-(provide write-nec2c-html-report)
+(provide write-html-report write-nec2c-html-report)
 
 (define-runtime-path viewer-bundle "report-assets/viewer.bundle.js")
+(define-runtime-path openems-html-report-path "html-report.rkt")
 
-(define (json-script-text value)
-  (define out (open-output-string))
-  (write-json value out)
-  (regexp-replace* #rx"<" (get-output-string out)
-                   (lambda (_match) "\\u003c")))
+(define (write-json-script value destination)
+  ;; Stream JSON directly into the HTML file.  Large NEC reports can contain
+  ;; both a dense spherical pattern and several field planes; materializing
+  ;; that JSON as one string and then copying it through regexp-replace* causes
+  ;; extreme GC/memory pressure.  This output port preserves the script-safe
+  ;; `<` escape while forwarding every other byte without an intermediate
+  ;; aggregate string.
+  (define (write-chunk bytes start end _non-block? _breakable?)
+    (let loop ([cursor start] [segment-start start])
+      (define less-than
+        (for/first ([index (in-range cursor end)]
+                    #:when (= (bytes-ref bytes index) 60))
+          index))
+      (cond
+        [less-than
+         (when (< segment-start less-than)
+           (write-bytes bytes destination segment-start less-than))
+         (write-bytes #"\\u003c" destination)
+         (loop (add1 less-than) (add1 less-than))]
+        [else
+         (when (< segment-start end)
+           (write-bytes bytes destination segment-start end))]))
+    (- end start))
+  (define escaped
+    (make-output-port 'json-script always-evt write-chunk void))
+  (write-json value escaped)
+  (close-output-port escaped))
 
 (define (real-json value)
   (and (real? value) (exact->inexact value)))
@@ -41,7 +64,10 @@
 (define (feed-report edge)
   (and (wire-edge-feed? edge)
        (hash 'name (format "~a" (wire-edge-feed-name edge))
-             'fraction (if (eq? (wire-edge-feed-location edge) 'center) 0.5 1.0)
+             'fraction (case (wire-edge-feed-location edge)
+                         [(start) 0.0]
+                         [(center) 0.5]
+                         [else 1.0])
              'amplitude (wire-edge-feed-amplitude edge)
              'phase_degrees (wire-edge-feed-phase edge))))
 
@@ -54,6 +80,8 @@
            'start (point-report (vertex-point (wire-edge-start edge)))
            'end (point-report (vertex-point (wire-edge-end edge)))
            'diameter (exact->inexact (wire-edge-diameter edge))
+           'segment_count
+           (edge-segment-count edge (maximum-segment-length))
            'feed (or (feed-report edge) 'null)))))
 
 (define (feedpoint-sample-report frequency sample reflection return-loss vswr)
@@ -139,6 +167,8 @@
         'total_gain_db (or (real-json (nec2c-pattern-sample-total-gain-db sample)) 'null)
         'axial_ratio (or (real-json (nec2c-pattern-sample-axial-ratio sample)) 'null)
         'tilt_degrees (or (real-json (nec2c-pattern-sample-tilt-deg sample)) 'null)
+        'e_theta (complex-report (nec2c-pattern-sample-e-theta sample))
+        'e_phi (complex-report (nec2c-pattern-sample-e-phi sample))
         'polarization
         (let ([sense (nec2c-pattern-sample-polarization-sense sample)])
           (if sense (format "~a" sense) 'null))))
@@ -148,6 +178,69 @@
         'theta_values (map exact->inexact (nec2c-pattern-grid-theta-values pattern))
         'phi_values (map exact->inexact (nec2c-pattern-grid-phi-values pattern))
         'samples (map pattern-sample-report (nec2c-pattern-grid-samples pattern))))
+
+(define (optional-real value)
+  (if (real? value) (exact->inexact value) 'null))
+
+(define (diagnostics-report diagnostics)
+  (if (not diagnostics)
+      'null
+      (hash
+       'frequency_mhz (exact->inexact (nec2c-diagnostics-frequency-mhz diagnostics))
+       'segment_samples
+       (for/list ([sample (in-list (nec2c-diagnostics-segments diagnostics))])
+         (hash 'wire_id (nec2c-segment-sample-wire-id sample)
+               'segment (nec2c-segment-sample-segment sample)
+               'current (complex-report (nec2c-segment-sample-current sample))
+               'charge_density
+               (let ([charge (nec2c-segment-sample-charge-density sample)])
+                 (if charge (complex-report charge) 'null))))
+       'power_budget
+       (let ([budget (nec2c-diagnostics-power-budget diagnostics)])
+         (if (not budget)
+             'null
+             (hash
+              'input_power_w (optional-real (nec2c-power-budget-input-power budget))
+              'radiated_power_w (optional-real (nec2c-power-budget-radiated-power budget))
+              'structure_loss_w (optional-real (nec2c-power-budget-structure-loss budget))
+              'network_loss_w (optional-real (nec2c-power-budget-network-loss budget))
+              'efficiency_percent
+              (optional-real (nec2c-power-budget-efficiency-percent budget))))))))
+
+(define (compact-complex-vector-report vector)
+  (if vector
+      (append-map
+       (lambda (value)
+         (list (exact->inexact (real-part value))
+               (exact->inexact (imag-part value))))
+       vector)
+      'null))
+
+(define (near-field-report result)
+  (if (not result)
+      '()
+      (for/list ([section (in-list (nec2c-near-field-result-sections result))]
+                 [index (in-naturals 1)])
+        (hash
+         'id index
+         'plane (format "~a" (nec2c-near-field-section-plane section))
+         'normal_axis (format "~a" (nec2c-near-field-section-normal-axis section))
+         'position (exact->inexact (nec2c-near-field-section-position section))
+         'u_axis (format "~a" (nec2c-near-field-section-u-axis section))
+         'v_axis (format "~a" (nec2c-near-field-section-v-axis section))
+         'u_values (map exact->inexact (nec2c-near-field-section-u-values section))
+         'v_values (map exact->inexact (nec2c-near-field-section-v-values section))
+         'fields (map symbol->string (nec2c-near-field-section-fields section))
+         'samples
+         (for/list ([sample (in-list (nec2c-near-field-section-samples section))])
+           (hash 'electric (compact-complex-vector-report
+                            (nec2c-near-field-sample-electric sample))
+                 'magnetic (compact-complex-vector-report
+                            (nec2c-near-field-sample-magnetic sample))))))))
+
+(define (same-frequency? left right)
+  (<= (abs (- left right))
+      (* 1e-9 (max 1.0 (abs left) (abs right)))))
 
 (define report-css #<<CSS
 :root{color-scheme:dark;font-family:"DejaVu Sans Mono",ui-monospace,monospace;background:#030611;color:#d8fbff}*{box-sizing:border-box}body{margin:0;overflow:hidden;background:radial-gradient(circle at 65% 30%,#151037,#030611 55%)}header{position:fixed;z-index:3;left:18px;top:14px;text-shadow:0 0 12px #31efff;max-width:60vw}h1{margin:0;color:#7df9ff;font-size:20px;letter-spacing:.08em;text-transform:uppercase}#subtitle{margin-top:5px;color:#ff4bd8;font-size:12px}.panel{position:fixed;z-index:4;background:#07101ddd;border:1px solid #31efff88;box-shadow:0 0 22px #00d9ff2f,inset 0 0 18px #002a4133;padding:12px}#metadata-panel{right:18px;top:78px;width:310px;max-height:42vh;overflow:auto}#metadata{white-space:pre-wrap;font-size:10px;color:#93b8c7;margin:0}label{font-size:11px;color:#89eeff}select,button,input{accent-color:#ff3bd4;background:#061322;color:#dff;border:1px solid #29e9ff;padding:5px}button{font-weight:bold;min-width:72px;box-shadow:0 0 10px #ff2fd655}.row{display:flex;align-items:center;gap:9px;margin-top:9px}.row input[type=range]{flex:1}#viewport{width:100vw;height:100vh;display:block}.scanlines{pointer-events:none;position:fixed;z-index:2;inset:0;background:repeating-linear-gradient(0deg,#0000 0,#0000 3px,#4ef1ff09 4px);mix-blend-mode:screen}@media(max-width:800px){#metadata-panel{display:none}header{max-width:45vw}}
@@ -162,6 +255,7 @@ CSS
 (define (write-nec2c-html-report result destination
                                   #:pattern [supplied-pattern #f]
                                   #:frequency [requested-frequency #f]
+                                  #:near-fields [requested-near-fields 'default]
                                   #:title [title #f])
   (unless (or (nec2c-sweep-result? result) (nec2c-gain-sweep-result? result))
     (raise-argument-error
@@ -174,10 +268,45 @@ CSS
   (define pattern (resolve-pattern result supplied-pattern requested-frequency))
   (define run (result-run result))
   (define selected-frequency (pattern-frequency pattern))
+  (define near-fields
+    (cond
+      [(not requested-near-fields) #f]
+      [(nec2c-near-field-result? requested-near-fields)
+       (unless (same-frequency?
+                selected-frequency
+                (nec2c-near-field-result-frequency-mhz requested-near-fields))
+         (raise-arguments-error
+          'write-nec2c-html-report
+          "the supplied near fields do not match the report frequency"
+          "report frequency (MHz)" selected-frequency
+          "near-field frequency (MHz)"
+          (nec2c-near-field-result-frequency-mhz requested-near-fields)))
+       requested-near-fields]
+      [(eq? requested-near-fields 'default)
+       (nec2c-near-field-planes #:frequency selected-frequency)]
+      [(and (list? requested-near-fields)
+            (pair? requested-near-fields)
+            (andmap near-field-section? requested-near-fields))
+       (nec2c-near-field-planes
+        #:frequency selected-frequency #:planes requested-near-fields)]
+      [else
+       (raise-argument-error
+        'write-nec2c-html-report
+        "(or/c #f 'default nec2c-near-field-result? (non-empty-listof near-field-section?))"
+        requested-near-fields)]))
   (define measurements
     (if (nec2c-sweep-result? result)
         (sweep-measurements result)
         (gain-sweep-measurements result)))
+  ;; Ordinary report workflows get diagnostics from the single-frequency
+  ;; radiation-grid run. A gain sweep deliberately suppresses the otherwise
+  ;; enormous per-frequency current tables, so recover one selected-frequency
+  ;; diagnostic snapshot when that is the report's pattern source.
+  (define diagnostics
+    (or (and near-fields (nec2c-near-field-result-diagnostics near-fields))
+        (nec2c-pattern-grid-diagnostics pattern)
+        (and (nec2c-gain-sweep-result? result)
+             (nec2c-segment-diagnostics selected-frequency))))
   (define report-data
     (hash
      'schema "antenna-turtle-report/nec2c-m1"
@@ -200,7 +329,9 @@ CSS
                  'exit_code (nec2c-run-info-exit-code run))
            'measurements measurements)
      'geometry (geometry-report)
-     'pattern (pattern-report pattern)))
+     'pattern (pattern-report pattern)
+     'diagnostics (diagnostics-report diagnostics)
+     'near_fields (near-field-report near-fields)))
   (define complete (simplify-path (path->complete-path destination)))
   (make-parent-directory* complete)
   (call-with-output-file complete
@@ -214,8 +345,54 @@ CSS
       (display "<canvas id=\"viewport\"></canvas><div class=\"scanlines\"></div>" out)
       (display "<details class=\"panel\" id=\"metadata-panel\"><summary>SIMULATION METADATA</summary><pre id=\"metadata\"></pre></details>" out)
       (display "<script type=\"application/json\" id=\"antenna-turtle-report-data\">" out)
-      (display (json-script-text report-data) out)
+      (write-json-script report-data out)
       (display "</script><script>" out)
       (display (file->string viewer-bundle) out)
       (display "</script></body></html>" out)))
   complete)
+
+;; Keep the common report entry point available in wire-only installations.
+;; Loading the OpenEMS writer would otherwise pull in Manifold at module load
+;; time, so resolve it only when the result is not a native NEC2C result.
+(define (write-html-report result destination
+                           #:pattern [pattern #f]
+                           #:frequency [frequency #f]
+                           #:near-fields [near-fields 'default]
+                           #:title [title #f])
+  (cond
+    [(or (nec2c-sweep-result? result) (nec2c-gain-sweep-result? result))
+     (write-nec2c-html-report
+      result destination
+      #:pattern pattern #:frequency frequency #:near-fields near-fields #:title title)]
+    [else
+     (when pattern
+       (raise-arguments-error
+        'write-html-report
+        "#:pattern is supported only for NEC2C reports"
+        "result" result
+        "pattern" pattern))
+     (when frequency
+       (raise-arguments-error
+        'write-html-report
+        "#:frequency is supported only for NEC2C reports"
+        "result" result
+        "frequency" frequency))
+     (unless (eq? near-fields 'default)
+       (raise-arguments-error
+        'write-html-report
+        "#:near-fields is supported only for NEC2C reports"
+        "result" result
+        "near fields" near-fields))
+     (define writer
+       (with-handlers
+           ([exn:fail?
+             (lambda (failure)
+               (raise-user-error
+                'write-html-report
+                (string-append
+                 "OpenEMS HTML report support is unavailable; install "
+                 "Manifold and recompile Antenna Turtle\n  reason: "
+                 (exn-message failure))))])
+         (dynamic-require openems-html-report-path
+                          'write-openems-html-report)))
+     (writer result destination #:title title)]))

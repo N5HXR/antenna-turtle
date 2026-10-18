@@ -46,3 +46,8 @@
 (show-model)
 (show-radiation-pattern-opengl sphere #:palette 'electric)
 (show-smith-chart sweep)
+
+(write-nec2c-html-report
+ sweep
+ "../cycloid.html"
+ #:pattern sphere)

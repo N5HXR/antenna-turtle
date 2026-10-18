@@ -30,6 +30,35 @@
     1    11  1.0000E+00  0.0000E+00  1.0000E-02  0.0000E+00  1.0000E+02  0.0000E+00  1.0000E-02  0.0000E+00  5.0000E-03
     2    32  0.0000E+00  1.0000E+00  0.0000E+00  2.0000E-02  5.0000E+01  0.0000E+00  2.0000E-02  0.0000E+00  1.0000E-02
 
+                           -------- CURRENTS AND LOCATION --------
+   SEG  TAG    COORDINATES OF SEGM CENTER     SEGM    ------------- CURRENT (AMPS) -------------
+   No:  No:       X         Y         Z      LENGTH     REAL      IMAGINARY    MAGN        PHASE
+     1    1   -0.2500    0.0000    0.0000   0.01000  1.0000E-02 -2.0000E-03  1.0198E-02  -11.310
+
+                           -------- CHARGE DENSITIES --------
+   SEG  TAG    COORDINATES OF SEGM CENTER     SEGM    CHARGE DENSITY (COULOMBS/METER)
+   No:  No:       X         Y         Z      LENGTH     REAL      IMAGINARY    MAGN        PHASE
+     1    1   -0.2500    0.0000    0.0000   0.01000  3.0000E-12 -4.0000E-12  5.0000E-12  -53.130
+
+                               ---------- POWER BUDGET ---------
+                               INPUT POWER   =  5.0000E-03 Watts
+                               RADIATED POWER=  4.0000E-03 Watts
+                               STRUCTURE LOSS=  7.5000E-04 Watts
+                               NETWORK LOSS  =  2.5000E-04 Watts
+                               EFFICIENCY    =  80.00 Percent
+
+                             -------- NEAR ELECTRIC FIELDS --------
+     ------- LOCATION -------     ------- EX ------    ------- EY ------    ------- EZ ------
+      X         Y         Z       MAGNITUDE   PHASE    MAGNITUDE   PHASE    MAGNITUDE   PHASE
+    METERS    METERS    METERS     VOLTS/M  DEGREES    VOLTS/M   DEGREES     VOLTS/M  DEGREES
+    0.0000    0.0000    1.0000   2.0000E+00   90.00   1.0000E+00    0.00   0.0000E+00    0.00
+
+                             -------- NEAR MAGNETIC FIELDS ---------
+     ------- LOCATION -------     ------- HX ------    ------- HY ------    ------- HZ ------
+      X         Y         Z       MAGNITUDE   PHASE    MAGNITUDE   PHASE    MAGNITUDE   PHASE
+    METERS    METERS    METERS      AMPS/M  DEGREES      AMPS/M  DEGREES      AMPS/M  DEGREES
+    0.0000    0.0000    1.0000   0.0000E+00    0.00   5.0000E-03  -90.00   0.0000E+00    0.00
+
                              ---------- RADIATION PATTERNS -----------
  ---- ANGLES -----     ----- POWER GAINS -----       ---- POLARIZATION ----   ---- E(THETA) ----    ----- E(PHI) ------
     0.00      0.00     -0.83    -0.83     2.18      1.0000     45.00 LEFT    6.6483E-04   -90.00  6.6483E-04      0.00
@@ -101,6 +130,23 @@ REPORT
                100))
            0 1e-12)
   (check-equal? (length (parsed-nec2c-report-patterns report)) 2)
+  (check-equal? (length (parsed-nec2c-report-currents report)) 1)
+  (check-equal? (parsed-nec2c-segment-current-current
+                 (first (parsed-nec2c-report-currents report)))
+                0.01-0.002i)
+  (check-equal? (length (parsed-nec2c-report-charges report)) 1)
+  (check-equal? (parsed-nec2c-segment-charge-charge-density
+                 (first (parsed-nec2c-report-charges report)))
+                3e-12-4e-12i)
+  (define budget (first (parsed-nec2c-report-power-budgets report)))
+  (check-equal? (parsed-nec2c-power-budget-radiated-power budget) 0.004)
+  (check-equal? (parsed-nec2c-power-budget-efficiency-percent budget) 80.0)
+  (check-equal? (length (parsed-nec2c-report-near-fields report)) 2)
+  (check-= (magnitude
+            (- (parsed-nec2c-near-field-x-component
+                (first (parsed-nec2c-report-near-fields report)))
+               0+2i))
+           0 1e-12)
   (check-eq? (parsed-nec2c-pattern-polarization-sense
               (first (parsed-nec2c-report-patterns report)))
              'left)
@@ -244,6 +290,33 @@ REPORT
     (define grid
       (nec2c-radiation-grid #:theta-step 90 #:phi-step 90))
     (check-equal? (length (nec2c-pattern-grid-samples grid)) 12)
+    (define diagnostics (nec2c-pattern-grid-diagnostics grid))
+    (check-true (nec2c-diagnostics? diagnostics))
+    (check-true (pair? (nec2c-diagnostics-segments diagnostics)))
+    (check-not-false
+     (andmap nec2c-segment-sample-charge-density
+             (nec2c-diagnostics-segments diagnostics)))
+    (check-true (nec2c-power-budget?
+                 (nec2c-diagnostics-power-budget diagnostics)))
+    (check-= (nec2c-power-budget-efficiency-percent
+              (nec2c-diagnostics-power-budget diagnostics))
+             100 1e-6)
+    (define standalone-diagnostics (nec2c-segment-diagnostics))
+    (check-equal? (length (nec2c-diagnostics-segments standalone-diagnostics))
+                  (length (nec2c-diagnostics-segments diagnostics)))
+    (define near-fields
+      (nec2c-near-field-planes
+       #:planes (list (near-field-section #:plane 'xz #:samples '(5 7)))))
+    (check-equal? (length (nec2c-near-field-result-sections near-fields)) 1)
+    (define near-section (first (nec2c-near-field-result-sections near-fields)))
+    (check-eq? (nec2c-near-field-section-normal-axis near-section) 'y)
+    (check-equal? (length (nec2c-near-field-section-samples near-section)) 35)
+    (check-not-false
+     (nec2c-near-field-sample-electric
+      (first (nec2c-near-field-section-samples near-section))))
+    (check-not-false
+     (nec2c-near-field-sample-magnetic
+      (first (nec2c-near-field-section-samples near-section))))
     (define zenith
       (for/first ([sample (in-list (nec2c-pattern-grid-samples grid))]
                   #:when (and (= (nec2c-pattern-sample-theta-deg sample) 0)

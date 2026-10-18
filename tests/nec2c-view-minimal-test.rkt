@@ -8,3 +8,4 @@
 (check-true (procedure? show-vswr-sweep))
 (check-true (procedure? show-radiation-cut))
 (check-true (procedure? show-radiation-pattern-3d))
+(check-true (procedure? write-html-report))
