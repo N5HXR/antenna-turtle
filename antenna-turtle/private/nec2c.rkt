@@ -285,12 +285,15 @@
     (raise-user-error 'nec2c "executable does not exist: ~a" complete))
   complete)
 
-(define (run-command executable arguments stdout-path stderr-path timeout)
+(define (run-command executable arguments stdout-path stderr-path timeout
+                     [working-directory #f])
   (define started (current-inexact-milliseconds))
   (define environment (environment-variables-copy (current-environment-variables)))
   (environment-variables-set! environment #"LC_ALL" #"C")
   (define-values (process timed-out?)
-    (parameterize ([current-environment-variables environment])
+    (parameterize ([current-environment-variables environment]
+                   [current-directory
+                    (or working-directory (current-directory))])
       (call-with-output-file stdout-path
         #:exists 'truncate/replace
         (lambda (stdout)
@@ -409,10 +412,14 @@
          (lambda (out) (write-nec2c-deck out analysis-cards)))])
     (define version (read-version executable directory timeout))
     (define-values (status timed-out? elapsed)
+      ;; Classic NEC2C stores its input and output names in a small fixed-size
+      ;; buffer. macOS temporary directories (and ordinary Windows paths) can
+      ;; exceed that legacy limit, so run inside the artifact directory and
+      ;; give NEC2C only short leaf names. The public artifact paths remain
+      ;; absolute.
       (run-command executable
-                   (list (string-append "-i" (path->string input-path))
-                         (string-append "-o" (path->string output-path)))
-                   stdout-path stderr-path timeout))
+                   '("-ianalysis.nec" "-oanalysis.out")
+                   stdout-path stderr-path timeout directory))
     (define stdout (file->string stdout-path))
     (define stderr (file->string stderr-path))
     (define artifacts

@@ -9,6 +9,7 @@ compiled/
 scratch/
 work/
 node_modules/
+.local/macos/
 *~
 \#*\#
 *.backup

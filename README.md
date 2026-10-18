@@ -43,12 +43,24 @@ exercise one-port and two-port hybrid lumped/distributed networks.
 Documentation:
 
 - [User Manual](docs/USER-MANUAL.md), including Windows 11 installation
+- [Native macOS installation](docs/MACOS-INSTALL.md), including the Homebrew bootstrap script
 - [API Guide](docs/API.md)
 - [Emacs support](editors/antenna-turtle-emacs.el) for indentation and font lock
 
 ## Install
 
-From this directory:
+On macOS, a full checkout can install the complete native solver and solid
+modeling stack with:
+
+```sh
+./scripts/install-macos.sh
+```
+
+See the [macOS installation guide](docs/MACOS-INSTALL.md) for the local
+dependency layout, environment activation, and unattended options.
+
+For an existing cross-platform dependency installation, install the Racket
+package directly from this directory:
 
 ```sh
 raco pkg install --auto --link "$PWD"
@@ -61,8 +73,8 @@ antenna-turtle` language also exports the solid-modeling and OpenEMS API. To
 enable that optional backend after installing Antenna Turtle:
 
 ```sh
-raco pkg install --auto racket-manifold
-raco setup --pkgs antenna-turtle
+raco pkg install --auto --name racket-manifold https://github.com/N5HXR/racket-manifold.git
+raco setup antenna-turtle
 ```
 
 Without Manifold, loading an Antenna Turtle model prints a short capability

@@ -86,11 +86,11 @@ After Manifold has been installed or repaired, enable the full language by
 recompiling Antenna Turtle:
 
 ```powershell
-raco pkg install --auto racket-manifold
-raco setup --pkgs antenna-turtle
+raco pkg install --auto --name racket-manifold https://github.com/N5HXR/racket-manifold.git
+raco setup antenna-turtle
 ```
 
-Likewise, rerun `raco setup --pkgs antenna-turtle` after removing Manifold so
+Likewise, rerun `raco setup antenna-turtle` after removing Manifold so
 the language is rebuilt in its wire-only configuration.
 
 The first command validates the model and normally prints nothing. The second
@@ -100,7 +100,7 @@ If the language works but the `raco` command is not registered, refresh the
 linked package:
 
 ```powershell
-raco setup --pkgs antenna-turtle
+raco setup antenna-turtle
 ```
 
 For an offline installation where the LOOP dependency is not already cached,
@@ -109,7 +109,7 @@ install it while connected and then rerun setup:
 ```powershell
 raco pkg install --auto k-infix
 raco planet install jphelps loop.plt 1 25
-raco setup --pkgs antenna-turtle
+raco setup antenna-turtle
 ```
 
 ### 2.4 Updating or Removing
@@ -117,7 +117,7 @@ raco setup --pkgs antenna-turtle
 After replacing or updating files in a linked source tree:
 
 ```powershell
-raco setup --pkgs antenna-turtle
+raco setup antenna-turtle
 ```
 
 To remove the package registration:
@@ -1387,7 +1387,7 @@ programmatic layer:
 From the project directory, run:
 
 ```powershell
-raco setup --pkgs antenna-turtle
+raco setup antenna-turtle
 ```
 
 If that fails, verify installation with `raco pkg show antenna-turtle` and
@@ -1405,7 +1405,7 @@ Connect to the Internet and run:
 
 ```powershell
 raco planet install jphelps loop.plt 1 25
-raco setup --pkgs antenna-turtle
+raco setup antenna-turtle
 ```
 
 ### `with-wire: wire is already on`

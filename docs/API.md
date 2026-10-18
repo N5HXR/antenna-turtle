@@ -24,7 +24,7 @@ material, solid measurement, and combined NEC/OpenEMS plotting bindings are
 exported only when the optional Manifold package and native library loaded
 successfully when Antenna Turtle was compiled. A minimal installation prints
 the capability warning and leaves those identifiers unbound. After installing
-Manifold, run `raco setup --pkgs antenna-turtle` to enable the full API.
+Manifold, run `raco setup antenna-turtle` to enable the full API.
 
 The language includes normal `#lang racket` bindings and implicitly re-exports
 version 1.25 of `jphelps/loop`, including `loop`, `return`, `return-from`, and
