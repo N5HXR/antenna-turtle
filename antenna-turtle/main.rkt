@@ -8,6 +8,7 @@
          "private/export-matlab-loft.rkt"
          "private/nec2c.rkt"
          "private/nec2c-html-report.rkt"
+         "private/nec2c-view.rkt"
          "private/view.rkt"
          k-infix
          (planet jphelps/loop:1:25)
@@ -51,8 +52,7 @@
                    "private/solid-view.rkt"
                    "private/openems.rkt"
                    "private/openems-power.rkt"
-                   "private/measurement.rkt"
-                   "private/nec2c-view.rkt")
+                   "private/measurement.rkt")
           (provide
            (all-from-out "private/solid-core.rkt")
            (all-from-out "private/solid-dsl.rkt")
@@ -66,7 +66,6 @@
            (all-from-out "private/openems.rkt")
            (all-from-out "private/openems-power.rkt")
            (all-from-out "private/measurement.rkt")
-           (all-from-out "private/nec2c-view.rkt")
            show-solid-model)
           (set! validate-enabled-scenes! validate-solid-scene!))))
 
@@ -79,6 +78,7 @@
  (all-from-out (planet jphelps/loop:1:25))
  (all-from-out "private/nec2c.rkt")
  (all-from-out "private/nec2c-html-report.rkt")
+ (all-from-out "private/nec2c-view.rkt")
  (all-from-out "private/electrical-units.rkt")
  wavelength
  half-wave

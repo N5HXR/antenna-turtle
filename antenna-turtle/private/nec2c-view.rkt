@@ -8,8 +8,7 @@
          "radiation-case.rkt"
          "visualization-handle.rkt"
          "nec2c.rkt"
-         "network.rkt"
-         "openems.rkt")
+         "network.rkt")
 
 (provide
  vswr-sweep-renderers
@@ -43,6 +42,34 @@
 (define colors
   '("steelblue" "firebrick" "darkgreen" "darkorange" "purple" "teal"))
 
+;; OpenEMS is built on the optional Manifold dependency, but the NEC2C
+;; renderers in this module are useful on their own.  Loading OpenEMS here
+;; used to make all of the viewer bindings disappear from the language when
+;; Manifold was absent.  Resolve only the OpenEMS-specific operations lazily,
+;; so wire/NEC2C models keep their plotting support in a minimal install.
+(define optional-openems-bindings (make-hasheq))
+
+(define (optional-openems-binding name)
+  (hash-ref!
+   optional-openems-bindings
+   name
+   (lambda ()
+     (with-handlers ([exn:fail? (lambda (_) #f)])
+       (dynamic-require "openems.rkt" name)))))
+
+(define (openems-predicate? name value)
+  (define predicate (optional-openems-binding name))
+  (and predicate (predicate value)))
+
+(define (require-openems-binding who name)
+  (or (optional-openems-binding name)
+      (raise-user-error
+       who
+       "OpenEMS visualization requires the optional Manifold dependency")))
+
+(define (openems-accessor who name value)
+  ((require-openems-binding who name) value))
+
 (define-runtime-path proportional-plot3d-path "proportional-plot3d.rkt")
 (define-runtime-path opengl-view-path "nec2c-opengl-view.rkt")
 (define-runtime-path interactive-plot-path "interactive-plot.rkt")
@@ -64,9 +91,9 @@
     [(nec2c-sweep-result? result) (nec2c-sweep->network-sweep result)]
     [(nec2c-gain-sweep-result? result)
      (nec2c-gain-sweep->network-sweep result)]
-    [(or (openems-sweep-result? result)
-         (openems-multiport-result? result))
-     (openems-sweep->network-sweep result)]
+    [(or (openems-predicate? 'openems-sweep-result? result)
+         (openems-predicate? 'openems-multiport-result? result))
+     ((require-openems-binding who 'openems-sweep->network-sweep) result)]
     [else
      (raise-argument-error
       who
@@ -716,12 +743,17 @@
              value-unit))))
 
 (define (s-parameter-series result part)
-  (unless (openems-multiport-result? result)
+  (unless (openems-predicate? 'openems-multiport-result? result)
     (raise-argument-error
      's-parameter-series "openems-multiport-result?" result))
-  (define ports (map openems-result-port-name
-                     (openems-multiport-result-ports result)))
-  (define samples (openems-multiport-result-s-parameters result))
+  (define ports
+    (map (lambda (port)
+           (openems-accessor 's-parameter-series 'openems-result-port-name port))
+         (openems-accessor
+          's-parameter-series 'openems-multiport-result-ports result)))
+  (define samples
+    (openems-accessor
+     's-parameter-series 'openems-multiport-result-s-parameters result))
   (define pairs
     (for*/list ([input (in-list ports)] [output (in-list ports)])
       (list input output)))
@@ -731,8 +763,14 @@
     (define matching
       (filter
        (lambda (sample)
-         (and (equal? input (openems-s-parameter-sample-input-port sample))
-              (equal? output (openems-s-parameter-sample-output-port sample))))
+         (and (equal?
+               input
+               (openems-accessor
+                's-parameter-series 'openems-s-parameter-sample-input-port sample))
+              (equal?
+               output
+               (openems-accessor
+                's-parameter-series 'openems-s-parameter-sample-output-port sample))))
        samples))
     (define output-index (add1 (index-of ports output)))
     (define input-index (add1 (index-of ports input)))
@@ -742,15 +780,21 @@
     (define values
       (case part
         [(magnitude)
-         (map openems-s-parameter-sample-db matching)]
+         (map (lambda (sample)
+                (openems-accessor
+                 's-parameter-series 'openems-s-parameter-sample-db sample))
+              matching)]
         [(phase)
          ;; Unwrap in radians before converting to degrees so ordinary branch
          ;; crossings do not draw misleading full-height vertical segments.
          (let loop ([remaining matching] [previous #f] [offset 0] [result '()])
            (if (null? remaining)
                (reverse result)
-               (let* ([raw (angle (openems-s-parameter-sample-value
-                                   (first remaining)))]
+               (let* ([raw (angle
+                            (openems-accessor
+                             's-parameter-series
+                             'openems-s-parameter-sample-value
+                             (first remaining)))]
                       [adjusted (+ raw offset)]
                       [new-offset
                        (cond [(and previous (> (- adjusted previous) pi))
@@ -764,7 +808,10 @@
     (cursor-series
      label
      (for/list ([sample (in-list matching)] [value (in-list values)])
-       (vector (openems-s-parameter-sample-frequency-mhz sample) value))
+       (vector
+        (openems-accessor
+         's-parameter-series 'openems-s-parameter-sample-frequency-mhz sample)
+        value))
      (color-at series-index))))
 
 (define (s-parameter-renderers result part)
