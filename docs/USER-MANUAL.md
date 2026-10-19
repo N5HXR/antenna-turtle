@@ -751,12 +751,28 @@ Revision 1 choices are separate wall cuboids or the opt-in boundary form:
 ```
 
 `form surface` converts every surviving axis-aligned triangle of the final
-Manifold boundary into a native PEC polygon. It therefore preserves both the
-outer and subtracted inner faces without importing an STL volume. The form
-implies PEC; when `material` is omitted it overrides any enclosing material
-context and prints a notice. Explicit `material pec` is accepted, while an
-explicit conductor or dielectric is an error. Oblique facets are intentionally
-rejected in Revision 1; use `form solid` for arbitrary PEC STL geometry.
+Manifold boundary into a native PEC polygon for OpenEMS. It therefore preserves
+both the outer and subtracted inner faces without importing an STL volume. The
+form implies PEC; when `material` is omitted it overrides any enclosing
+material context and prints a notice. Explicit `material pec` is accepted,
+while an explicit conductor or dielectric is an error.
+
+The same syntax provides a constrained NEC2 surface-body feature. Build the
+body "Minecraft style" as a Boolean union of overlapping cuboids. Antenna
+Turtle removes internal faces with Manifold, examines the exterior in the local
+frame captured by `with-body`, and replaces it with regular rectangular MFIE
+patches. Thus the whole completed body can be placed at any angle, while the
+cuboids within it must remain axis-aligned in that local frame. Use model
+setting `nec2-patch-length` to override the default maximum edge of one-fifth
+wavelength. Finer patches increase NEC2's dense matrix rapidly.
+
+When a non-coplanar wire endpoint touches the exterior, the NEC2 exporter moves
+that entire connected wire assembly rigidly to the nearest patch center. It
+never stretches one segment or bends the antenna. Conflicting contacts are
+reported instead of distorting the model. The result works with free space,
+perfect ground, or NEC's real-ground model, and appears as filled patch cells in
+the HTML report. See `examples/nec2c-car-roof-monopole.rkt` for a 1.25 m-band
+monopole mounted on a three-cuboid vehicle body.
 
 `(scale factor solid-form ...)` uniformly scales those forms about the current
 turtle point. The existing `(scale factor)` call still changes the scale of
@@ -1349,9 +1365,13 @@ pattern is the combined field.
 `nec2c-radiation-grid` also retains one diagnostic snapshot at its frequency:
 complex current in amperes and complex linear charge density in coulombs/metre
 for every NEC segment, plus the input/radiated/structure-loss/network-loss
-power budget and efficiency. The portable HTML report can color the wire model
-by current magnitude or phase, animate instantaneous signed current or charge,
-and display the power budget. Its 2-D pattern hover readout includes complex
+power budget and efficiency. For models containing NEC surface patches, it
+also retains the complex Cartesian surface-current-density vector in
+amperes/metre at every solver patch. The portable HTML report can color both
+wires and patches by current magnitude or phase, animate instantaneous current
+or charge, and optionally Gouraud-shade patch currents across shared patch
+corners while retaining the visible mesh. It also displays the power budget.
+Its 2-D pattern hover readout includes complex
 E-theta/E-phi magnitude and phase, relative phase, axial ratio, tilt, and
 handedness. Ordinary frequency and gain sweeps suppress NEC's default current
 tables; a gain-sweep report requests just one diagnostic snapshot at the chosen
@@ -1361,10 +1381,21 @@ Portable NEC2C reports also request three near-field sections at the selected
 frequency by default. The X-, Y-, and Z-normal planes cross at the centroid of
 all feedpoints. Each is a 121 by 121 square centered there, at least two
 wavelengths wide, and automatically enlarged until every wire extremum has a
-full wavelength of margin. The `NEAR FIELD` report workspace switches among
+full wavelength of margin. Surface-body patch corners participate in those
+bounds as well, so large PEC structures cannot be clipped to wire-only limits.
+For a grounded model, vertical planes begin at `z=0` and use their samples only
+in NEC's physical upper half-space instead of wasting half below ground.
+The `NEAR FIELD` report workspace switches among
 those planes and displays complex E, H, or derived time-average power flow with
 envelope, Cartesian-component, instantaneous-phase, linear, and logarithmic
 views.
+
+Samples on or immediately adjacent to wires and PEC patches, inside a closed
+PEC body, on the ground plane, or below ground are singular, source-defined,
+or outside the physical solution half-space rather than useful free-space
+field measurements. The report masks those heat-map cells and excludes them
+from the shared color reference, preventing one such sample from making the
+surrounding field appear artificially black.
 
 Customize or disable this work at report generation time:
 

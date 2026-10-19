@@ -41,12 +41,18 @@
       150 theta phi (- 90 theta) phi
       (- gain 3) (- gain 6) gain 1 0 'linear 1+0i 0+0i))))
 
-(set-nec2c-pattern-grid-diagnostics!
- pattern
- (nec2c-diagnostics
-  150
-  (list (nec2c-segment-sample 150 1 1 0.1+0.02i 1e-12-2e-12i))
-  (nec2c-power-budget 150 0.5 0.45 0.04 0.01 90)))
+(define diagnostics
+  (nec2c-diagnostics
+   150
+   (list (nec2c-segment-sample 150 1 1 0.1+0.02i 1e-12-2e-12i))
+   (nec2c-power-budget 150 0.5 0.45 0.04 0.01 90)))
+(set-nec2c-diagnostics-surface-currents!
+ diagnostics
+ (list
+  (nec2c-surface-current-sample
+   150 1 (point3 0 0 0)
+   (list 0.003+0.001i 0.002-0.0005i 0.0+0.0i))))
+(set-nec2c-pattern-grid-diagnostics! pattern diagnostics)
 
 (define near-fields
   (nec2c-near-field-result
@@ -80,6 +86,8 @@
      (check-false (regexp-match? #rx"Portable <Yagi-shaped> fixture" html))
      (check-regexp-match #rx"pattern_frequency_mhz" html)
      (check-regexp-match #rx"segment_samples" html)
+     (check-regexp-match #rx"surface_current_samples" html)
+     (check-regexp-match #rx"current_density" html)
      (check-regexp-match #rx"charge_density" html)
      (check-regexp-match #rx"power_budget" html)
      (check-regexp-match #rx"e_theta" html)
@@ -87,6 +95,7 @@
      (check-regexp-match #rx"NEAR FIELD" html)
      (check-regexp-match #rx"instantaneous magnitude" html)
      (check-regexp-match #rx"instantaneous current" html)
+     (check-regexp-match #rx"SMOOTH PATCH CURRENTS" html)
      (check-regexp-match #rx"port_samples" html)
      (check-regexp-match #rx"3D VIEW" html)
      (check-regexp-match #rx"2D PATTERN" html)

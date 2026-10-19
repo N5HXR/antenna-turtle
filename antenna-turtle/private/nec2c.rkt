@@ -5,11 +5,32 @@
          racket/math
          racket/path
          racket/port
+         racket/promise
+         racket/runtime-path
          racket/string
          "core.rkt"
          "export-common.rkt"
          "export-nec2c.rkt"
          "network.rkt")
+
+(define-runtime-module-path nec2c-surface-module "nec2c-surface.rkt")
+
+;; Preserve wire-only use on installations without the optional Manifold
+;; library. When surfaces are available, their exterior patch corners must
+;; participate in automatic near-field bounds just like wire extrema do.
+(define near-field-surface-api
+  (delay
+    (with-handlers ([exn:fail? (lambda (_) #f)])
+      (for/hash ([name
+                  (in-list
+                   '(model-nec2c-surface-geometry
+                     nec2c-surface-geometry-patches
+                     nec2c-surface-patch-corners))])
+        (values name (dynamic-require nec2c-surface-module name))))))
+
+(define (near-field-surface-call name . arguments)
+  (define api (force near-field-surface-api))
+  (and api (apply (hash-ref api name) arguments)))
 
 (provide
  nec2c-executable
@@ -24,6 +45,7 @@
  (struct-out nec2c-pattern)
  (struct-out nec2c-pattern-grid)
  (struct-out nec2c-segment-sample)
+ (struct-out nec2c-surface-current-sample)
  (struct-out nec2c-power-budget)
  (struct-out nec2c-diagnostics)
  near-field-section
@@ -44,6 +66,7 @@
  (struct-out parsed-nec2c-pattern)
  (struct-out parsed-nec2c-segment-current)
  (struct-out parsed-nec2c-segment-charge)
+ (struct-out parsed-nec2c-surface-current)
  (struct-out parsed-nec2c-power-budget)
  (struct-out parsed-nec2c-near-field)
  (struct-out parsed-nec2c-report)
@@ -102,10 +125,16 @@
 (struct nec2c-segment-sample
   (frequency-mhz wire-id segment current charge-density)
   #:transparent)
+(struct nec2c-surface-current-sample
+  (frequency-mhz patch center current-density)
+  #:transparent)
 (struct nec2c-power-budget
   (frequency-mhz input-power radiated-power structure-loss network-loss efficiency-percent)
   #:transparent)
-(struct nec2c-diagnostics (frequency-mhz segments power-budget) #:transparent)
+(struct nec2c-diagnostics
+  (frequency-mhz segments power-budget [surface-currents #:auto #:mutable])
+  #:auto-value '()
+  #:transparent)
 
 ;; A plane request is deliberately solver-neutral in its surface syntax.  The
 ;; symbolic x/y/z forms name the plane normal; xy/xz/yz name the axes contained
@@ -161,6 +190,9 @@
   (frequency-mhz segment tag x-wavelengths y-wavelengths z-wavelengths
                  length-wavelengths charge-density)
   #:transparent)
+(struct parsed-nec2c-surface-current
+  (frequency-mhz patch x-wavelengths y-wavelengths z-wavelengths current-density)
+  #:transparent)
 (struct parsed-nec2c-power-budget
   (frequency-mhz input-power radiated-power structure-loss network-loss efficiency-percent)
   #:transparent)
@@ -171,6 +203,7 @@
   (feeds patterns
          [currents #:auto #:mutable]
          [charges #:auto #:mutable]
+         [surface-currents #:auto #:mutable]
          [power-budgets #:auto #:mutable]
          [near-fields #:auto #:mutable])
   #:auto-value '()
@@ -375,6 +408,23 @@
           (complex-from-polar (list-ref tokens 5) (list-ref tokens 6))
           (complex-from-polar (list-ref tokens 7) (list-ref tokens 8))))))
 
+(define (parse-surface-current-row frequency tokens)
+  ;; NEC prints the two local tangent components in magnitude/phase form and
+  ;; then the same current density as three complex Cartesian components.  The
+  ;; Cartesian form is directly useful to the portable 3-D viewer.
+  (and (= (length tokens) 14)
+       (andmap numeric-token? tokens)
+       (let ([values (map string->number tokens)])
+         (parsed-nec2c-surface-current
+          frequency
+          (list-ref values 0)
+          (list-ref values 1)
+          (list-ref values 2)
+          (list-ref values 3)
+          (list (make-rectangular (list-ref values 8) (list-ref values 9))
+                (make-rectangular (list-ref values 10) (list-ref values 11))
+                (make-rectangular (list-ref values 12) (list-ref values 13)))))))
+
 (define power-value-rx
   #px"=[[:space:]]*([^[:space:]]+)[[:space:]]+(?:Watts|Percent)")
 
@@ -403,6 +453,7 @@
   (define patterns '())
   (define currents '())
   (define charges '())
+  (define surface-currents '())
   (define power-budgets '())
   (define near-fields '())
   (define input-power #f)
@@ -428,6 +479,9 @@
        (set! rows-started? #f)]
       [(string-contains? line "CHARGE DENSITIES")
        (set! mode 'charges)
+       (set! rows-started? #f)]
+      [(string-contains? line "SURFACE PATCH CURRENTS")
+       (set! mode 'surface-currents)
        (set! rows-started? #f)]
       [(string-contains? line "POWER BUDGET")
        (set! mode 'power)
@@ -470,6 +524,8 @@
                  (parse-segment-row parsed-nec2c-segment-current frequency tokens)]
                 [(charges)
                  (parse-segment-row parsed-nec2c-segment-charge frequency tokens)]
+                [(surface-currents)
+                 (parse-surface-current-row frequency tokens)]
                 [(near-electric) (parse-near-field-row frequency 'electric tokens)]
                 [(near-magnetic) (parse-near-field-row frequency 'magnetic tokens)]
                 [else #f])))
@@ -481,6 +537,8 @@
             [(patterns) (set! patterns (cons parsed patterns))]
             [(currents) (set! currents (cons parsed currents))]
             [(charges) (set! charges (cons parsed charges))]
+            [(surface-currents)
+             (set! surface-currents (cons parsed surface-currents))]
             [(near-electric near-magnetic)
              (set! near-fields (cons parsed near-fields))])]
          [(and rows-started? (string=? (string-trim line) ""))
@@ -489,6 +547,7 @@
   (define report (parsed-nec2c-report (reverse feeds) (reverse patterns)))
   (set-parsed-nec2c-report-currents! report (reverse currents))
   (set-parsed-nec2c-report-charges! report (reverse charges))
+  (set-parsed-nec2c-report-surface-currents! report (reverse surface-currents))
   (set-parsed-nec2c-report-power-budgets! report (reverse power-budgets))
   (set-parsed-nec2c-report-near-fields! report (reverse near-fields))
   report)
@@ -780,7 +839,22 @@
           (parsed-nec2c-power-budget-structure-loss parsed-budget)
           (parsed-nec2c-power-budget-network-loss parsed-budget)
           (parsed-nec2c-power-budget-efficiency-percent parsed-budget))))
-  (nec2c-diagnostics actual-frequency segments budget))
+  (define wavelength (frequency->wavelength actual-frequency))
+  (define surface-currents
+    (for/list ([sample (in-list (parsed-nec2c-report-surface-currents report))]
+               #:when (approximately=?
+                       actual-frequency
+                       (parsed-nec2c-surface-current-frequency-mhz sample)))
+      (nec2c-surface-current-sample
+       actual-frequency
+       (parsed-nec2c-surface-current-patch sample)
+       (point3 (* wavelength (parsed-nec2c-surface-current-x-wavelengths sample))
+               (* wavelength (parsed-nec2c-surface-current-y-wavelengths sample))
+               (* wavelength (parsed-nec2c-surface-current-z-wavelengths sample)))
+       (parsed-nec2c-surface-current-current-density sample))))
+  (define diagnostics (nec2c-diagnostics actual-frequency segments budget))
+  (set-nec2c-diagnostics-surface-currents! diagnostics surface-currents)
+  diagnostics)
 
 (define (number-field who value description)
   (unless (real? value) (raise-argument-error who "real?" value))
@@ -1106,21 +1180,36 @@
           (/ (apply + (map point3-y feeds)) count)
           (/ (apply + (map point3-z feeds)) count)))
 
-(define (model-axis-bounds accessor)
+(define (model-surface-corners)
+  (define geometry
+    (near-field-surface-call 'model-nec2c-surface-geometry))
+  (if geometry
+      (append*
+       (for/list ([patch
+                   (in-list
+                    (near-field-surface-call
+                     'nec2c-surface-geometry-patches geometry))])
+         (near-field-surface-call 'nec2c-surface-patch-corners patch)))
+      '()))
+
+(define (model-axis-bounds accessor surface-corners)
   (define extrema
-    (for*/list ([edge (in-list (model-edges))]
-                [point (in-list (list (vertex-point (wire-edge-start edge))
-                                      (vertex-point (wire-edge-end edge))))]
-                [sign (in-list '(-1 1))])
-      (+ (accessor point) (* sign (/ (wire-edge-diameter edge) 2)))))
+    (append
+     (for*/list ([edge (in-list (model-edges))]
+                 [point (in-list (list (vertex-point (wire-edge-start edge))
+                                       (vertex-point (wire-edge-end edge))))]
+                 [sign (in-list '(-1 1))])
+       (+ (accessor point) (* sign (/ (wire-edge-diameter edge) 2))))
+     (map accessor surface-corners)))
   (values (apply min extrema) (apply max extrema)))
 
 (define (axis-coordinate point axis)
   (case axis [(x) (point3-x point)] [(y) (point3-y point)] [(z) (point3-z point)]))
 
-(define (axis-model-bounds axis)
+(define (axis-model-bounds axis surface-corners)
   (model-axis-bounds
-   (case axis [(x) point3-x] [(y) point3-y] [(z) point3-z])))
+   (case axis [(x) point3-x] [(y) point3-y] [(z) point3-z])
+   surface-corners))
 
 (define (axis-request-range request axis)
   (case axis
@@ -1132,7 +1221,7 @@
   (define step (/ (- maximum minimum) (sub1 count)))
   (for/list ([index (in-range count)]) (+ minimum (* index step))))
 
-(define (resolve-near-field-section request centroid wavelength)
+(define (resolve-near-field-section request centroid wavelength surface-corners)
   (define plane (requested-near-field-section-plane request))
   (define-values (normal u-axis v-axis)
     (case plane
@@ -1149,13 +1238,20 @@
     (for*/fold ([half-width wavelength])
                ([axis (in-list (list u-axis v-axis))]
                 [bound-index (in-range 2)])
-      (define-values (minimum maximum) (axis-model-bounds axis))
+      (define-values (minimum maximum)
+        (axis-model-bounds axis surface-corners))
       (define bound (if (zero? bound-index) minimum maximum))
       (max half-width (+ (abs (- bound (axis-coordinate centroid axis))) wavelength))))
   (define (resolved-range axis)
     (or (axis-request-range request axis)
-        (list (- (axis-coordinate centroid axis) automatic-half-width)
-              (+ (axis-coordinate centroid axis) automatic-half-width))))
+        (if (and (eq? axis 'z) (model-grounded?))
+            ;; NEC's ground solution is defined only in the upper half-space.
+            ;; Do not spend half the samples on the invalid mirrored region.
+            (let-values ([(minimum maximum)
+                          (axis-model-bounds axis surface-corners)])
+              (list 0 (max (* 2 wavelength) (+ maximum wavelength))))
+            (list (- (axis-coordinate centroid axis) automatic-half-width)
+                  (+ (axis-coordinate centroid axis) automatic-half-width)))))
   (define u-range (resolved-range u-axis))
   (define v-range (resolved-range v-axis))
   (define counts (requested-near-field-section-samples request))
@@ -1236,9 +1332,11 @@
     (raise-argument-error
      'nec2c-near-field-planes "a nonempty list of near-field-section values" requests))
   (define centroid (model-feed-centroid))
+  (define surface-corners (model-surface-corners))
   (define resolved
     (for/list ([request (in-list requests)])
-      (resolve-near-field-section request centroid (frequency->wavelength frequency))))
+      (resolve-near-field-section
+       request centroid (frequency->wavelength frequency) surface-corners)))
   (define requested-samples
     (for/sum ([section (in-list resolved)])
       (* (length (resolved-near-field-section-u-values section))

@@ -22,4 +22,5 @@
     "simulation-dsl.rkt"
     "measurement-network.rkt"
     "measurement.rkt"
+    "nec2c-surface.rkt"
     "nec2c-view.rkt"))

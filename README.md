@@ -593,6 +593,18 @@ conductivity 0.005 S/m); the parenthesized form supplies both values. Grounded
 models connect wire endpoints at Z=0 to the ground plane and reject wires below
 or lying along it.
 
+NEC2C can also export constrained PEC surface bodies. A `with-body` declared
+with `form surface` may union overlapping, body-local axis-aligned cuboids into
+a closed "Minecraft-style" obstacle such as a roof, vehicle, or equipment
+enclosure. Manifold removes hidden faces; Antenna Turtle rebuilds the exterior
+as regular rectangular MFIE patches. The whole body may be rotated and placed
+arbitrarily. A touching connected wire assembly is translated rigidly to the
+nearest patch center, as required by NEC. Patch density is controlled by
+`nec2-patch-length` (default `wavelength / 5`). See
+`examples/nec2c-car-roof-monopole.rkt` for a 5/8-wave antenna on a three-cuboid
+car approximation. Surface bodies are PEC, may coexist with real or perfect
+ground, and require the optional Manifold support.
+
 The measurement API adds those cards to a temporary copy, runs `nec2c`, and
 returns transparent Racket values without printing or opening a window:
 

@@ -44,6 +44,7 @@
  model-height
  real-ground
  maximum-segment-length
+ maximum-nec2c-patch-length
  snap-length
  model-frequency
  mmana-frequency
@@ -206,6 +207,7 @@
        (raise-argument-error 'model-height "nonnegative-real?" value))
      value)))
 (define maximum-segment-length-override (make-parameter #f))
+(define maximum-nec2c-patch-length-override (make-parameter #f))
 (define snap-length-override (make-parameter #f))
 (define model-frequency (make-parameter 141/10))
 ;; Compatibility alias for models written before the frequency became a
@@ -337,6 +339,24 @@
            (maximum-segment-length-override length))
          (maximum-segment-length-override #f))]))
 
+;; NEC2's MFIE surface discretization is deliberately coarser than the wire
+;; current discretization.  The NEC manual recommends at least 25 patches per
+;; square wavelength and no patch larger than 0.04 square wavelengths; a
+;; one-fifth-wavelength maximum patch edge is a conservative default.
+(define maximum-nec2c-patch-length
+  (case-lambda
+    [()
+     (or (maximum-nec2c-patch-length-override)
+         (/ (model-wavelength) 5))]
+    [(length)
+     (if length
+         (begin
+           (ensure-positive-real
+            'maximum-nec2c-patch-length length
+            "maximum NEC2 surface-patch edge length")
+           (maximum-nec2c-patch-length-override length))
+         (maximum-nec2c-patch-length-override #f))]))
+
 ;; Proximity snapping is deliberately much tighter than solver segmentation:
 ;; it repairs floating-point drift without treating deliberate small gaps as
 ;; junctions. An explicit zero disables proximity snapping while exact points
@@ -408,6 +428,7 @@
   (model-ground 'none)
   (model-height 0)
   (maximum-segment-length-override #f)
+  (maximum-nec2c-patch-length-override #f)
   (snap-length-override #f)
   (model-frequency 141/10)
   (void))

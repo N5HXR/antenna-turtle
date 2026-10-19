@@ -107,6 +107,12 @@ function cylinderBetween(start, end, radius, material) {
 
 function addGeometry(data, group) {
   const authoredBounds = new THREE.Box3();
+  const surfacePatches = data.geometry.surface_patches || [];
+  for (const patch of surfacePatches) {
+    for (const corner of patch.corners || []) {
+      authoredBounds.expandByPoint(new THREE.Vector3(...corner));
+    }
+  }
   for (const wire of data.geometry.wires) {
     authoredBounds.expandByPoint(new THREE.Vector3(...wire.start));
     authoredBounds.expandByPoint(new THREE.Vector3(...wire.end));
@@ -114,6 +120,59 @@ function addGeometry(data, group) {
   const presentationRadius = Math.max(
     authoredBounds.getSize(new THREE.Vector3()).length() * 0.0012, 1e-7);
   const segments = [];
+  let surfaceMesh = null;
+  const surfaceVertexRanges = [];
+  const surfaceVertexKeys = [];
+  const surfaceCornerPatches = new Map();
+  if (surfacePatches.length) {
+    const positions = [];
+    const colors = [];
+    const edgePoints = [];
+    const base = new THREE.Color(0xc58d35);
+    for (const [patchIndex, patch] of surfacePatches.entries()) {
+      const corners = (patch.corners || []).map(point => new THREE.Vector3(...point));
+      const cornerKeys = corners.map(point => point.toArray()
+        .map(coordinate => Number(coordinate).toPrecision(12)).join(","));
+      for (const key of cornerKeys) {
+        if (!surfaceCornerPatches.has(key)) surfaceCornerPatches.set(key, []);
+        surfaceCornerPatches.get(key).push(patchIndex);
+      }
+      const firstVertex = positions.length / 3;
+      if (corners.length < 3) {
+        surfaceVertexRanges.push([firstVertex, 0]);
+        continue;
+      }
+      for (let index = 1; index + 1 < corners.length; ++index) {
+        positions.push(...corners[0].toArray(), ...corners[index].toArray(),
+          ...corners[index + 1].toArray());
+        surfaceVertexKeys.push(cornerKeys[0], cornerKeys[index], cornerKeys[index + 1]);
+        for (let vertex = 0; vertex < 3; ++vertex) colors.push(base.r, base.g, base.b);
+      }
+      surfaceVertexRanges.push([firstVertex, positions.length / 3 - firstVertex]);
+      for (let index = 0; index < corners.length; ++index) {
+        edgePoints.push(corners[index], corners[(index + 1) % corners.length]);
+      }
+    }
+    const surfaceGeometry = new THREE.BufferGeometry();
+    surfaceGeometry.setAttribute("position",
+      new THREE.Float32BufferAttribute(positions, 3));
+    surfaceGeometry.setAttribute("color",
+      new THREE.Float32BufferAttribute(colors, 3));
+    surfaceGeometry.computeVertexNormals();
+    surfaceMesh = new THREE.Mesh(surfaceGeometry, new THREE.MeshBasicMaterial({
+      vertexColors: true, transparent: true, opacity: 0.78,
+      side: THREE.DoubleSide, depthWrite: true, toneMapped: false,
+    }));
+    surfaceMesh.renderOrder = 1;
+    surfaceMesh.userData.baseColor = 0xc58d35;
+    group.add(surfaceMesh);
+    const edgeGeometry = new THREE.BufferGeometry().setFromPoints(edgePoints);
+    const edges = new THREE.LineSegments(edgeGeometry, new THREE.LineBasicMaterial({
+      color: 0xffd98a, transparent: true, opacity: 0.34,
+    }));
+    edges.renderOrder = 2;
+    group.add(edges);
+  }
   const feedMaterial = new THREE.MeshStandardMaterial({
     color: 0xff42d0, emissive: 0xff1498, emissiveIntensity: 1.2,
     depthTest: false,
@@ -155,7 +214,221 @@ function addGeometry(data, group) {
     ground.position.z = 0;
     group.add(ground);
   }
-  return segments;
+  return { segments, surfaceMesh, surfacePatches, surfaceVertexRanges,
+    surfaceVertexKeys, surfaceCornerPatches, presentationRadius };
+}
+
+function patchCenter(patch) {
+  if (Array.isArray(patch.center)) return new THREE.Vector3(...patch.center);
+  const corners = patch.corners || [];
+  return corners.reduce((sum, point) => sum.add(new THREE.Vector3(...point)),
+    new THREE.Vector3()).multiplyScalar(corners.length ? 1 / corners.length : 0);
+}
+
+function pointInSurfacePatch(pointArray, patch) {
+  const corners = (patch.corners || []).map(point => new THREE.Vector3(...point));
+  if (corners.length < 3) return false;
+  const point = new THREE.Vector3(...pointArray);
+  const origin = corners[0];
+  const u = corners[1].clone().sub(origin);
+  const v = corners.at(-1).clone().sub(origin);
+  const normal = u.clone().cross(v);
+  const normalLength = normal.length();
+  if (!(normalLength > 0)) return false;
+  normal.multiplyScalar(1 / normalLength);
+  const scale = Math.max(u.length(), v.length(), 1e-9);
+  if (Math.abs(point.clone().sub(origin).dot(normal)) > scale * 0.025 + 1e-6) return false;
+  const relative = point.clone().sub(origin);
+  const uu = u.dot(u), uv = u.dot(v), vv = v.dot(v);
+  const ru = relative.dot(u), rv = relative.dot(v);
+  const denominator = uu * vv - uv * uv;
+  if (!(Math.abs(denominator) > Number.EPSILON)) return false;
+  const a = (ru * vv - rv * uv) / denominator;
+  const b = (rv * uu - ru * uv) / denominator;
+  return a >= -0.025 && a <= 1.025 && b >= -0.025 && b <= 1.025;
+}
+
+function groupSurfaceCurrents(patches, samples) {
+  const groups = patches.map(() => []);
+  const centers = patches.map(patchCenter);
+  for (const sample of samples || []) {
+    const point = sample.center || [];
+    const candidates = [];
+    for (let index = 0; index < patches.length; ++index) {
+      if (pointInSurfacePatch(point, patches[index])) candidates.push(index);
+    }
+    if (!candidates.length) continue;
+    const samplePoint = new THREE.Vector3(...point);
+    const selected = candidates.reduce((best, index) =>
+      samplePoint.distanceToSquared(centers[index]) < samplePoint.distanceToSquared(centers[best])
+        ? index : best, candidates[0]);
+    groups[selected].push(sample);
+  }
+  return groups;
+}
+
+function complexVectorEnvelope(vector) {
+  return Math.sqrt((vector || []).reduce((sum, component) =>
+    sum + (component?.real || 0) ** 2 + (component?.imaginary || 0) ** 2, 0));
+}
+
+function complexVectorInstantaneousMagnitude(vector, phaseDegrees) {
+  const radians = phaseDegrees * Math.PI / 180;
+  return Math.sqrt((vector || []).reduce((sum, component) => {
+    const value = (component?.real || 0) * Math.cos(radians) -
+      (component?.imaginary || 0) * Math.sin(radians);
+    return sum + value * value;
+  }, 0));
+}
+
+function dominantVectorPhase(vector) {
+  const component = (vector || []).reduce((best, candidate) => {
+    const magnitude = Math.hypot(candidate?.real || 0, candidate?.imaginary || 0);
+    const bestMagnitude = Math.hypot(best?.real || 0, best?.imaginary || 0);
+    return magnitude > bestMagnitude ? candidate : best;
+  }, null);
+  return Math.atan2(component?.imaginary || 0, component?.real || 0) * 180 / Math.PI;
+}
+
+function distanceToSegment(point, start, end) {
+  const delta = end.clone().sub(start);
+  const lengthSquared = delta.lengthSq();
+  const fraction = lengthSquared
+    ? Math.max(0, Math.min(1, point.clone().sub(start).dot(delta) / lengthSquared)) : 0;
+  return point.distanceTo(start.clone().addScaledVector(delta, fraction));
+}
+
+function distanceToSurfacePatch(point, patch) {
+  const corners = (patch.corners || []).map(value => new THREE.Vector3(...value));
+  if (corners.length < 3) return Infinity;
+  const origin = corners[0];
+  const u = corners[1].clone().sub(origin);
+  const v = corners.at(-1).clone().sub(origin);
+  const relative = point.clone().sub(origin);
+  const uu = u.dot(u), uv = u.dot(v), vv = v.dot(v);
+  const ru = relative.dot(u), rv = relative.dot(v);
+  const denominator = uu * vv - uv * uv;
+  if (!(Math.abs(denominator) > Number.EPSILON)) return Infinity;
+  const a = Math.max(0, Math.min(1, (ru * vv - rv * uv) / denominator));
+  const b = Math.max(0, Math.min(1, (rv * uu - ru * uv) / denominator));
+  return point.distanceTo(origin.clone().addScaledVector(u, a).addScaledVector(v, b));
+}
+
+function nearFieldPoint(section, uIndex, vIndex) {
+  const coordinates = { x: 0, y: 0, z: 0 };
+  coordinates[section.normal_axis] = Number(section.position);
+  coordinates[section.u_axis] = Number(section.u_values[uIndex]);
+  coordinates[section.v_axis] = Number(section.v_values[vIndex]);
+  return new THREE.Vector3(coordinates.x, coordinates.y, coordinates.z);
+}
+
+const interiorRay = new THREE.Vector3(0.807, 0.361, 0.467).normalize();
+
+function surfaceBodies(patches) {
+  const grouped = new Map();
+  for (const patch of patches) {
+    const name = String(patch.body || "surface");
+    if (!grouped.has(name)) grouped.set(name, []);
+    grouped.get(name).push(patch);
+  }
+  return [...grouped.values()].map(bodyPatches => {
+    const bounds = new THREE.Box3();
+    const triangles = [];
+    for (const patch of bodyPatches) {
+      const corners = patch.corners || [];
+      for (const corner of corners) bounds.expandByPoint(new THREE.Vector3(...corner));
+      for (let index = 1; index + 1 < corners.length; ++index) {
+        const a = corners[0], b = corners[index], c = corners[index + 1];
+        triangles.push({
+          ax: a[0], ay: a[1], az: a[2],
+          e1x: b[0] - a[0], e1y: b[1] - a[1], e1z: b[2] - a[2],
+          e2x: c[0] - a[0], e2y: c[1] - a[1], e2z: c[2] - a[2],
+        });
+      }
+    }
+    return { bounds, triangles };
+  });
+}
+
+function rayTriangleDistance(point, triangle) {
+  const { x: dx, y: dy, z: dz } = interiorRay;
+  const px = dy * triangle.e2z - dz * triangle.e2y;
+  const py = dz * triangle.e2x - dx * triangle.e2z;
+  const pz = dx * triangle.e2y - dy * triangle.e2x;
+  const determinant = triangle.e1x * px + triangle.e1y * py + triangle.e1z * pz;
+  if (Math.abs(determinant) < 1e-12) return null;
+  const inverse = 1 / determinant;
+  const tx = point.x - triangle.ax, ty = point.y - triangle.ay, tz = point.z - triangle.az;
+  const u = (tx * px + ty * py + tz * pz) * inverse;
+  if (u < -1e-10 || u > 1 + 1e-10) return null;
+  const qx = ty * triangle.e1z - tz * triangle.e1y;
+  const qy = tz * triangle.e1x - tx * triangle.e1z;
+  const qz = tx * triangle.e1y - ty * triangle.e1x;
+  const v = (dx * qx + dy * qy + dz * qz) * inverse;
+  if (v < -1e-10 || u + v > 1 + 1e-10) return null;
+  const distance = (triangle.e2x * qx + triangle.e2y * qy + triangle.e2z * qz) * inverse;
+  return distance > 1e-9 ? distance : null;
+}
+
+function pointInsideSurfaceBody(point, body) {
+  if (!body.bounds.containsPoint(point)) return false;
+  const hits = body.triangles.map(triangle => rayTriangleDistance(point, triangle))
+    .filter(distance => distance !== null).sort((a, b) => a - b);
+  let uniqueHits = 0, previous = null;
+  for (const distance of hits) {
+    const tolerance = 1e-8 * Math.max(1, Math.abs(distance));
+    if (previous === null || Math.abs(distance - previous) > tolerance) {
+      ++uniqueHits; previous = distance;
+    }
+  }
+  return uniqueHits % 2 === 1;
+}
+
+function nearFieldExclusionMask(section, geometry) {
+  const du = section.u_values.length > 1
+    ? Math.abs(section.u_values[1] - section.u_values[0]) : 0;
+  const dv = section.v_values.length > 1
+    ? Math.abs(section.v_values[1] - section.v_values[0]) : 0;
+  // Half a heat-map pixel removes source-coincident and immediately adjacent
+  // evaluations without erasing a macroscopic region of valid near field.
+  const guard = Math.max(1e-8, 0.55 * Math.hypot(du, dv));
+  const wires = (geometry.wires || []).map(wire => ({
+    start: new THREE.Vector3(...wire.start), end: new THREE.Vector3(...wire.end),
+    radius: Math.max(0, Number(wire.diameter) / 2),
+  }));
+  // Reject almost every patch with scalar bounds before entering the vector
+  // projection routine. A default car body has hundreds of patches and three
+  // 121x121 field planes, so constructing vectors for every point/patch pair
+  // would make opening an otherwise static report unnecessarily expensive.
+  const patches = (geometry.surface_patches || []).map(patch => {
+    const corners = patch.corners || [];
+    return {
+      patch,
+      minimum: [0, 1, 2].map(axis =>
+        Math.min(...corners.map(corner => Number(corner[axis]))) - guard),
+      maximum: [0, 1, 2].map(axis =>
+        Math.max(...corners.map(corner => Number(corner[axis]))) + guard),
+    };
+  });
+  const bodies = surfaceBodies(geometry.surface_patches || []);
+  const mask = [];
+  for (let v = 0; v < section.v_values.length; ++v) {
+    for (let u = 0; u < section.u_values.length; ++u) {
+      const point = nearFieldPoint(section, u, v);
+      const onWire = wires.some(wire =>
+        distanceToSegment(point, wire.start, wire.end) <= wire.radius + guard);
+      const onPatch = !onWire && patches.some(({ patch, minimum, maximum }) =>
+        point.x >= minimum[0] && point.x <= maximum[0] &&
+        point.y >= minimum[1] && point.y <= maximum[1] &&
+        point.z >= minimum[2] && point.z <= maximum[2] &&
+        distanceToSurfacePatch(point, patch) <= guard);
+      const insidePec = !onWire && !onPatch && bodies.some(body =>
+        pointInsideSurfaceBody(point, body));
+      const inGround = Boolean(geometry.grounded) && point.z <= guard;
+      mask.push(onWire || onPatch || insidePec || inGround);
+    }
+  }
+  return mask;
 }
 
 function fitCamera(camera, controls, object, direction = new THREE.Vector3(1.6, 0, 1.15)) {
@@ -243,10 +516,14 @@ export async function startNec2cReport(data) {
   const patternGroup = new THREE.Group();
   const axisGroup = new THREE.Group();
   scene.add(geometryGroup, patternGroup, axisGroup);
-  const geometrySegments = addGeometry(data, geometryGroup);
+  const geometryDisplay = addGeometry(data, geometryGroup);
+  const geometrySegments = geometryDisplay.segments;
   const diagnostics = data.diagnostics && data.diagnostics !== "null" ? data.diagnostics : null;
   const segmentSamples = new Map((diagnostics?.segment_samples || []).map(sample =>
     [`${sample.wire_id}:${sample.segment}`, sample]));
+  const surfaceCurrentGroups = groupSurfaceCurrents(
+    geometryDisplay.surfacePatches, diagnostics?.surface_current_samples || []);
+  const hasSurfaceCurrents = surfaceCurrentGroups.some(samples => samples.length);
   const geometryBounds = new THREE.Box3().setFromObject(geometryGroup);
   const patternRadius = Math.max(geometryBounds.getSize(new THREE.Vector3()).length() * 0.68, 1e-4);
   const patternOrigin = feedCentroid(data);
@@ -278,7 +555,9 @@ export async function startNec2cReport(data) {
     <option value="current-magnitude">current magnitude</option><option value="current-phase">current phase</option>
     <option value="current-instantaneous">instantaneous current</option>
     <option value="charge-magnitude">charge magnitude</option>
-    <option value="charge-instantaneous">instantaneous charge</option></select></div>
+    <option value="charge-instantaneous">instantaneous charge</option></select>
+    <label id="surface-smoothing-control"><input id="surface-smoothing" type="checkbox">
+    SMOOTH PATCH CURRENTS</label></div>
     <div id="segment-phase-row" class="row" hidden><button id="segment-play" type="button">PAUSE</button>
     <label for="segment-phase">PHASE <span id="segment-phase-value">0°</span></label>
     <input id="segment-phase" type="range" min="0" max="359" step="1" value="0"></div>
@@ -307,11 +586,13 @@ export async function startNec2cReport(data) {
   const colorBands = controlsPanel.querySelector("#color-bands");
   const segmentControls = controlsPanel.querySelector("#segment-controls");
   const segmentDisplay = controlsPanel.querySelector("#segment-display");
+  const surfaceSmoothing = controlsPanel.querySelector("#surface-smoothing");
+  controlsPanel.querySelector("#surface-smoothing-control").hidden = !hasSurfaceCurrents;
   const segmentPhaseRow = controlsPanel.querySelector("#segment-phase-row");
   const segmentPhaseSlider = controlsPanel.querySelector("#segment-phase");
   const segmentLegend = controlsPanel.querySelector("#segment-legend");
   const powerBudget = diagnostics?.power_budget;
-  segmentControls.hidden = !segmentSamples.size;
+  segmentControls.hidden = !segmentSamples.size && !hasSurfaceCurrents;
   const budgetElement = controlsPanel.querySelector("#power-budget");
   budgetElement.hidden = !powerBudget;
   if (powerBudget) {
@@ -329,6 +610,8 @@ export async function startNec2cReport(data) {
     .map(sample => sample.current?.magnitude || 0));
   const chargeMaximum = Math.max(Number.EPSILON, ...[...segmentSamples.values()]
     .map(sample => sample.charge_density?.magnitude || 0));
+  const surfaceCurrentMaximum = Math.max(Number.EPSILON, ...surfaceCurrentGroups.flatMap(samples =>
+    samples.map(sample => complexVectorEnvelope(sample.current_density))));
 
   function signedColor(value, maximum) {
     const amount = Math.min(1, Math.abs(value) / Math.max(maximum, Number.EPSILON));
@@ -360,7 +643,8 @@ export async function startNec2cReport(data) {
     const labels = segmentLegend.querySelectorAll("span");
     if (mode === "current-magnitude") {
       labels[0].textContent = "−30 dB"; labels[1].textContent = "current";
-      labels[2].textContent = `${currentMaximum.toPrecision(4)} A`;
+      labels[2].textContent = `${currentMaximum.toPrecision(4)} A` +
+        (hasSurfaceCurrents ? ` · ${surfaceCurrentMaximum.toPrecision(4)} A/m surface` : "");
       segmentLegend.querySelector(".segment-legend-bar").style.background =
         "linear-gradient(90deg,#440154,#21918c,#fde725)";
     } else if (mode === "charge-magnitude") {
@@ -376,7 +660,10 @@ export async function startNec2cReport(data) {
       const maximum = mode.startsWith("current") ? currentMaximum : chargeMaximum;
       const units = mode.startsWith("current") ? "A" : "C/m";
       labels[0].textContent = `−${maximum.toPrecision(3)} ${units}`;
-      labels[1].textContent = "instantaneous"; labels[2].textContent = `+${maximum.toPrecision(3)} ${units}`;
+      labels[1].textContent = "instantaneous";
+      labels[2].textContent = `+${maximum.toPrecision(3)} ${units}` +
+        (mode.startsWith("current") && hasSurfaceCurrents
+          ? ` · surface 0…${surfaceCurrentMaximum.toPrecision(3)} A/m` : "");
       segmentLegend.querySelector(".segment-legend-bar").style.background =
         "linear-gradient(90deg,#1743ff,#f7fbff,#ff315f)";
     }
@@ -392,6 +679,43 @@ export async function startNec2cReport(data) {
       else if (sample && mode === "charge-instantaneous")
         color = signedColor(instantaneous(sample.charge_density), chargeMaximum);
       mesh.material.color.copy(color);
+    }
+    const colorAttribute = geometryDisplay.surfaceMesh?.geometry.getAttribute("color");
+    if (colorAttribute) {
+      const base = new THREE.Color(geometryDisplay.surfaceMesh.userData.baseColor);
+      const patchColors = surfaceCurrentGroups.map(samples => {
+        let color = base.clone();
+        if (samples.length && mode === "current-magnitude") {
+          const value = samples.reduce((sum, sample) =>
+            sum + complexVectorEnvelope(sample.current_density), 0) / samples.length;
+          color = magnitudeColor({ magnitude: value }, surfaceCurrentMaximum);
+        } else if (samples.length && mode === "current-phase") {
+          const strongest = samples.reduce((best, sample) =>
+            complexVectorEnvelope(sample.current_density) > complexVectorEnvelope(best.current_density)
+              ? sample : best, samples[0]);
+          color = phaseColor({ phase_degrees: dominantVectorPhase(strongest.current_density) });
+        } else if (samples.length && mode === "current-instantaneous") {
+          const value = samples.reduce((sum, sample) => sum +
+            complexVectorInstantaneousMagnitude(sample.current_density, segmentPhaseDegrees), 0) /
+            samples.length;
+          color = magnitudeColor({ magnitude: value }, surfaceCurrentMaximum);
+        }
+        return color;
+      });
+      for (let patchIndex = 0; patchIndex < surfaceCurrentGroups.length; ++patchIndex) {
+        const [start, count] = geometryDisplay.surfaceVertexRanges[patchIndex] || [0, 0];
+        for (let vertex = start; vertex < start + count; ++vertex) {
+          let color = patchColors[patchIndex];
+          if (surfaceSmoothing.checked && mode.startsWith("current")) {
+            const neighbors = geometryDisplay.surfaceCornerPatches.get(
+              geometryDisplay.surfaceVertexKeys[vertex]) || [patchIndex];
+            color = neighbors.reduce((sum, neighbor) => sum.add(patchColors[neighbor]),
+              new THREE.Color(0, 0, 0)).multiplyScalar(1 / neighbors.length);
+          }
+          colorAttribute.setXYZ(vertex, color.r, color.g, color.b);
+        }
+      }
+      colorAttribute.needsUpdate = true;
     }
   }
 
@@ -508,6 +832,7 @@ export async function startNec2cReport(data) {
     }
   });
   segmentDisplay.addEventListener("change", updateSegmentDisplay);
+  surfaceSmoothing.addEventListener("change", updateSegmentDisplay);
   segmentPhaseSlider.addEventListener("input", () => {
     segmentPhaseDegrees = Number(segmentPhaseSlider.value);
     segmentPlaying = false;
@@ -588,6 +913,8 @@ export async function startNec2cReport(data) {
   polarWorkspace.querySelector("#cut-reference").addEventListener("change", drawPolar);
 
   const nearFieldSections = Array.isArray(data.near_fields) ? data.near_fields : [];
+  const nearFieldMasks = nearFieldSections.map(section =>
+    nearFieldExclusionMask(section, data.geometry || {}));
   const fieldWorkspace = document.createElement("section");
   fieldWorkspace.id = "near-field-workspace";
   fieldWorkspace.hidden = true;
@@ -656,8 +983,10 @@ export async function startNec2cReport(data) {
 
   function fieldReferenceMaximum(quantity, mode) {
     const referenceMode = mode === "instantaneous" ? "envelope" : mode;
-    return Math.max(Number.EPSILON, ...nearFieldSections.flatMap(section =>
-      section.samples.map(sample => fieldValue(sample, quantity, referenceMode, 0))));
+    return Math.max(Number.EPSILON, ...nearFieldSections.flatMap((section, sectionIndex) =>
+      section.samples.flatMap((sample, sampleIndex) =>
+        nearFieldMasks[sectionIndex]?.[sampleIndex]
+          ? [] : [fieldValue(sample, quantity, referenceMode, 0)])));
   }
 
   function fieldHover(sample, quantity, value, relativeDb) {
@@ -685,11 +1014,18 @@ export async function startNec2cReport(data) {
     const maximum = fieldReferenceMaximum(quantity, mode);
     const dbFactor = quantity === "power" ? 10 : 20;
     const width = section.u_values.length;
+    const exclusionMask = nearFieldMasks[Number(fieldPlaneSelect.value) || 0] || [];
     const rows = [], hover = [];
     for (let v = 0; v < section.v_values.length; ++v) {
       const row = [], hoverRow = [];
       for (let u = 0; u < width; ++u) {
         const sample = section.samples[u + v * width];
+        const excluded = exclusionMask[u + v * width];
+        if (excluded) {
+          row.push(null);
+          hoverRow.push("PEC/source exclusion zone");
+          continue;
+        }
         const value = fieldValue(sample, quantity, mode, fieldPhaseDegrees);
         const relativeDb = dbFactor * Math.log10(Math.max(value, maximum * 1e-12) / maximum);
         row.push(logarithmic ? Math.max(floor, relativeDb) : value);
@@ -705,7 +1041,7 @@ export async function startNec2cReport(data) {
       customdata: hover, hovertemplate: `%{customdata}<extra></extra>`,
       colorscale, zmin: logarithmic ? floor : 0, zmax: logarithmic ? 0 : maximum,
       colorbar: { title: logarithmic ? "relative dB" : units, tickfont: { color: "#9ceeff" } },
-      zsmooth: "best",
+      zsmooth: "best", connectgaps: false,
     }], {
       title: { text: `${quantity === "power" ? "Average power flow" : quantity.toUpperCase() + " field"} · ` +
         `${String(section.normal_axis).toUpperCase()}-normal at ${Number(section.position).toPrecision(5)} m`,

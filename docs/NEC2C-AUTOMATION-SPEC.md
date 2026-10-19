@@ -219,9 +219,11 @@ remain free to derive other matching metrics without rerunning NEC2C.
 With no `#:planes` argument, near-field sampling produces X-, Y-, and Z-normal
 planes through the centroid of all feedpoints. Their automatic square bounds
 are at least two wavelengths across and extend at least one wavelength beyond
-all in-plane geometry extrema. Explicit requests can override the plane
-position, either in-plane range, resolution, and E/H quantities. All requested
-sections are emitted as `NE`/`NH` cards in one selected-frequency solver pass.
+all in-plane wire and surface-patch extrema. For grounded models, automatic
+vertical ranges start at `z=0` and remain in NEC's physical upper half-space.
+Explicit requests can override the plane position, either in-plane range,
+resolution, and E/H quantities. All requested sections are emitted as `NE`/`NH`
+cards in one selected-frequency solver pass.
 
 ### 6.1 Possible batch API
 
@@ -295,13 +297,18 @@ match, serialize, filter, and optimize against results.
   (frequency-mhz wire-id segment current charge-density)
   #:transparent)
 
+(struct nec2c-surface-current-sample
+  (frequency-mhz patch center current-density)
+  #:transparent)
+
 (struct nec2c-power-budget
   (frequency-mhz input-power radiated-power structure-loss network-loss
                  efficiency-percent)
   #:transparent)
 
 (struct nec2c-diagnostics
-  (frequency-mhz segments power-budget)
+  (frequency-mhz segments power-budget [surface-currents #:auto #:mutable])
+  #:auto-value '()
   #:transparent)
 
 (struct nec2c-near-field-sample
@@ -323,8 +330,9 @@ numbers. NEC2C’s `-999.99` unavailable-gain sentinel is parsed as `#f`, not
 mistaken for a physical gain.
 
 The diagnostics attached to a radiation grid contain the per-segment complex
-current and charge density plus NEC2C's power budget. Network-only sweeps ask
-NEC2C to suppress those large tables; `nec2c-segment-diagnostics` requests them
+current and charge density, Cartesian complex surface-current-density vectors
+for MFIE patches, and NEC2C's power budget. Network-only sweeps ask NEC2C to
+suppress those large tables; `nec2c-segment-diagnostics` requests them
 explicitly for one frequency.
 
 Convenience accessors may include:

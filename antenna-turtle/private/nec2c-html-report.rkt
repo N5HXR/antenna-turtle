@@ -6,6 +6,7 @@
          racket/list
          racket/math
          racket/path
+         racket/promise
          racket/runtime-path
          racket/string
          "core.rkt"
@@ -15,6 +16,30 @@
 
 (define-runtime-path viewer-bundle "report-assets/viewer.bundle.js")
 (define-runtime-path openems-html-report-path "html-report.rkt")
+(define-runtime-module-path nec2c-surface-module "nec2c-surface.rkt")
+
+(define surface-api
+  (delay
+    (with-handlers ([exn:fail? (lambda (_) #f)])
+      (for/hash ([name
+                  (in-list
+                   '(model-nec2c-surface-geometry
+                     nec2c-surface-geometry-patches
+                     nec2c-surface-geometry-attachments
+                     nec2c-surface-patch-body-name
+                     nec2c-surface-patch-center
+                     nec2c-surface-patch-normal
+                     nec2c-surface-patch-area
+                     nec2c-surface-patch-corners
+                     nec2c-surface-attachment-wire-id
+                     nec2c-surface-attachment-end
+                     nec2c-surface-attachment-displacement
+                     nec2c-adjusted-edge-point))])
+        (values name (dynamic-require nec2c-surface-module name))))))
+
+(define (surface-call name . arguments)
+  (define api (force surface-api))
+  (and api (apply (hash-ref api name) arguments)))
 
 (define (write-json-script value destination)
   ;; Stream JSON directly into the HTML file.  Large NEC reports can contain
@@ -61,6 +86,11 @@
         (exact->inexact (point3-y point))
         (exact->inexact (point3-z point))))
 
+(define (solver-point-report point)
+  (list (exact->inexact (point3-x point))
+        (exact->inexact (point3-y point))
+        (exact->inexact (+ (point3-z point) (model-height)))))
+
 (define (feed-report edge)
   (and (wire-edge-feed? edge)
        (hash 'name (format "~a" (wire-edge-feed-name edge))
@@ -72,17 +102,62 @@
              'phase_degrees (wire-edge-feed-phase edge))))
 
 (define (geometry-report)
+  (define surface-candidate
+    (surface-call 'model-nec2c-surface-geometry))
+  (define surfaces
+    (and surface-candidate
+         (pair?
+          (surface-call
+           'nec2c-surface-geometry-patches surface-candidate))
+         surface-candidate))
+  (define (edge-point edge end)
+    (if surfaces
+        (surface-call 'nec2c-adjusted-edge-point surfaces edge end)
+        (vertex-point
+         ((if (eq? end 'start) wire-edge-start wire-edge-end) edge))))
   (hash
    'grounded (model-grounded?)
    'wires
    (for/list ([edge (in-list (model-edges))])
      (hash 'id (wire-edge-id edge)
-           'start (point-report (vertex-point (wire-edge-start edge)))
-           'end (point-report (vertex-point (wire-edge-end edge)))
+           'start (solver-point-report (edge-point edge 'start))
+           'end (solver-point-report (edge-point edge 'end))
            'diameter (exact->inexact (wire-edge-diameter edge))
            'segment_count
            (edge-segment-count edge (maximum-segment-length))
-           'feed (or (feed-report edge) 'null)))))
+           'feed (or (feed-report edge) 'null)))
+   'surface_patches
+   (if surfaces
+       (for/list ([patch
+                   (in-list
+                    (surface-call 'nec2c-surface-geometry-patches surfaces))])
+         (hash
+          'body (format "~a" (surface-call 'nec2c-surface-patch-body-name patch))
+          'center
+          (solver-point-report
+           (surface-call 'nec2c-surface-patch-center patch))
+          'normal
+          (point-report (surface-call 'nec2c-surface-patch-normal patch))
+          'area (exact->inexact (surface-call 'nec2c-surface-patch-area patch))
+          'corners
+          (for/list ([corner
+                      (in-list
+                       (surface-call 'nec2c-surface-patch-corners patch))])
+            (solver-point-report corner))))
+       '())
+   'surface_attachments
+   (if surfaces
+       (for/list ([attachment
+                   (in-list
+                    (surface-call
+                     'nec2c-surface-geometry-attachments surfaces))])
+         (hash
+          'wire_id (surface-call 'nec2c-surface-attachment-wire-id attachment)
+          'end (format "~a" (surface-call 'nec2c-surface-attachment-end attachment))
+          'displacement
+          (exact->inexact
+           (surface-call 'nec2c-surface-attachment-displacement attachment))))
+       '())))
 
 (define (feedpoint-sample-report frequency sample reflection return-loss vswr)
   (define feedpoint
@@ -195,6 +270,17 @@
                'charge_density
                (let ([charge (nec2c-segment-sample-charge-density sample)])
                  (if charge (complex-report charge) 'null))))
+       'surface_current_samples
+       (for/list ([sample
+                   (in-list (nec2c-diagnostics-surface-currents diagnostics))])
+         (hash 'patch (nec2c-surface-current-sample-patch sample)
+               'center (point-report
+                        (nec2c-surface-current-sample-center sample))
+               'current_density
+               (for/list ([component
+                           (in-list
+                            (nec2c-surface-current-sample-current-density sample))])
+                 (complex-report component))))
        'power_budget
        (let ([budget (nec2c-diagnostics-power-budget diagnostics)])
          (if (not budget)

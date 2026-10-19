@@ -48,6 +48,7 @@
                    "private/simulation-profile.rkt"
                    "private/simulation-dsl.rkt"
                    "private/field-capture.rkt"
+                   "private/nec2c-surface.rkt"
                    "private/html-report.rkt"
                    "private/solid-view.rkt"
                    "private/openems.rkt"
@@ -62,6 +63,7 @@
            (all-from-out "private/simulation-profile.rkt")
            (all-from-out "private/simulation-dsl.rkt")
            (all-from-out "private/field-capture.rkt")
+           (all-from-out "private/nec2c-surface.rkt")
            (all-from-out "private/html-report.rkt")
            (all-from-out "private/openems.rkt")
            (all-from-out "private/openems-power.rkt")
@@ -449,17 +451,17 @@
          'model stx
          (string-append
           "expected setting/value pairs using title, frequency, max-length, "
-          "snaplen, wire-diameter, impedance, ground, or height"))))
+          "snaplen, nec2-patch-length, wire-diameter, impedance, ground, or height"))))
   (define seen (make-hasheq))
   (define settings (make-hasheq))
   (for ([pair (in-list pairs)])
     (define key (syntax-e (car pair)))
-    (unless (memq key '(title frequency max-length snaplen wire-diameter
+    (unless (memq key '(title frequency max-length snaplen nec2-patch-length wire-diameter
                               impedance ground height))
       (raise-syntax-error
        'model
        (string-append
-        "expected title, frequency, max-length, snaplen, wire-diameter, "
+        "expected title, frequency, max-length, snaplen, nec2-patch-length, wire-diameter, "
         "impedance, ground, or height")
        stx
        (car pair)))
@@ -474,7 +476,7 @@
   (define forms
     (filter
      values
-     (for/list ([key '(title frequency ground height max-length snaplen
+     (for/list ([key '(title frequency ground height max-length snaplen nec2-patch-length
                             wire-diameter impedance)])
        (define value (hash-ref settings key #f))
        (and value
@@ -485,6 +487,8 @@
               [(height)        #`(model-height #,value)]
               [(max-length)    #`(maximum-segment-length #,value)]
               [(snaplen)       #`(snap-length #,value)]
+              [(nec2-patch-length)
+               #`(maximum-nec2c-patch-length #,value)]
               [(wire-diameter) #`(wire-diameter #,value)]
               [(impedance)     #`(model-impedance #,value)])))))
   #`(begin #,@forms))

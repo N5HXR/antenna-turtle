@@ -150,21 +150,23 @@ is equivalent to `(...)`.
 
 Every setting has a useful default, so a module may begin tracing wire without
 any model declaration. The defaults are title `"Turtle Antenna"`, frequency
-`14.1` MHz, maximum segment length of one-twentieth wavelength, snap length of
-one-millionth wavelength, wire diameter of one millimetre, reference impedance
-of 50 ohms, no ground, and zero height offset.
+`14.1` MHz, maximum segment length of one-twentieth wavelength, maximum NEC2
+surface-patch edge of one-fifth wavelength, snap length of one-millionth
+wavelength, wire diameter of one millimetre, reference impedance of 50 ohms,
+no ground, and zero height offset.
 
 ### `(model [setting value] ...)`
 
 Sets any desired subset using contextual `title`, `frequency`, `max-length`,
-`snaplen`, `wire-diameter`, `impedance`, `ground`, and `height` pairs. Each
-setting may appear at most once:
+`snaplen`, `nec2-patch-length`, `wire-diameter`, `impedance`, `ground`, and
+`height` pairs. Each setting may appear at most once:
 
 ```racket
 (model title "Three-element Yagi"
        frequency 14.1
        max-length {wavelength / 40}
        snaplen {wavelength / 1000000}
+       nec2-patch-length {wavelength / 5}
        wire-diameter {2 * millimeter}
        impedance 50
        ground real
@@ -172,8 +174,8 @@ setting may appear at most once:
 ```
 
 Pair order is not significant. Frequency is applied before derived lengths, so
-`max-length`, `snaplen`, and `height` expressions may safely use wavelength
-values in any source order.
+`max-length`, `snaplen`, `nec2-patch-length`, and `height` expressions may
+safely use wavelength values in any source order.
 
 The individual setting operations below remain available for calculated or
 dynamically scoped programs.
@@ -245,6 +247,17 @@ space. This is useful when choosing an elevation range:
 - An explicit value must be a positive real before export.
 - The count for an edge is `ceiling(edge-length / maximum-segment-length)`.
 - A center-fed edge's count is increased when necessary to make it odd.
+
+### `(maximum-nec2c-patch-length [length])`
+
+- Default behavior: one-fifth of the wavelength at `model-frequency`.
+- Controls the longest edge of rectangular cells reconstructed for NEC2
+  `form surface` bodies; units are physical metres. Axis alignment is evaluated
+  in the body's local frame, while any enclosing scale is accounted for.
+- Passing `#f` restores the wavelength-derived default.
+- Smaller values improve representation of surface current and attachment
+  locations, but each patch contributes two unknowns to NEC2's dense matrix.
+- This setting has no effect on wire segmentation or OpenEMS geometry.
 
 ### `(snap-length [length])`
 
@@ -1177,14 +1190,33 @@ would otherwise have fewer than two cells. Build hollow PEC enclosures from
 separate wall bodies when relying on this rule: a completed Boolean
 `difference` exposes the enclosure's outer bounds, not each wall thickness.
 
-`form surface` is an opt-in PEC-only representation. The exporter converts
-all surviving triangles of the final Manifold boundary—including inner faces
-created by `difference`—to native CSXCAD metal polygons and adds their planes
-as critical mesh coordinates. Every facet must be axis-aligned after the
-model-to-solver transform. Omitting `material` forces PEC and prints a notice;
-explicit `material pec` is allowed, and an explicit non-PEC material is an
-error. The manifest records `form`, `material_source`, and
-`representation "pec-boundary-surfaces"`.
+`form surface` is an opt-in PEC-only representation shared by OpenEMS and
+NEC2C. For OpenEMS, the exporter converts every surviving triangle of the
+final Manifold boundary—including inner faces created by `difference`—to
+native CSXCAD metal polygons and adds their planes as critical mesh
+coordinates. Every facet must be axis-aligned after the model-to-solver
+transform. Omitting `material` forces PEC and prints a notice; explicit
+`material pec` is allowed, and an explicit non-PEC material is an error. The
+manifest records `form`, `material_source`, and representation
+`"pec-boundary-surfaces"`.
+
+For NEC2C, Revision 1 supports a deliberately constrained solid-body workflow:
+build a closed Manifold union from overlapping, translated cuboids. Internal
+faces disappear in the Boolean union. The remaining exterior is inspected in
+the coordinate frame captured on entry to `with-body`, reconstructed as a
+predictable rectangular lattice, and emitted as outward-normal MFIE `SP`
+patches. The completed body may then be rotated or translated freely; rotations
+of individual cuboids and other oblique local facets are rejected. Patch edge
+length is bounded by `maximum-nec2c-patch-length`.
+
+A wire endpoint may attach where it lies on an exterior face and is not
+coplanar with that face. NEC requires the junction at a patch center, so export
+snaps to the nearest reconstructed patch center by rigidly translating the
+entire connected wire component. Its length, angles, and internal feed position
+are preserved. Multiple contacts that demand incompatible translations are an
+error. Perfect or real NEC ground may be used normally; the body itself remains
+PEC, and no patch corner may be below ground. The portable NEC report includes
+the surface lattice and the translated wire geometry.
 
 ### `(mesh-point)` and `(mesh-plane xy|xz|yz)`
 
@@ -2418,7 +2450,10 @@ Runs one frequency without a radiation-pattern request and returns a
 `nec2c-diagnostics` snapshot containing complex current in amperes and complex
 linear charge density in coulombs/meter for every wire segment, together with
 input power, radiated power, structure loss, network loss, and efficiency.
-This is segment current, not volumetric current density. Ordinary impedance
+When the model contains NEC surface patches, the snapshot also contains each
+solver patch's complex Cartesian surface-current-density vector in
+amperes/meter. This is segment current and surface current density, not
+volumetric current density. Ordinary impedance
 and gain sweeps suppress NEC's default segment-current printing to keep their
 solver reports compact.
 
@@ -2449,9 +2484,15 @@ equivalent contained-axis names are `'yz`, `'xz`, and `'xy`. A missing
 Automatic in-plane bounds form a square centered on that centroid. It is at
 least two wavelengths wide and expands as necessary to leave one full
 wavelength between every model extremum and the square boundary. Wire radii
-are included in the extrema. An axis-specific range overrides that automatic
-axis. `#:samples` accepts one count for both axes or `(list u-count v-count)`;
+and all NEC surface-patch corners are included in the extrema. An axis-specific
+range overrides that automatic axis. `#:samples` accepts one count for both
+axes or `(list u-count v-count)`;
 each count must be at least two.
+
+For grounded models, an automatic Z range starts at zero and extends to at
+least two wavelengths or one wavelength beyond the highest model extremum,
+whichever is greater. NEC's below-ground half-space is therefore not sampled.
+An explicit `#:z-range` still takes precedence.
 
 With no `#:planes`, the runner requests X-, Y-, and Z-normal planes, each at
 121 by 121 samples with both E and H. It returns a
@@ -2492,6 +2533,19 @@ The near-field workspace displays E, H, and time-average Poynting magnitude;
 total envelope, instantaneous magnitude, and Cartesian components; phase
 animation; and linear or relative-dB scaling. Hover reports the complete
 complex vector. All planes of one quantity share a stable reference maximum.
+Cells on or immediately adjacent to wire and PEC patch geometry, inside a
+closed PEC body, or on/below a configured ground plane are masked and do not
+participate in that reference maximum, because those NEC values are singular,
+inside a conductor, or outside the physical solution half-space.
+
+The 3-D conductor controls apply to both wire segments and surface patches.
+Surface-patch magnitude and phase use NEC's Cartesian current-density phasors
+in amperes/meter; if NEC subdivides a connected feed patch, its child samples
+are aggregated back onto the authored display patch. Instantaneous surface
+color represents the magnitude of the instantaneous current-density vector,
+while signed instantaneous wire color follows the current along the wire. The
+optional `SMOOTH PATCH CURRENTS` control averages colors at shared patch
+corners for Gouraud interpolation; the explicit patch lattice remains visible.
 
 When `#:near-fields` is omitted, the writer makes one selected-frequency NEC
 run for the default X-, Y-, and Z-normal sections described above. Pass `#f`

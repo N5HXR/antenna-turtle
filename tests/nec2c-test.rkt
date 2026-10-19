@@ -40,6 +40,15 @@
    No:  No:       X         Y         Z      LENGTH     REAL      IMAGINARY    MAGN        PHASE
      1    1   -0.2500    0.0000    0.0000   0.01000  3.0000E-12 -4.0000E-12  5.0000E-12  -53.130
 
+                               --------- SURFACE PATCH CURRENTS ---------
+                                                 DISTANCE IN WAVELENGTHS
+                                                 CURRENT IN AMPS/METER
+
+                                 --------- SURFACE COMPONENTS --------    ---------------- RECTANGULAR COMPONENTS ----------------
+  PCH   --- PATCH CENTER ---     TANGENT VECTOR 1     TANGENT VECTOR 2    ------- X ------    ------- Y ------    ------- Z ------
+  No:    X       Y       Z       MAG.       PHASE     MAG.       PHASE    REAL   IMAGINARY    REAL   IMAGINARY    REAL   IMAGINARY
+    7   0.100   -0.200   0.300  1.1994E-03    72.83  5.6850E-04    63.63  3.54E-04  1.15E-03  2.53E-04  5.09E-04  0.00E+00  0.00E+00
+
                                ---------- POWER BUDGET ---------
                                INPUT POWER   =  5.0000E-03 Watts
                                RADIATED POWER=  4.0000E-03 Watts
@@ -138,6 +147,12 @@ REPORT
   (check-equal? (parsed-nec2c-segment-charge-charge-density
                  (first (parsed-nec2c-report-charges report)))
                 3e-12-4e-12i)
+  (check-equal? (length (parsed-nec2c-report-surface-currents report)) 1)
+  (define surface-current
+    (first (parsed-nec2c-report-surface-currents report)))
+  (check-equal? (parsed-nec2c-surface-current-patch surface-current) 7)
+  (check-equal? (parsed-nec2c-surface-current-current-density surface-current)
+                (list 3.54e-4+1.15e-3i 2.53e-4+5.09e-4i 0.0+0.0i))
   (define budget (first (parsed-nec2c-report-power-budgets report)))
   (check-equal? (parsed-nec2c-power-budget-radiated-power budget) 0.004)
   (check-equal? (parsed-nec2c-power-budget-efficiency-percent budget) 80.0)
