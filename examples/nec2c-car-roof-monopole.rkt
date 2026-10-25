@@ -37,7 +37,8 @@
   (with-wire
     (move forward (* 1.24 5/8 wavelength) feed start)))
 
-(module+ main
+(module* main #f
+ (#%plain-module-begin
   ;; Surface patches add two dense-matrix unknowns apiece, so this intentionally
   ;; uses a modest first-look sweep and pattern grid.
   (define sweep (nec2c-vswr-sweep 200 240 #:steps 41))
@@ -47,4 +48,4 @@
   (show-smith-chart sweep)
   (show-solid-model)
   (write-html-report
-   sweep "nec2c-car-roof-monopole.html" #:pattern pattern))
+   sweep "nec2c-car-roof-monopole.html" #:pattern pattern)))
