@@ -16,7 +16,9 @@
 
 (define-runtime-path viewer-bundle "report-assets/viewer.bundle.js")
 (define-runtime-path openems-html-report-path "html-report.rkt")
-(define-runtime-module-path nec2c-surface-module "nec2c-surface.rkt")
+;; Do not make the optional Manifold-backed surface reporter a compilation
+;; dependency of the wire-only report writer.
+(define-runtime-path nec2c-surface-module "nec2c-surface.rkt")
 
 (define surface-api
   (delay

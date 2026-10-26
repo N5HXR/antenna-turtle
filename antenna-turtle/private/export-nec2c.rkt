@@ -14,7 +14,11 @@
          nec2c-feed-segment)
 
 (define last-export (box #f))
-(define-runtime-module-path nec2c-surface-module "nec2c-surface.rkt")
+;; Keep this as a runtime *path*, rather than a runtime module path.  The
+;; latter asks the compilation manager to compile the optional surface module
+;; while compiling this wire-only exporter, which fails on platforms where
+;; Manifold is unavailable.
+(define-runtime-path nec2c-surface-module "nec2c-surface.rkt")
 
 ;; Keep the wire-only language usable without the optional native Manifold
 ;; dependency.  When available, this module supplies refined MFIE patches and

@@ -13,7 +13,9 @@
          "export-nec2c.rkt"
          "network.rkt")
 
-(define-runtime-module-path nec2c-surface-module "nec2c-surface.rkt")
+;; A runtime path prevents the compiler from eagerly compiling the optional
+;; Manifold-backed surface module on wire-only installations.
+(define-runtime-path nec2c-surface-module "nec2c-surface.rkt")
 
 ;; Preserve wire-only use on installations without the optional Manifold
 ;; library. When surfaces are available, their exterior patch corners must
