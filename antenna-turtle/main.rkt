@@ -9,6 +9,12 @@
          "private/nec2c.rkt"
          "private/nec2c-html-report.rkt"
          "private/nec2c-view.rkt"
+         "private/material-dsl.rkt"
+         "private/nec2c-dielectric.rkt"
+         "private/nec2c-dielectric-dsl.rkt"
+         "private/nec2c-result-json.rkt"
+         "private/wire-lumped.rkt"
+         "private/lumped-element-dsl.rkt"
          "private/view.rkt"
          k-infix
          (planet jphelps/loop:1:25)
@@ -35,13 +41,15 @@
 (define-syntax (include-optional-solid-backend stx)
   (if solid-backend-load-failure
       #'(begin
+          (require "private/model-cuboid-dsl.rkt")
+          (provide (all-from-out "private/model-cuboid-dsl.rkt"))
           (eprintf
            (string-append
             "Antenna Turtle: Manifold unavailable; solid/OpenEMS support "
             "disabled.\n")))
       #'(begin
           (require (except-in "private/solid-core.rkt" dielectric conductor)
-                   "private/solid-dsl.rkt"
+                   (except-in "private/solid-dsl.rkt" dielectric conductor lumped-element)
                    "private/solid-trace-dsl.rkt"
                    "private/solid-primitives.rkt"
                    "private/material-catalog.rkt"
@@ -82,6 +90,12 @@
  (all-from-out "private/nec2c-html-report.rkt")
  (all-from-out "private/nec2c-view.rkt")
  (all-from-out "private/electrical-units.rkt")
+ (all-from-out "private/material-dsl.rkt")
+ (all-from-out "private/nec2c-dielectric.rkt")
+ (all-from-out "private/nec2c-dielectric-dsl.rkt")
+ (all-from-out "private/nec2c-result-json.rkt")
+ (all-from-out "private/wire-lumped.rkt")
+ (all-from-out "private/lumped-element-dsl.rkt")
  wavelength
  half-wave
  quarter-wave

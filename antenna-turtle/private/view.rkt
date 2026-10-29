@@ -4,7 +4,10 @@
          racket/runtime-path
          plot/no-gui
          "core.rkt"
-         "plot-cursor.rkt")
+         "material.rkt"
+         "nec2c-dielectric.rkt"
+         "plot-cursor.rkt"
+         "wire-lumped.rkt")
 
 (provide show-model
          ;; Exposed from this private module for non-GUI tests and future
@@ -14,6 +17,8 @@
 (define default-wire-color "steelblue")
 (define vertex-color "dark slate gray")
 (define feed-color "firebrick")
+(define dielectric-color "deep sky blue")
+(define lumped-element-color "dark orange")
 
 (define-runtime-path proportional-plot3d-path "proportional-plot3d.rkt")
 
@@ -36,6 +41,31 @@
              (/ (+ (point3-z start) (point3-z end)) 2))]
     [else #f]))
 
+(define (cuboid-corners cuboid)
+  (define-values (minimum maximum) (model-cuboid-bounds cuboid))
+  (for*/list ([x (in-list (list (list-ref minimum 0) (list-ref maximum 0)))]
+              [y (in-list (list (list-ref minimum 1) (list-ref maximum 1)))]
+              [z (in-list (list (list-ref minimum 2) (list-ref maximum 2)))])
+    (point3 x y z)))
+
+(define cuboid-edge-indices
+  '((0 1) (0 2) (0 4) (1 3) (1 5) (2 3)
+    (2 6) (3 7) (4 5) (4 6) (5 7) (6 7)))
+
+(define (dielectric-cuboids)
+  (filter (lambda (cuboid)
+            (eq? (em-material-kind (model-cuboid-material cuboid)) 'dielectric))
+          (model-cuboids)))
+
+(define (cuboid-renderers cuboid)
+  (define corners (cuboid-corners cuboid))
+  (for/list ([indices (in-list cuboid-edge-indices)])
+    (lines3d
+     (for/list ([index (in-list indices)])
+       (point3->vector (list-ref corners index)))
+     #:color dielectric-color
+     #:width 1)))
+
 (define (model->plot-renderers [model (current-antenna-model)]
                                #:vertices? [vertices? #f]
                                #:wire-color [wire-color default-wire-color])
@@ -53,8 +83,10 @@
                #:width 2)))
   (define feeds
     (filter values (map feed-point edges)))
+  (define lumped-elements (model-wire-lumped-elements))
   (append
    conductors
+   (append-map cuboid-renderers (dielectric-cuboids))
    (if vertices?
        (list
         (points3d
@@ -75,18 +107,33 @@
                   #:fill-color feed-color
                   #:size 9
                   #:sym 'fullcircle
-                  #:label "feed")))))
+                  #:label "feed")))
+   (if (null? lumped-elements)
+       '()
+       (list
+        (points3d
+         (map (lambda (element)
+                (point3->vector (wire-lumped-element-center element)))
+              lumped-elements)
+         #:color lumped-element-color
+         #:fill-color "white"
+         #:line-width 2
+         #:size 9
+         #:sym 'diamond
+         #:label "lumped element")))))
 
 (define (model-cubic-bounds model)
   ;; Give every coordinate axis the same numeric span. Plot3D otherwise fills
   ;; its plotting cube independently in X, Y, and Z, which can make a flat or
   ;; elongated antenna look deceptively well proportioned.
   (define points
-    (for*/list ([edge (in-list (model-edges model))]
-                [model-vertex
-                 (in-list (list (wire-edge-start edge)
-                                (wire-edge-end edge)))])
-      (vertex-point model-vertex)))
+    (append
+     (for*/list ([edge (in-list (model-edges model))]
+                 [model-vertex
+                  (in-list (list (wire-edge-start edge)
+                                 (wire-edge-end edge)))])
+       (vertex-point model-vertex))
+     (append-map cuboid-corners (dielectric-cuboids))))
   (when (null? points)
     (error 'show-model "cannot display an empty model"))
   (define xs (map point3-x points))
@@ -150,7 +197,13 @@
         '())
     (if (ormap wire-edge-feed-location (model-edges model))
         (list (plot-legend-item "feed" feed-color 'solid 'box))
-        '()))
+        '())
+    (if (null? (dielectric-cuboids))
+        '()
+        (list (plot-legend-item "dielectric volume" dielectric-color 'solid 'line)))
+    (if (null? (model-wire-lumped-elements))
+        '()
+        (list (plot-legend-item "lumped element" lumped-element-color 'solid 'box))))
    #:legend? legend?
    #:title (model-title)
    #:x-label "x (m)"

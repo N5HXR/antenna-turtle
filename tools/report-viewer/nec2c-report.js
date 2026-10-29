@@ -108,6 +108,7 @@ function cylinderBetween(start, end, radius, material) {
 function addGeometry(data, group) {
   const authoredBounds = new THREE.Box3();
   const surfacePatches = data.geometry.surface_patches || [];
+  const dielectricVolumes = data.geometry.dielectric_volumes || [];
   for (const patch of surfacePatches) {
     for (const corner of patch.corners || []) {
       authoredBounds.expandByPoint(new THREE.Vector3(...corner));
@@ -117,6 +118,10 @@ function addGeometry(data, group) {
     authoredBounds.expandByPoint(new THREE.Vector3(...wire.start));
     authoredBounds.expandByPoint(new THREE.Vector3(...wire.end));
   }
+  for (const volume of dielectricVolumes) {
+    authoredBounds.expandByPoint(new THREE.Vector3(...volume.minimum));
+    authoredBounds.expandByPoint(new THREE.Vector3(...volume.maximum));
+  }
   const presentationRadius = Math.max(
     authoredBounds.getSize(new THREE.Vector3()).length() * 0.0012, 1e-7);
   const segments = [];
@@ -124,6 +129,28 @@ function addGeometry(data, group) {
   const surfaceVertexRanges = [];
   const surfaceVertexKeys = [];
   const surfaceCornerPatches = new Map();
+  const dielectricMeshes = [];
+  for (const volume of dielectricVolumes) {
+    const minimum = new THREE.Vector3(...volume.minimum);
+    const maximum = new THREE.Vector3(...volume.maximum);
+    const size = maximum.clone().sub(minimum);
+    const geometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+      color: 0x31efff, transparent: true, opacity: 0.18,
+      side: THREE.DoubleSide, depthWrite: false, toneMapped: false,
+    }));
+    mesh.position.copy(minimum.clone().add(maximum).multiplyScalar(0.5));
+    mesh.renderOrder = 0;
+    mesh.userData.dielectricVolume = volume;
+    group.add(mesh);
+    const outline = new THREE.LineSegments(
+      new THREE.EdgesGeometry(geometry),
+      new THREE.LineBasicMaterial({ color: 0x7df9ff, transparent: true, opacity: 0.72 }));
+    outline.position.copy(mesh.position);
+    outline.renderOrder = 2;
+    group.add(outline);
+    dielectricMeshes.push(mesh);
+  }
   if (surfacePatches.length) {
     const positions = [];
     const colors = [];
@@ -215,7 +242,7 @@ function addGeometry(data, group) {
     group.add(ground);
   }
   return { segments, surfaceMesh, surfacePatches, surfaceVertexRanges,
-    surfaceVertexKeys, surfaceCornerPatches, presentationRadius };
+    surfaceVertexKeys, surfaceCornerPatches, dielectricMeshes, presentationRadius };
 }
 
 function patchCenter(patch) {
@@ -524,6 +551,20 @@ export async function startNec2cReport(data) {
   const surfaceCurrentGroups = groupSurfaceCurrents(
     geometryDisplay.surfacePatches, diagnostics?.surface_current_samples || []);
   const hasSurfaceCurrents = surfaceCurrentGroups.some(samples => samples.length);
+  const volumeCurrentSamples = diagnostics?.volume_current_samples || [];
+  const volumeCurrentMeshes = volumeCurrentSamples.map(sample => {
+    const geometry = new THREE.BoxGeometry(...sample.size);
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+      color: 0x31efff, transparent: true, opacity: 0.72,
+      side: THREE.DoubleSide, depthWrite: false, toneMapped: false,
+    }));
+    mesh.position.set(...sample.center);
+    mesh.renderOrder = 2;
+    mesh.visible = false;
+    geometryGroup.add(mesh);
+    return { mesh, sample };
+  });
+  const hasVolumeCurrents = volumeCurrentMeshes.length > 0;
   const geometryBounds = new THREE.Box3().setFromObject(geometryGroup);
   const patternRadius = Math.max(geometryBounds.getSize(new THREE.Vector3()).length() * 0.68, 1e-4);
   const patternOrigin = feedCentroid(data);
@@ -555,7 +596,12 @@ export async function startNec2cReport(data) {
     <option value="current-magnitude">current magnitude</option><option value="current-phase">current phase</option>
     <option value="current-instantaneous">instantaneous current</option>
     <option value="charge-magnitude">charge magnitude</option>
-    <option value="charge-instantaneous">instantaneous charge</option></select>
+    <option value="charge-instantaneous">instantaneous charge</option>
+    <option value="volume-current-magnitude">dielectric J magnitude</option>
+    <option value="volume-current-phase">dielectric J phase</option>
+    <option value="volume-current-x-instantaneous">instantaneous dielectric Jx</option>
+    <option value="volume-current-y-instantaneous">instantaneous dielectric Jy</option>
+    <option value="volume-current-z-instantaneous">instantaneous dielectric Jz</option></select>
     <label id="surface-smoothing-control"><input id="surface-smoothing" type="checkbox">
     SMOOTH PATCH CURRENTS</label></div>
     <div id="segment-phase-row" class="row" hidden><button id="segment-play" type="button">PAUSE</button>
@@ -592,7 +638,10 @@ export async function startNec2cReport(data) {
   const segmentPhaseSlider = controlsPanel.querySelector("#segment-phase");
   const segmentLegend = controlsPanel.querySelector("#segment-legend");
   const powerBudget = diagnostics?.power_budget;
-  segmentControls.hidden = !segmentSamples.size && !hasSurfaceCurrents;
+  for (const option of segmentDisplay.querySelectorAll('option[value^="volume-current"]')) {
+    option.hidden = !hasVolumeCurrents;
+  }
+  segmentControls.hidden = !segmentSamples.size && !hasSurfaceCurrents && !hasVolumeCurrents;
   const budgetElement = controlsPanel.querySelector("#power-budget");
   budgetElement.hidden = !powerBudget;
   if (powerBudget) {
@@ -612,6 +661,8 @@ export async function startNec2cReport(data) {
     .map(sample => sample.charge_density?.magnitude || 0));
   const surfaceCurrentMaximum = Math.max(Number.EPSILON, ...surfaceCurrentGroups.flatMap(samples =>
     samples.map(sample => complexVectorEnvelope(sample.current_density))));
+  const volumeCurrentMaximum = Math.max(Number.EPSILON, ...volumeCurrentSamples
+    .map(sample => complexVectorEnvelope(sample.current_density)));
 
   function signedColor(value, maximum) {
     const amount = Math.min(1, Math.abs(value) / Math.max(maximum, Number.EPSILON));
@@ -641,7 +692,17 @@ export async function startNec2cReport(data) {
     segmentPhaseRow.hidden = !instantaneousMode;
     segmentLegend.hidden = mode === "geometry";
     const labels = segmentLegend.querySelectorAll("span");
-    if (mode === "current-magnitude") {
+    if (mode === "volume-current-magnitude") {
+      labels[0].textContent = "−30 dB"; labels[1].textContent = "volume polarization J";
+      labels[2].textContent = `${volumeCurrentMaximum.toPrecision(4)} A/m²`;
+      segmentLegend.querySelector(".segment-legend-bar").style.background =
+        "linear-gradient(90deg,#440154,#21918c,#fde725)";
+    } else if (mode === "volume-current-phase") {
+      labels[0].textContent = "−180°"; labels[1].textContent = "volume J phase";
+      labels[2].textContent = "+180°";
+      segmentLegend.querySelector(".segment-legend-bar").style.background =
+        "linear-gradient(90deg,#00f,#0ff,#0f0,#ff0,#f00,#f0f,#00f)";
+    } else if (mode === "current-magnitude") {
       labels[0].textContent = "−30 dB"; labels[1].textContent = "current";
       labels[2].textContent = `${currentMaximum.toPrecision(4)} A` +
         (hasSurfaceCurrents ? ` · ${surfaceCurrentMaximum.toPrecision(4)} A/m surface` : "");
@@ -657,8 +718,10 @@ export async function startNec2cReport(data) {
       segmentLegend.querySelector(".segment-legend-bar").style.background =
         "linear-gradient(90deg,#00f,#0ff,#0f0,#ff0,#f00,#f0f,#00f)";
     } else if (instantaneousMode) {
-      const maximum = mode.startsWith("current") ? currentMaximum : chargeMaximum;
-      const units = mode.startsWith("current") ? "A" : "C/m";
+      const volumeMode = mode.startsWith("volume-current");
+      const maximum = volumeMode ? volumeCurrentMaximum
+        : mode.startsWith("current") ? currentMaximum : chargeMaximum;
+      const units = volumeMode ? "A/m²" : mode.startsWith("current") ? "A" : "C/m";
       labels[0].textContent = `−${maximum.toPrecision(3)} ${units}`;
       labels[1].textContent = "instantaneous";
       labels[2].textContent = `+${maximum.toPrecision(3)} ${units}` +
@@ -678,6 +741,21 @@ export async function startNec2cReport(data) {
         color = magnitudeColor(sample.charge_density, chargeMaximum);
       else if (sample && mode === "charge-instantaneous")
         color = signedColor(instantaneous(sample.charge_density), chargeMaximum);
+      mesh.material.color.copy(color);
+    }
+    for (const { mesh, sample } of volumeCurrentMeshes) {
+      mesh.visible = mode.startsWith("volume-current");
+      let color = new THREE.Color(0x31efff);
+      if (mode === "volume-current-magnitude") {
+        color = magnitudeColor({ magnitude: complexVectorEnvelope(sample.current_density) },
+          volumeCurrentMaximum);
+      } else if (mode === "volume-current-phase") {
+        color = phaseColor({ phase_degrees: dominantVectorPhase(sample.current_density) });
+      } else if (mode.startsWith("volume-current") && mode.endsWith("instantaneous")) {
+        const component = mode.includes("-x-") ? 0 : mode.includes("-y-") ? 1 : 2;
+        color = signedColor(instantaneous(sample.current_density[component]),
+          volumeCurrentMaximum);
+      }
       mesh.material.color.copy(color);
     }
     const colorAttribute = geometryDisplay.surfaceMesh?.geometry.getAttribute("color");

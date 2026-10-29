@@ -6,6 +6,7 @@
 
 (provide finite-flonum
          coordinate-string
+         roundtrip-coordinate-string
          require-segmentation!)
 
 (define (finite-flonum who value)
@@ -18,6 +19,12 @@
 
 (define (coordinate-string who value)
   (~r (finite-flonum who value) #:precision '(= 12)))
+
+;; Preserve exact relationships between independently serialized coordinates.
+;; Fixed decimal precision can perturb commensurate dielectric box edges enough
+;; to defeat NEC2C's strict cubic-lattice validation.
+(define (roundtrip-coordinate-string who value)
+  (number->string (finite-flonum who value)))
 
 (define (require-segmentation! who)
   (define value (maximum-segment-length))

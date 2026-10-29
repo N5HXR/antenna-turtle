@@ -831,8 +831,34 @@ grid after one-port alignment is rejected. Manual constraints are exact and
 may create very small cells, so use them sparingly: the smallest cell controls
 the FDTD Courant timestep. `clear-bodies` and `reset-model!` clear them.
 
-Ideal lumped R, L, C, and compound RLC regions use the same centered turtle
-placement idiom as ports:
+Ideal lumped R, L, C, and compound RLC elements use the same centered turtle
+placement idiom across the wire and solid backends. For NEC2C, place the form
+between two wire moves and omit transverse dimensions:
+
+```racket
+(with-wire
+  (move forward 1 feed center)
+  (lumped-element forward
+    name trap
+    inductance 1.8e-6
+    capacitance 56e-12
+    resistance 18000
+    topology parallel
+    gap 0.02)
+  (move forward 1))
+```
+
+The form marks the current turtle vertex without moving it. NEC export opens
+the requested gap symmetrically, adds a one-segment bridge, and applies the
+load to that segment. The two adjoining wires must be collinear with the
+declared direction, and the marker must occupy a degree-two vertex. `series`
+maps to NEC load type 0 and `parallel` to type 1.
+Reflected construction duplicates the marker as well as its adjoining wire.
+`show-model` draws wire lumped elements as orange diamonds so their resolved
+locations can be checked before starting a solver run.
+
+For OpenEMS, add a transverse `size` or `width` and `depth` to create a spatial
+two-terminal region:
 
 ```racket
 (with-scale millimeters
@@ -1205,6 +1231,22 @@ window unless the program explicitly calls a `show-*` operation:
 (show-gain-sweep performance)
 ```
 
+When NEC2C-N5HXR dielectric support is in use, a simple one-cuboid model can
+delegate its cubic mesh arithmetic and small commensurability adjustments:
+
+```racket
+(nec2c-dielectric-mesh mode auto max-cells 2000)
+```
+
+Automatic mode bounds each face adjustment by both one-thousandth of the
+shortest wavelength in the dielectric and one-hundredth of the cuboid's
+smallest dimension. It checks the adjusted box against every wire and refuses
+the model when no electrical, cubic, cell-count, and clearance-safe solution
+exists. The error suggests whether to increase the cell budget, segment wires
+more finely, move the dielectric, or return to explicit `max-kh`, `max-cells`,
+and `max-aspect` settings. Revision 1 intentionally handles one axis-aligned
+cuboid; manual mode remains available for expert and multi-volume work.
+
 `nec2c-gain-sweep` evaluates impedance and a complete spherical pattern at
 every requested frequency in one NEC2C run. Its graph overlays maximum gain,
 maximum gain after mismatch loss, realized maximum gain on the horizon, and
@@ -1241,6 +1283,26 @@ grid and pass up to nine of them to the comparison viewer:
  #:aspect-ratio 16/9
  #:palette 'inferno)
 ```
+
+For a direct pattern-difference view, make the first case the reference and
+enable difference coloring:
+
+```racket
+(show-radiation-comparison
+ (list (radiation-case "reference" reference-grid)
+       (radiation-case "loaded" loaded-grid))
+ #:difference? #t)
+```
+
+The reference retains its ordinary absolute-gain surface. Each later tile is
+drawn with that same shape and colored by `candidate dBi - reference dBi` on
+a shared blue/gray/red scale. This intentionally compares absolute gain, not
+independently normalized pattern shape. The grids must have identical theta
+and phi samples; identical patterns produce a uniformly gray difference
+surface. The default automatic range uses the largest absolute difference in
+the portion of the reference pattern within 30 dB of its peak. Supply a
+positive `#:difference-range-db` value when several separately opened viewers
+need an identical fixed scale.
 
 Both OpenGL viewers return a reusable visualization handle. This is useful at
 a REPL when geometry and analysis are being regenerated repeatedly:

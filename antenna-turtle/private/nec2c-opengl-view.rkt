@@ -132,6 +132,24 @@
              [component-b (in-list b)])
     (+ component-a (* fraction (- component-b component-a)))))
 
+;; Pattern differences use a deliberately separate diverging ramp.  The
+;; ordinary palettes encode magnitude from a peak; this ramp encodes a signed
+;; change in absolute dBi and must make zero visually unambiguous.
+(define difference-negative-color '(40 110 255))
+(define difference-zero-color '(224 224 224))
+(define difference-positive-color '(255 70 55))
+
+(define (difference-color difference-db range-db)
+  (cond
+    [(zero? range-db) difference-zero-color]
+    [else
+     (define bounded (max (- range-db) (min range-db difference-db)))
+     (if (negative? bounded)
+         (interpolate-color difference-negative-color difference-zero-color
+                            (/ (+ bounded range-db) range-db))
+         (interpolate-color difference-zero-color difference-positive-color
+                            (/ bounded range-db)))]))
+
 (define (relative-gain-color gain-db color-stops)
   (define bounded (min 0 (max -30 gain-db)))
   (let loop ([lower (first color-stops)]
@@ -233,7 +251,8 @@
                                 #:color-step [color-step #f]
                                 #:mesh-step [mesh-step 2]
                                 #:axes? [axes? #f]
-                                #:reference-peak [reference-peak #f])
+                                #:reference-peak [reference-peak #f]
+                                #:color-at [color-at #f])
   (unless (nec2c-pattern-grid? grid)
     (raise-argument-error 'radiation-grid->pict3d "nec2c-pattern-grid?" grid))
   (unless (and (real? floor-db) (< floor-db 0))
@@ -292,13 +311,15 @@
     (define ny (vector-ref direction 1))
     (define nz (vector-ref direction 2))
     (define rgb
-      (relative-gain-color
-       (color-gain
-        (if face-color-db
-            face-color-db
-            (relative-gain-at theta-deg phi-deg))
-        color-step)
-       color-stops))
+      (if color-at
+          (color-at theta-deg phi-deg)
+          (relative-gain-color
+           (color-gain
+            (if face-color-db
+                face-color-db
+                (relative-gain-at theta-deg phi-deg))
+            color-step)
+           color-stops)))
     (vertex (pos (* radius nx) (* radius ny) (* radius nz))
             #:normal (dir nx ny nz)
             #:color (apply rgba
@@ -308,7 +329,7 @@
             #:material surface-material))
   (define (make-surface-triangle a b c)
     (define face-color-db
-      (and color-step
+      (and (not color-at) color-step
            (/ (+ (relative-gain-at (first a) (second a))
                  (relative-gain-at (first b) (second b))
                  (relative-gain-at (first c) (second c)))
@@ -357,7 +378,10 @@
           (define (rgb-at gain-db)
             (relative-gain-color (color-gain gain-db color-step) color-stops))
           (define (make-center [face-color-db #f])
-            (define rgb (rgb-at (or face-color-db -30)))
+            (define rgb
+              (if color-at
+                  (color-at #f #f)
+                  (rgb-at (or face-color-db -30))))
             (vertex (pos 0 0 0)
                     #:normal (dir 0 0 -1)
                     #:color (apply rgba
@@ -370,10 +394,12 @@
             (define phi (degrees->radians phi-deg))
             (define gain (sample-gain sample component))
             (define rgb
-              (rgb-at
-               (if face-color-db
-                   face-color-db
-                   (if (real? gain) (- gain display-peak) -30))))
+              (if color-at
+                  (color-at theta phi-deg)
+                  (rgb-at
+                   (if face-color-db
+                       face-color-db
+                       (if (real? gain) (- gain display-peak) -30)))))
             (vertex (pos (* radius (cos phi)) (* radius (sin phi)) 0)
                     #:normal (dir 0 0 -1)
                     #:color (apply rgba
@@ -387,7 +413,7 @@
                   (+ 360 (first phi-values))
                   (list-ref phi-values (add1 phi-index))))
             (define face-color-db
-              (and color-step
+              (and (not color-at) color-step
                    (/ (+ (relative-gain-at theta phi-a)
                          (relative-gain-at theta phi-b))
                       2)))
@@ -1021,8 +1047,61 @@
         (send dc draw-text absolute-label
               (bounded-label-x absolute-width) 52)))))
 
-(define (comparison-layout count width height)
-  (define footer-height 112)
+(define difference-legend-canvas%
+  (class canvas%
+    (init-field range-db)
+    (super-new [min-height 62]
+               [stretchable-width #t]
+               [stretchable-height #f]
+               [style '(border)])
+    (define/public (set-range-db new-range-db)
+      (set! range-db new-range-db)
+      (send this refresh))
+    (define/override (on-paint)
+      (define dc (send this get-dc))
+      (define-values (width _height) (send dc get-size))
+      (send dc set-background (make-object color% 248 248 248))
+      (send dc clear)
+      (send dc set-text-foreground "black")
+      (define heading "candidate − reference · absolute gain difference")
+      (define-values (heading-width _hh _hd _hs)
+        (send dc get-text-extent heading))
+      (send dc draw-text heading 8 5)
+      (define bar-left (+ 20 heading-width))
+      (define bar-right (max (+ bar-left 40) (- width 18)))
+      (define bar-top 24)
+      (define bar-height 16)
+      (define bar-width (max 1 (- bar-right bar-left)))
+      (for ([offset (in-range bar-width)])
+        (define difference-db
+          (+ (- range-db)
+             (* 2 range-db (/ offset (max 1 (sub1 bar-width))))))
+        (define rgb (difference-color difference-db range-db))
+        (send dc set-pen "transparent" 0 'transparent)
+        (send dc set-brush
+              (apply make-object color% (map exact-round rgb)) 'solid)
+        (send dc draw-rectangle (+ bar-left offset) bar-top 1 bar-height))
+      (send dc set-pen "black" 1 'solid)
+      (send dc set-brush "transparent" 'transparent)
+      (send dc draw-rectangle bar-left bar-top bar-width bar-height)
+      (for ([difference-db (in-list (list (- range-db) 0 range-db))]
+            [fraction (in-list '(0 1/2 1))])
+        (define x (+ bar-left (* fraction bar-width)))
+        (define label
+          (format "~a~a dB"
+                  (if (positive? difference-db) "+" "")
+                  (real->decimal-string (exact->inexact difference-db) 1)))
+        (define-values (label-width _lh _ld _ls)
+          (send dc get-text-extent label))
+        (send dc draw-line x (+ bar-top bar-height) x
+              (+ bar-top bar-height 4))
+        (send dc draw-text label
+              (max bar-left
+                   (min (- bar-right label-width)
+                        (- x (/ label-width 2))))
+              43)))))
+
+(define (comparison-layout count width height [footer-height 112])
   (define usable-height (max 1 (- height footer-height)))
   (define candidates
     (for/list ([columns (in-range 1 (add1 count))])
@@ -1043,6 +1122,82 @@
     (error 'show-radiation-comparison
            "selected gain component has no samples"))
   (apply max gains))
+
+(define (grid-angle-signature grid)
+  (list (map (lambda (theta) (angle-key theta 0))
+             (nec2c-pattern-grid-theta-values grid))
+        (map (lambda (phi) (angle-key 0 phi))
+             (nec2c-pattern-grid-phi-values grid))))
+
+(define (validate-difference-grids who cases)
+  (when (< (length cases) 2)
+    (raise-arguments-error
+     who "difference rendering requires a reference and at least one candidate"
+     "cases" (length cases)))
+  (define reference-signature
+    (grid-angle-signature (radiation-case-grid (first cases))))
+  (for ([item (in-list (rest cases))]
+        [index (in-naturals 2)])
+    (unless (equal? reference-signature
+                    (grid-angle-signature (radiation-case-grid item)))
+      (raise-arguments-error
+       who
+       "difference rendering requires identical theta and phi sample grids"
+       "reference case" (radiation-case-title (first cases))
+       "incompatible case" (radiation-case-title item)
+       "case position" index))))
+
+(define (grid-gain-table grid component)
+  (for/hash ([sample (in-list (nec2c-pattern-grid-samples grid))])
+    (values (angle-key (nec2c-pattern-sample-theta-deg sample)
+                       (nec2c-pattern-sample-phi-deg sample))
+            (sample-gain sample component))))
+
+(define (difference-color-function reference-grid candidate-grid component range-db)
+  (define reference-table (grid-gain-table reference-grid component))
+  (define candidate-table (grid-gain-table candidate-grid component))
+  (lambda (theta phi)
+    (cond
+      [(not theta) (difference-color 0 range-db)]
+      [else
+       (define normalized-phi
+         (- phi (* 360 (floor (/ phi 360)))))
+       (define key (angle-key theta normalized-phi))
+       (define reference-gain (hash-ref reference-table key #f))
+       (define candidate-gain (hash-ref candidate-table key #f))
+       (difference-color
+        (if (and (real? reference-gain) (real? candidate-gain))
+            (- candidate-gain reference-gain)
+            0)
+        range-db)])))
+
+(define (automatic-difference-range cases component)
+  (define reference-grid (radiation-case-grid (first cases)))
+  (define reference-table (grid-gain-table reference-grid component))
+  (define reference-peak (component-peak reference-grid component))
+  ;; Differences in deep nulls can be arbitrarily large in dB while carrying
+  ;; negligible field energy. Restrict auto-ranging to the same 30 dB region
+  ;; represented by the ordinary comparison color legend.
+  (define visible-floor (- reference-peak 30))
+  (define differences
+    (for*/fold ([result '()])
+               ([item (in-list (rest cases))]
+                [sample (in-list
+                         (nec2c-pattern-grid-samples
+                          (radiation-case-grid item)))])
+      (define key
+        (angle-key (nec2c-pattern-sample-theta-deg sample)
+                   (nec2c-pattern-sample-phi-deg sample)))
+      (define reference-gain (hash-ref reference-table key #f))
+      (define candidate-gain (sample-gain sample component))
+      (if (and (real? reference-gain)
+               (real? candidate-gain)
+               (>= reference-gain visible-floor))
+          (cons (abs (- candidate-gain reference-gain)) result)
+          result)))
+  ;; A small nonzero range keeps exact or nearly identical comparisons from
+  ;; magnifying floating-point noise into a dramatic full-scale heat map.
+  (max 0.1 (if (null? differences) 0 (apply max differences))))
 
 (define (comparison-proxy-polylines grid component floor-db radial-scale
                                     reference-peak mesh-step)
@@ -1227,14 +1382,31 @@
                             cases))))
 
 (define (comparison-data cases component floor-db radial-scale palette
-                         color-step mesh-step drag-mesh-step)
+                         color-step mesh-step drag-mesh-step
+                         difference? difference-range-db)
   (define local-peaks
     (for/list ([item (in-list cases)])
       (component-peak (radiation-case-grid item) component)))
   (define shared-peak (apply max local-peaks))
+  (define effective-difference-range-db
+    (if (eq? difference-range-db 'auto)
+        (automatic-difference-range cases component)
+        difference-range-db))
+  (define reference-grid (radiation-case-grid (first cases)))
+  (define geometry-peak
+    (if difference? (first local-peaks) shared-peak))
   (define scene-data
-    (for/list ([item (in-list cases)])
-      (define grid (radiation-case-grid item))
+    (for/list ([item (in-list cases)]
+               [index (in-naturals)])
+      (define candidate-grid (radiation-case-grid item))
+      (define grid (if (and difference? (positive? index))
+                       reference-grid
+                       candidate-grid))
+      (define color-at
+        (and difference? (positive? index)
+             (difference-color-function
+              reference-grid candidate-grid component
+              effective-difference-range-db)))
       (define-values (surface radius center _local-peak)
         (build-radiation-pict3d
          grid
@@ -1245,18 +1417,23 @@
          #:palette palette
          #:color-step color-step
          #:mesh-step mesh-step
-         #:reference-peak shared-peak))
+         #:reference-peak geometry-peak
+         #:color-at color-at))
       (define proxy-polylines
         (comparison-proxy-polylines
-         grid component floor-db radial-scale shared-peak drag-mesh-step))
+         grid component floor-db radial-scale geometry-peak drag-mesh-step))
       (list surface proxy-polylines radius center)))
-  (values local-peaks shared-peak scene-data
-          (apply max (map third scene-data))))
+  (values local-peaks geometry-peak scene-data
+          (apply max (map third scene-data))
+          effective-difference-range-db))
 
-(define (comparison-tile-label item peak)
-  (format "~a — ~a dBi peak"
+(define (comparison-tile-label item peak difference? index)
+  (format "~a — ~a dBi peak~a"
           (radiation-case-title item)
-          (real->decimal-string (exact->inexact peak) 1)))
+          (real->decimal-string (exact->inexact peak) 1)
+          (cond [(not difference?) ""]
+                [(zero? index) " — reference"]
+                [else " — Δ from reference"])))
 
 (define (show-radiation-comparison cases
                                    #:component [component 'total]
@@ -1264,10 +1441,22 @@
                                    #:scale [radial-scale 'arrl]
                                    #:palette [palette 'mmana]
                                    #:color-step [color-step #f]
+                                   #:difference? [difference? #f]
+                                   #:difference-range-db [difference-range-db 'auto]
                                    #:mesh-step [mesh-step 2]
                                    #:aspect-ratio [aspect-ratio 16/9]
                                    #:width [width 1400])
   (validate-comparison-cases 'show-radiation-comparison cases)
+  (unless (boolean? difference?)
+    (raise-argument-error 'show-radiation-comparison "boolean?" difference?))
+  (unless (or (eq? difference-range-db 'auto)
+              (and (real? difference-range-db)
+                   (positive? difference-range-db)))
+    (raise-argument-error
+     'show-radiation-comparison "(or/c 'auto positive-real?)"
+     difference-range-db))
+  (when difference?
+    (validate-difference-grids 'show-radiation-comparison cases))
   (unless (and (real? floor-db) (< floor-db 0))
     (raise-argument-error 'show-radiation-comparison "negative-real?" floor-db))
   (unless (and (real? mesh-step) (positive? mesh-step))
@@ -1287,12 +1476,15 @@
   ;; sparse set of latitude/longitude polylines.
   (define drag-mesh-step
     (min 20 (max 10 (* 4 mesh-step))))
-  (define-values (local-peaks shared-peak scene-data shared-radius)
+  (define-values (local-peaks shared-peak scene-data shared-radius
+                              effective-difference-range-db)
     (comparison-data cases component floor-db radial-scale palette
-                     color-step mesh-step drag-mesh-step))
+                     color-step mesh-step drag-mesh-step
+                     difference? difference-range-db))
   (define height (max 1 (exact-round (/ width aspect-ratio))))
   (define-values (rows columns)
-    (comparison-layout (length cases) width height))
+    (comparison-layout (length cases) width height
+                       (if difference? 174 112)))
   (define frame
     (new frame%
          [label "NEC2C radiation pattern comparison"]
@@ -1310,14 +1502,25 @@
          [spacing 0]))
   (define orientation-canvas
     (new orientation-canvas% [parent footer]))
+  (define legend-panel
+    (new vertical-panel%
+         [parent footer]
+         [spacing 0]
+         [stretchable-width #t]
+         [stretchable-height #f]))
   (define legend
     (new horizontal-legend-canvas%
-         [parent footer]
+         [parent legend-panel]
          [radial-scale radial-scale]
          [palette palette]
          [color-stops color-stops]
          [peak-gain shared-peak]
          [color-step color-step]))
+  (define difference-legend
+    (and difference?
+         (new difference-legend-canvas%
+              [parent legend-panel]
+              [range-db effective-difference-range-db])))
   (define status
     (new message%
          [parent root]
@@ -1346,8 +1549,8 @@
              (new group-box-panel%
                   [parent row]
                   [label
-                   (comparison-tile-label
-                    item (list-ref local-peaks index))]
+                    (comparison-tile-label
+                     item (list-ref local-peaks index) difference? index)]
                   [alignment '(center center)]))
            (define view-host
              (new vertical-panel% [parent tile] [spacing 0]))
@@ -1387,10 +1590,14 @@
    (lambda (new-cases)
      (validate-comparison-cases
       'visualization-update! new-cases case-count)
+     (when difference?
+       (validate-difference-grids 'visualization-update! new-cases))
      (define-values (new-local-peaks new-shared-peak
-                                    new-scene-data new-shared-radius)
+                                    new-scene-data new-shared-radius
+                                    new-effective-difference-range-db)
        (comparison-data new-cases component floor-db radial-scale palette
-                        color-step mesh-step drag-mesh-step))
+                        color-step mesh-step drag-mesh-step
+                        difference? difference-range-db))
      (queue-in-eventspace
       eventspace
       (lambda ()
@@ -1399,11 +1606,16 @@
               [data (in-list new-scene-data)]
               [tile (in-list tiles)]
               [canvas (in-list canvases)]
-              [proxy (in-list proxies)])
-          (send tile set-label (comparison-tile-label item peak))
+              [proxy (in-list proxies)]
+              [index (in-naturals)])
+          (send tile set-label
+                (comparison-tile-label item peak difference? index))
           (send canvas replace-scene
                 (first data) (fourth data) new-shared-radius)
           (send proxy replace-polylines
                 (second data) (fourth data) new-shared-radius))
         (send legend set-peak-gain new-shared-peak)
+        (when difference-legend
+          (send difference-legend set-range-db
+                new-effective-difference-range-db))
         (send controller refresh-view))))))

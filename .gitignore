@@ -10,6 +10,9 @@ scratch/
 work/
 node_modules/
 .local/macos/
+/cycloid.html
+/examples/*.html
+/projects/*.html
 *~
 \#*\#
 *.backup

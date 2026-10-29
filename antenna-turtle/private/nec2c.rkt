@@ -1,6 +1,7 @@
 #lang racket/base
 
-(require racket/file
+(require json
+         racket/file
          racket/list
          racket/math
          racket/path
@@ -11,7 +12,11 @@
          "core.rkt"
          "export-common.rkt"
          "export-nec2c.rkt"
-         "network.rkt")
+         "material.rkt"
+         "network.rkt"
+         "nec2c-capabilities.rkt"
+         "nec2c-dielectric.rkt"
+         "nec2c-result-json.rkt")
 
 ;; A runtime path prevents the compiler from eagerly compiling the optional
 ;; Manifold-backed surface module on wire-only installations.
@@ -36,6 +41,8 @@
 
 (provide
  nec2c-executable
+ probe-nec2c-capabilities
+ (all-from-out "nec2c-capabilities.rkt")
  (struct-out nec2c-artifacts)
  (struct-out nec2c-run-info)
  (struct-out nec2c-feedpoint-sample)
@@ -48,6 +55,7 @@
  (struct-out nec2c-pattern-grid)
  (struct-out nec2c-segment-sample)
  (struct-out nec2c-surface-current-sample)
+ (struct-out nec2c-volume-current-sample)
  (struct-out nec2c-power-budget)
  (struct-out nec2c-diagnostics)
  near-field-section
@@ -69,6 +77,7 @@
  (struct-out parsed-nec2c-segment-current)
  (struct-out parsed-nec2c-segment-charge)
  (struct-out parsed-nec2c-surface-current)
+ (struct-out parsed-nec2c-volume-current)
  (struct-out parsed-nec2c-power-budget)
  (struct-out parsed-nec2c-near-field)
  (struct-out parsed-nec2c-report)
@@ -86,11 +95,16 @@
  nec2c-gain-sweep->network-sweep)
 
 (struct nec2c-artifacts
-  (model-path input-path output-path temporary? available?)
+  (model-path input-path output-path temporary? available?
+              [resource-paths #:auto #:mutable]
+              [result-path #:auto #:mutable])
+  #:auto-value #f
   #:transparent)
 
 (struct nec2c-run-info
-  (executable version elapsed-ms exit-code stdout stderr artifacts)
+  (executable version elapsed-ms exit-code stdout stderr artifacts
+              [machine-result #:auto #:mutable])
+  #:auto-value #f
   #:transparent)
 
 (struct nec2c-feedpoint-sample
@@ -130,11 +144,16 @@
 (struct nec2c-surface-current-sample
   (frequency-mhz patch center current-density)
   #:transparent)
+(struct nec2c-volume-current-sample
+  (frequency-mhz cell-id box-id region-id material-id center size current-density)
+  #:transparent)
 (struct nec2c-power-budget
   (frequency-mhz input-power radiated-power structure-loss network-loss efficiency-percent)
   #:transparent)
 (struct nec2c-diagnostics
-  (frequency-mhz segments power-budget [surface-currents #:auto #:mutable])
+  (frequency-mhz segments power-budget
+                 [surface-currents #:auto #:mutable]
+                 [volume-currents #:auto #:mutable])
   #:auto-value '()
   #:transparent)
 
@@ -195,6 +214,9 @@
 (struct parsed-nec2c-surface-current
   (frequency-mhz patch x-wavelengths y-wavelengths z-wavelengths current-density)
   #:transparent)
+(struct parsed-nec2c-volume-current
+  (frequency-mhz cell-id box-id region-id material-id center size current-density)
+  #:transparent)
 (struct parsed-nec2c-power-budget
   (frequency-mhz input-power radiated-power structure-loss network-loss efficiency-percent)
   #:transparent)
@@ -206,6 +228,7 @@
          [currents #:auto #:mutable]
          [charges #:auto #:mutable]
          [surface-currents #:auto #:mutable]
+         [volume-currents #:auto #:mutable]
          [power-budgets #:auto #:mutable]
          [near-fields #:auto #:mutable])
   #:auto-value '()
@@ -619,17 +642,313 @@
       combined
       "unknown"))
 
-(define (decorate-deck source destination analysis-cards)
+(define capability-cache (make-hash))
+
+(define (executable-cache-key executable)
+  (list executable
+        (file-or-directory-modify-seconds executable)
+        (file-size executable)))
+
+(define (probe-nec2c-capabilities
+         #:executable [requested-executable #f]
+         #:timeout [timeout 5]
+         #:refresh? [refresh? #f])
+  (unless (and (real? timeout) (positive? timeout))
+    (raise-argument-error 'probe-nec2c-capabilities "positive-real?" timeout))
+  (unless (boolean? refresh?)
+    (raise-argument-error 'probe-nec2c-capabilities "boolean?" refresh?))
+  (define executable (resolve-executable requested-executable))
+  (define key (executable-cache-key executable))
+  (cond
+    [(and (not refresh?) (hash-has-key? capability-cache key))
+     (hash-ref capability-cache key)]
+    [else
+     (define directory
+       (make-temporary-file "antenna-turtle-nec2c-capabilities~a" 'directory))
+     (define stdout-path (build-path directory "capabilities.stdout"))
+     (define stderr-path (build-path directory "capabilities.stderr"))
+     (define result
+       (dynamic-wind
+         void
+         (lambda ()
+           (define-values (status timed-out? _elapsed)
+             (run-command executable '("--capabilities-json")
+                          stdout-path stderr-path timeout directory))
+           (and (not timed-out?)
+                (zero? status)
+                (with-handlers ([exn:fail? (lambda (_) #f)])
+                  (parse-nec2c-capabilities-jsexpr
+                   (call-with-input-file stdout-path read-json)))))
+         (lambda () (delete-directory/files directory))))
+     (hash-set! capability-cache key result)
+     result]))
+
+(define df-card-rx
+  #px"(?i:^[[:space:]]*DF[[:space:]]+\"([^\"]+)\"[[:space:]]*$)")
+
+(define (decorate-deck source destination analysis-cards
+                       #:dielectrics? [dielectrics? #t])
   (define lines (file->lines source))
   (define without-end
     (filter (lambda (line) (not (regexp-match? #px"^[[:space:]]*EN[[:space:]]*$" line)))
             lines))
+  (define source-directory (or (path-only source) (current-directory)))
+  (define destination-directory (or (path-only destination) (current-directory)))
+  (define resource-index 0)
+  (define staged-resources '())
   (call-with-output-file destination
     #:exists 'truncate/replace
     (lambda (out)
-      (for ([line (in-list without-end)]) (displayln line out))
+      (for ([line (in-list without-end)])
+        (define match (regexp-match df-card-rx line))
+        (cond
+          [(and match dielectrics?)
+           (set! resource-index (add1 resource-index))
+           (define source-resource
+             (simplify-path
+              (path->complete-path (second match) source-directory)))
+           (unless (file-exists? source-resource)
+             (raise-user-error
+              'nec2c "DF resource does not exist: ~a" source-resource))
+           (define leaf
+             (if (= resource-index 1)
+                 "analysis.diel"
+                 (format "analysis-~a.diel" resource-index)))
+           (define destination-resource (build-path destination-directory leaf))
+           (copy-file source-resource destination-resource #t)
+           (set! staged-resources
+                 (append staged-resources (list destination-resource)))
+           (fprintf out "DF \"~a\"\n" leaf)]
+          [match (void)]
+          [else (displayln line out)]))
       (for ([card (in-list analysis-cards)]) (displayln card out))
-      (displayln "EN" out))))
+      (displayln "EN" out)))
+  staged-resources)
+
+(define (current-dielectric-cuboids)
+  (filter
+   (lambda (cuboid)
+     (eq? (em-material-kind (model-cuboid-material cuboid)) 'dielectric))
+   (model-cuboids)))
+
+(define free-space-impedance 376.730313668)
+
+(define (result-real value)
+  (if (exact? value) (exact->inexact value) value))
+
+(define (json-complex value [context "complex value"])
+  (unless (hash? value)
+    (error 'nec2c "~a is not an object: ~e" context value))
+  (make-rectangular (hash-ref value 're) (hash-ref value 'im)))
+
+(define (json-number-or-zero value)
+  (if (or (not value) (nec2c-result-json-null? value)) 0 value))
+
+(define (stable-unique values key)
+  (define seen (make-hash))
+  (for/list ([value (in-list values)]
+             #:unless (hash-ref seen (key value) #f))
+    (hash-set! seen (key value) #t)
+    value))
+
+(define (field-gain-db field accepted-power)
+  (define linear
+    (and (positive? accepted-power)
+         (/ (* 2 pi (sqr (magnitude field)))
+            (* free-space-impedance accepted-power))))
+  (and linear (positive? linear) (* 10 (/ (log linear) (log 10)))))
+
+(define (polarization-values e-theta e-phi)
+  (define theta-power (sqr (magnitude e-theta)))
+  (define phi-power (sqr (magnitude e-phi)))
+  (define total (+ theta-power phi-power))
+  (cond
+    [(zero? total) (values 0 0 #f)]
+    [else
+     (define cross (* e-theta (conjugate e-phi)))
+     (define s1 (- theta-power phi-power))
+     (define s2 (* 2 (real-part cross)))
+     (define s3 (* -2 (imag-part cross)))
+     (define tilt (* 1/2 (/ (* 180 (atan s2 s1)) pi)))
+     (define ellipticity
+       (* 1/2 (asin (max -1.0 (min 1.0 (/ s3 total))))))
+     (define minor/major (abs (tan ellipticity)))
+     (values (if (zero? minor/major) +inf.0 (/ 1 minor/major))
+             tilt
+             (cond [(positive? s3) 'right]
+                   [(negative? s3) 'left]
+                   [else #f]))]))
+
+(define (machine-result->parsed-report result)
+  (define executions
+    (append*
+     (for/list ([job (in-list (nec2c-machine-result-jobs result))])
+       (nec2c-result-job-executions job))))
+  (define successful
+    (filter (lambda (execution)
+              (equal? (nec2c-result-execution-status execution) "ok"))
+            executions))
+  (define feeds
+    (stable-unique
+     (for*/list ([execution (in-list successful)]
+                 [feed (in-list (nec2c-result-execution-feeds execution))])
+       (define voltage (json-complex (hash-ref feed 'voltage_v) "feed voltage"))
+       (define current (json-complex (hash-ref feed 'current_a) "feed current"))
+       (define impedance
+         (json-complex (hash-ref feed 'impedance_ohm) "feed impedance"))
+       (parsed-nec2c-feed
+        (result-real (nec2c-result-execution-frequency-mhz execution))
+        (hash-ref feed 'tag) (hash-ref feed 'segment)
+        voltage current impedance
+        (if (zero? impedance) +nan.0 (/ 1 impedance))
+        (hash-ref feed 'accepted_power_w)))
+     (lambda (feed)
+       (list (parsed-nec2c-feed-frequency-mhz feed)
+             (parsed-nec2c-feed-tag feed)
+             (parsed-nec2c-feed-segment feed)))))
+  (define currents
+    (stable-unique
+     (for*/list ([execution (in-list successful)]
+                 [sample (in-list (nec2c-result-execution-wire-currents execution))])
+       (define frequency
+         (result-real (nec2c-result-execution-frequency-mhz execution)))
+       (define wavelength (frequency->wavelength frequency))
+       (define center (hash-ref sample 'center_m))
+       (parsed-nec2c-segment-current
+        frequency (hash-ref sample 'segment) (hash-ref sample 'tag)
+        (/ (list-ref center 0) wavelength)
+        (/ (list-ref center 1) wavelength)
+        (/ (list-ref center 2) wavelength)
+        (/ (hash-ref sample 'length_m) wavelength)
+        (json-complex (hash-ref sample 'current_a) "wire current")))
+     (lambda (sample)
+       (list (parsed-nec2c-segment-current-frequency-mhz sample)
+             (parsed-nec2c-segment-current-tag sample)
+             (parsed-nec2c-segment-current-segment sample)))))
+  (define surface-currents
+    (stable-unique
+     (append*
+      (for/list ([execution (in-list successful)])
+        (define frequency
+          (result-real (nec2c-result-execution-frequency-mhz execution)))
+        (define wavelength (frequency->wavelength frequency))
+        (define rows (nec2c-result-execution-patch-currents execution))
+        (for/list ([row (in-list (nec2c-result-rows-rows rows))])
+          (define (ref name) (nec2c-result-row-ref rows row name))
+          (parsed-nec2c-surface-current
+           frequency (ref "patch_id")
+           (/ (ref "center_x_m") wavelength)
+           (/ (ref "center_y_m") wavelength)
+           (/ (ref "center_z_m") wavelength)
+           (list (make-rectangular (ref "jx_re") (ref "jx_im"))
+                 (make-rectangular (ref "jy_re") (ref "jy_im"))
+                 (make-rectangular (ref "jz_re") (ref "jz_im")))))))
+     (lambda (sample)
+       (list (parsed-nec2c-surface-current-frequency-mhz sample)
+             (parsed-nec2c-surface-current-patch sample)))))
+  (define volume-currents
+    (stable-unique
+     (append*
+      (for/list ([execution (in-list successful)])
+        (define frequency
+          (result-real (nec2c-result-execution-frequency-mhz execution)))
+        (define rows (nec2c-result-execution-volume-currents execution))
+        (if (nec2c-result-json-null? rows)
+            '()
+            (for/list ([row (in-list (nec2c-result-rows-rows rows))])
+              (define (ref name) (nec2c-result-row-ref rows row name))
+              (parsed-nec2c-volume-current
+               frequency
+               (ref "cell_id") (ref "box_id") (ref "region_id")
+               (ref "material_id")
+               (point3 (ref "center_x_m") (ref "center_y_m") (ref "center_z_m"))
+               (point3 (ref "size_x_m") (ref "size_y_m") (ref "size_z_m"))
+               (list
+                (make-rectangular (ref "jx_re_a_per_m2") (ref "jx_im_a_per_m2"))
+                (make-rectangular (ref "jy_re_a_per_m2") (ref "jy_im_a_per_m2"))
+                (make-rectangular (ref "jz_re_a_per_m2") (ref "jz_im_a_per_m2"))))))))
+     (lambda (sample)
+       (list (parsed-nec2c-volume-current-frequency-mhz sample)
+             (parsed-nec2c-volume-current-cell-id sample)))))
+  (define power-budgets
+    (stable-unique
+     (for/list ([execution (in-list successful)]
+                #:unless (nec2c-result-json-null?
+                          (nec2c-result-execution-power execution)))
+       (define frequency
+         (result-real (nec2c-result-execution-frequency-mhz execution)))
+       (define power (nec2c-result-execution-power execution))
+       (define accepted (hash-ref power 'accepted_w))
+       (define radiated (json-number-or-zero (hash-ref power 'air_radiated_w)))
+       (parsed-nec2c-power-budget
+        frequency accepted radiated
+        (json-number-or-zero (hash-ref power 'structure_loss_w))
+        (json-number-or-zero (hash-ref power 'network_loss_w))
+        (if (positive? accepted) (* 100 (/ radiated accepted)) 0)))
+     parsed-nec2c-power-budget-frequency-mhz))
+  (define patterns
+    (append*
+     (for*/list ([execution (in-list successful)]
+                 [field (in-list (nec2c-result-execution-far-fields execution))])
+       (unless (equal? (hash-ref field 'normalization)
+                       "range-times-electric-field")
+         (error 'nec2c "unsupported far-field normalization: ~e"
+                (hash-ref field 'normalization)))
+       (define frequency
+         (result-real (nec2c-result-execution-frequency-mhz execution)))
+       (define power (nec2c-result-execution-power execution))
+       (define accepted
+         (if (nec2c-result-json-null? power) 0 (hash-ref power 'accepted_w)))
+       (for/list ([sample (in-list (hash-ref field 'samples))])
+         (define e-theta
+           (json-complex (hash-ref sample 'r_e_theta) "far-field E(theta)"))
+         (define e-phi
+           (json-complex (hash-ref sample 'r_e_phi) "far-field E(phi)"))
+         (define vertical (field-gain-db e-theta accepted))
+         (define horizontal (field-gain-db e-phi accepted))
+         (define total (field-gain-db (sqrt (+ (sqr (magnitude e-theta))
+                                                (sqr (magnitude e-phi))))
+                                      accepted))
+         (define-values (axial tilt sense)
+           (polarization-values e-theta e-phi))
+         (parsed-nec2c-pattern
+          frequency
+          (result-real (hash-ref sample 'theta_deg))
+          (result-real (hash-ref sample 'phi_deg))
+          vertical horizontal total axial tilt sense e-theta e-phi)))))
+  (define near-fields
+    (append*
+     (for*/list ([execution (in-list successful)]
+                 [field (in-list (nec2c-result-execution-near-fields execution))])
+       (define quantity
+         (case (string->symbol (string-downcase (hash-ref field 'field)))
+           [(e) 'electric]
+           [(h) 'magnetic]
+           [else (error 'nec2c "unknown near-field quantity: ~e"
+                        (hash-ref field 'field))]))
+       (define frequency
+         (result-real (nec2c-result-execution-frequency-mhz execution)))
+       (for/list ([sample (in-list (hash-ref field 'samples))])
+         (unless (hash-ref sample 'valid)
+           (error 'nec2c "NEC2C returned an invalid near-field sample at ~e"
+                  (hash-ref sample 'position_m)))
+         (define position (hash-ref sample 'position_m))
+         (define value (hash-ref sample 'value))
+         (parsed-nec2c-near-field
+          frequency quantity
+          (list-ref position 0) (list-ref position 1) (list-ref position 2)
+          (json-complex (hash-ref value 'x) "near-field X component")
+          (json-complex (hash-ref value 'y) "near-field Y component")
+          (json-complex (hash-ref value 'z) "near-field Z component"))))))
+  (define report (parsed-nec2c-report feeds patterns))
+  (set-parsed-nec2c-report-currents! report currents)
+  ;; Charge density is not part of result schema v1.
+  (set-parsed-nec2c-report-charges! report '())
+  (set-parsed-nec2c-report-surface-currents! report surface-currents)
+  (set-parsed-nec2c-report-volume-currents! report volume-currents)
+  (set-parsed-nec2c-report-power-budgets! report power-budgets)
+  (set-parsed-nec2c-report-near-fields! report near-fields)
+  report)
 
 (define (feed-edges)
   (filter wire-edge-feed? (model-edges)))
@@ -659,9 +978,26 @@
     (raise-user-error who "the current model has no feed"))
   feeds)
 
+(define (machine-result-error-summary result)
+  (define errors
+    (filter (lambda (diagnostic)
+              (equal? "error" (nec2c-result-diagnostic-severity diagnostic)))
+            (nec2c-machine-result-diagnostics result)))
+  (and (pair? errors)
+       (string-join
+        (for/list ([diagnostic (in-list errors)])
+          (format "~a: ~a"
+                  (nec2c-result-diagnostic-code diagnostic)
+                  (nec2c-result-diagnostic-message diagnostic)))
+        "; ")))
+
 (define (run-nec2c analysis-cards
                     #:model-path [requested-model-path #f]
                     #:executable [requested-executable #f]
+                    #:dielectrics? [dielectrics? #t]
+                    #:dielectric-solver [dielectric-solver 'dense]
+                    #:solver-tolerance [solver-tolerance #f]
+                    #:solver-iterations [solver-iterations #f]
                     #:keep-artifacts? [keep? #f]
                     #:timeout [timeout #f]
                     #:validate-report [validate-report values])
@@ -671,6 +1007,19 @@
     (raise-argument-error 'nec2c "(or/c #f positive-real?)" timeout))
   (unless (boolean? keep?)
     (raise-argument-error 'nec2c "boolean?" keep?))
+  (unless (boolean? dielectrics?)
+    (raise-argument-error 'nec2c "boolean?" dielectrics?))
+  (unless (memq dielectric-solver '(dense gmres fft))
+    (raise-argument-error 'nec2c "(or/c 'dense 'gmres 'fft)" dielectric-solver))
+  (unless (or (not solver-tolerance)
+              (and (finite-real? solver-tolerance)
+                   (positive? solver-tolerance)))
+    (raise-argument-error 'nec2c "(or/c #f positive-real?)" solver-tolerance))
+  (unless (or (not solver-iterations)
+              (and (exact-integer? solver-iterations)
+                   (<= 1 solver-iterations 10000)))
+    (raise-argument-error
+     'nec2c "(or/c #f (integer-in 1 10000))" solver-iterations))
   (define executable (resolve-executable requested-executable))
   (define directory
     (make-temporary-file "antenna-turtle-nec2c~a" 'directory))
@@ -678,39 +1027,105 @@
   (define output-path (build-path directory "analysis.out"))
   (define stdout-path (build-path directory "nec2c.stdout"))
   (define stderr-path (build-path directory "nec2c.stderr"))
+  (define result-path (build-path directory "analysis.json"))
   (define base-path
     (or requested-model-path (last-nec2c-export-path)))
+  (define mesh-frequency
+    (for/fold ([maximum (model-frequency)]) ([card (in-list analysis-cards)])
+      (define fields (string-split card))
+      (if (and (= (length fields) 7) (string-ci=? (first fields) "FR"))
+          (let ([count (string->number (list-ref fields 2))]
+                [start (string->number (list-ref fields 5))]
+                [increment (string->number (list-ref fields 6))])
+            (if (and (exact-positive-integer? count)
+                     (real? start) (real? increment))
+                (max maximum (+ start (* (sub1 count) increment)))
+                maximum))
+          maximum)))
   (with-handlers
       ([exn:fail?
         (lambda (failure)
           ;; Failed runs intentionally retain the complete temporary directory.
           (raise failure))])
-    (cond
+    (define staged-resources
+      (cond
       [base-path
        (unless (file-exists? base-path)
          (raise-user-error 'nec2c "base NEC model does not exist: ~a" base-path))
-       (decorate-deck base-path input-path analysis-cards)]
+       (decorate-deck base-path input-path analysis-cards
+                      #:dielectrics? dielectrics?)]
       [else
+       (define cuboids
+         (if dielectrics? (current-dielectric-cuboids) '()))
+       (when (pair? cuboids)
+         (call-with-output-file (build-path directory "analysis.diel")
+           #:exists 'truncate/replace
+           (lambda (out)
+             (write-nec2c-dielectric-resource
+              out #:cuboids cuboids #:mesh-frequency mesh-frequency))))
        (call-with-output-file input-path
          #:exists 'truncate/replace
-         (lambda (out) (write-nec2c-deck out analysis-cards)))])
+         (lambda (out)
+           (write-nec2c-deck
+            out analysis-cards
+            #:dielectric-resource (and (pair? cuboids) "analysis.diel"))))
+       (if (pair? cuboids)
+           (list (build-path directory "analysis.diel"))
+           '())]))
+    (define capabilities
+      (probe-nec2c-capabilities #:executable executable))
+    (when (and (pair? staged-resources)
+               (not (and capabilities
+                         (nec2c-capability-supports?
+                          capabilities 'dielectric-resource-version 2))))
+      (raise-user-error
+       'nec2c
+       "the selected executable does not advertise NEC2C-N5HXR dielectric resource v2 support: ~a"
+       executable))
+    (when (and (pair? staged-resources)
+               (not (nec2c-capability-supports?
+                     capabilities 'solver dielectric-solver)))
+      (raise-user-error
+       'nec2c "the selected executable does not advertise the ~a dielectric solver"
+       dielectric-solver))
+    (define machine-results?
+      (and capabilities
+           (nec2c-capability-supports?
+            capabilities 'result-json-version 1)))
     (define version (read-version executable directory timeout))
+    (define arguments
+      (append
+       (if machine-results? '("--result-json" "analysis.json") '())
+       (if (pair? staged-resources)
+           (append
+            (list "-s" (symbol->string dielectric-solver))
+            (if solver-tolerance
+                (list "-r" (coordinate-string 'nec2c solver-tolerance))
+                '())
+            (if solver-iterations
+                (list "-n" (number->string solver-iterations))
+                '()))
+           '())
+       '("-ianalysis.nec" "-oanalysis.out")))
     (define-values (status timed-out? elapsed)
       ;; Classic NEC2C stores its input and output names in a small fixed-size
       ;; buffer. macOS temporary directories (and ordinary Windows paths) can
       ;; exceed that legacy limit, so run inside the artifact directory and
       ;; give NEC2C only short leaf names. The public artifact paths remain
       ;; absolute.
-      (run-command executable
-                   '("-ianalysis.nec" "-oanalysis.out")
+      (run-command executable arguments
                    stdout-path stderr-path timeout directory))
     (define stdout (file->string stdout-path))
     (define stderr (file->string stderr-path))
     (define artifacts
       (nec2c-artifacts (and base-path (path->complete-path base-path))
                        input-path output-path #t #t))
+    (set-nec2c-artifacts-resource-paths! artifacts staged-resources)
+    (set-nec2c-artifacts-result-path!
+     artifacts (and machine-results? result-path))
     (define run
       (nec2c-run-info executable version elapsed status stdout stderr artifacts))
+    (define machine-result #f)
     (when timed-out?
       (raise
        (exn:fail:nec2c
@@ -719,10 +1134,24 @@
         (current-continuation-marks)
         run)))
     (unless (zero? status)
+      ;; Handled N5HXR failures publish the same complete machine-result
+      ;; contract as successful runs. Preserve it on the exception and put its
+      ;; stable diagnostic code/message in the user-facing error instead of
+      ;; reducing a useful solver failure to an opaque process status.
+      (when (and machine-results? (file-exists? result-path))
+        (set! machine-result
+              (with-handlers ([exn:fail? (lambda (_) #f)])
+                (read-nec2c-result-json result-path)))
+        (when machine-result
+          (set-nec2c-run-info-machine-result! run machine-result)))
+      (define detail
+        (and machine-result (machine-result-error-summary machine-result)))
       (raise
        (exn:fail:nec2c
-        (format "nec2c exited with status ~a; artifacts retained in ~a"
-                status directory)
+        (format "nec2c exited with status ~a~a; artifacts retained in ~a"
+                status
+                (if detail (format " (~a)" detail) "")
+                directory)
         (current-continuation-marks)
         run)))
     (unless (file-exists? output-path)
@@ -732,6 +1161,35 @@
                 directory)
         (current-continuation-marks)
         run)))
+    (when machine-results?
+      (unless (file-exists? result-path)
+        (raise
+         (exn:fail:nec2c
+          (format "nec2c did not create its machine-result document; artifacts retained in ~a"
+                  directory)
+          (current-continuation-marks)
+          run)))
+      (unless machine-result
+        (set! machine-result
+              (with-handlers
+              ([exn:fail?
+                (lambda (failure)
+                  (raise
+                   (exn:fail:nec2c
+                    (format "could not parse NEC2C machine results: ~a; artifacts retained in ~a"
+                            (exn-message failure) directory)
+                    (exn-continuation-marks failure)
+                    run)))])
+                (read-nec2c-result-json result-path))))
+      (unless (equal? (nec2c-machine-result-completion-status machine-result) "ok")
+        (raise
+         (exn:fail:nec2c
+          (format "nec2c machine-result completion was ~a; artifacts retained in ~a"
+                  (nec2c-machine-result-completion-status machine-result)
+                  directory)
+          (current-continuation-marks)
+          run)))
+      (set-nec2c-run-info-machine-result! run machine-result))
     (define report
       (with-handlers
           ([exn:fail?
@@ -742,7 +1200,33 @@
                         (exn-message failure) directory)
                 (exn-continuation-marks failure)
                 run)))])
-        (define parsed (parse-nec2c-output output-path))
+        (define parsed
+          (cond
+            [machine-result
+             (define adapted (machine-result->parsed-report machine-result))
+             ;; A classic no-DF report still contains charge density, which is
+             ;; not represented by machine-result schema v1.  Preserve it when
+             ;; available without making the human report authoritative for
+             ;; any schema-covered value.  Dielectric reports intentionally
+             ;; use a different presentation and simply skip this supplement.
+             (define classic
+               (with-handlers ([exn:fail? (lambda (_) #f)])
+                 (parse-nec2c-output output-path)))
+             (when (and classic
+                        (pair? (parsed-nec2c-report-charges classic)))
+               (set-parsed-nec2c-report-charges!
+                adapted (parsed-nec2c-report-charges classic)))
+             ;; The current schema-v1 writer records one execution for a
+             ;; consecutive NE/NH request pair even though the classic report
+             ;; contains both field tables.  Prefer the larger complete set
+             ;; until the producer publishes both executions in JSON.
+             (when (and classic
+                        (> (length (parsed-nec2c-report-near-fields classic))
+                           (length (parsed-nec2c-report-near-fields adapted))))
+               (set-parsed-nec2c-report-near-fields!
+                adapted (parsed-nec2c-report-near-fields classic)))
+             adapted]
+            [else (parse-nec2c-output output-path)]))
         ;; Run request-specific completeness checks before deleting successful
         ;; temporary artifacts. A malformed or truncated report is therefore
         ;; left intact for diagnosis just like a solver failure.
@@ -751,10 +1235,29 @@
     (define final-run
       (if keep?
           run
-          (struct-copy
-           nec2c-run-info run
-           [artifacts
-            (struct-copy nec2c-artifacts artifacts [available? #f])])) )
+          (let* ([final-artifacts
+                  (nec2c-artifacts
+                   (nec2c-artifacts-model-path artifacts)
+                   (nec2c-artifacts-input-path artifacts)
+                   (nec2c-artifacts-output-path artifacts)
+                   (nec2c-artifacts-temporary? artifacts)
+                   #f)]
+                 [final
+                  (nec2c-run-info
+                   (nec2c-run-info-executable run)
+                   (nec2c-run-info-version run)
+                   (nec2c-run-info-elapsed-ms run)
+                   (nec2c-run-info-exit-code run)
+                   (nec2c-run-info-stdout run)
+                   (nec2c-run-info-stderr run)
+                   final-artifacts)])
+            (set-nec2c-artifacts-resource-paths!
+             final-artifacts (nec2c-artifacts-resource-paths artifacts))
+            (set-nec2c-artifacts-result-path!
+             final-artifacts (nec2c-artifacts-result-path artifacts))
+            (set-nec2c-run-info-machine-result!
+             final (nec2c-run-info-machine-result run))
+            final)))
     (unless keep? (delete-directory/files directory))
     (values final-run report)))
 
@@ -804,13 +1307,28 @@
         frequency
         (argmin (lambda (candidate) (abs (- candidate frequency)))
                 current-frequencies)))
+  (define charge-frequencies
+    (remove-duplicates
+     (map parsed-nec2c-segment-charge-frequency-mhz
+          (parsed-nec2c-report-charges report))))
+  (define charge-frequency
+    (and (pair? charge-frequencies)
+         (argmin (lambda (candidate) (abs (- candidate actual-frequency)))
+                 charge-frequencies)))
+  ;; Classic reports number segments globally, while result JSON identifies a
+  ;; segment within its wire tag.  Indexing each tag in report order makes the
+  ;; supplemental classic charge table line up with either representation.
+  (define charge-tag-counts (make-hash))
   (define charges
     (for/hash ([sample (in-list (parsed-nec2c-report-charges report))]
-               #:when (approximately=?
-                       actual-frequency
-                       (parsed-nec2c-segment-charge-frequency-mhz sample)))
-      (values (cons (parsed-nec2c-segment-charge-tag sample)
-                    (parsed-nec2c-segment-charge-segment sample))
+               #:when (and charge-frequency
+                           (approximately=?
+                            charge-frequency
+                            (parsed-nec2c-segment-charge-frequency-mhz sample))))
+      (define tag (parsed-nec2c-segment-charge-tag sample))
+      (define segment (add1 (hash-ref charge-tag-counts tag 0)))
+      (hash-set! charge-tag-counts tag segment)
+      (values (cons tag segment)
               (parsed-nec2c-segment-charge-charge-density sample))))
   (define tag-counts (make-hash))
   (define segments
@@ -819,13 +1337,12 @@
                        actual-frequency
                        (parsed-nec2c-segment-current-frequency-mhz sample)))
       (define wire-id (parsed-nec2c-segment-current-tag sample))
-      (define absolute-segment (parsed-nec2c-segment-current-segment sample))
       (define segment (add1 (hash-ref tag-counts wire-id 0)))
       (hash-set! tag-counts wire-id segment)
       (nec2c-segment-sample
        actual-frequency wire-id segment
        (parsed-nec2c-segment-current-current sample)
-       (hash-ref charges (cons wire-id absolute-segment) #f))))
+       (hash-ref charges (cons wire-id segment) #f))))
   (define parsed-budget
     (for/first ([budget (in-list (parsed-nec2c-report-power-budgets report))]
                 #:when (approximately=?
@@ -856,6 +1373,21 @@
        (parsed-nec2c-surface-current-current-density sample))))
   (define diagnostics (nec2c-diagnostics actual-frequency segments budget))
   (set-nec2c-diagnostics-surface-currents! diagnostics surface-currents)
+  (set-nec2c-diagnostics-volume-currents!
+   diagnostics
+   (for/list ([sample (in-list (parsed-nec2c-report-volume-currents report))]
+              #:when (approximately=?
+                      actual-frequency
+                      (parsed-nec2c-volume-current-frequency-mhz sample)))
+     (nec2c-volume-current-sample
+      actual-frequency
+      (parsed-nec2c-volume-current-cell-id sample)
+      (parsed-nec2c-volume-current-box-id sample)
+      (parsed-nec2c-volume-current-region-id sample)
+      (parsed-nec2c-volume-current-material-id sample)
+      (parsed-nec2c-volume-current-center sample)
+      (parsed-nec2c-volume-current-size sample)
+      (parsed-nec2c-volume-current-current-density sample))))
   diagnostics)
 
 (define (number-field who value description)
@@ -874,11 +1406,16 @@
           (number-field 'nec2c frequency "frequency")
           (number-field 'nec2c increment "frequency increment")))
 
-(define (runner-keywords model-path executable keep? timeout cards
+(define (runner-keywords model-path executable dielectrics? dielectric-solver
+                         solver-tolerance solver-iterations keep? timeout cards
                          [validate-report values])
   (run-nec2c cards
              #:model-path model-path
              #:executable executable
+             #:dielectrics? dielectrics?
+             #:dielectric-solver dielectric-solver
+             #:solver-tolerance solver-tolerance
+             #:solver-iterations solver-iterations
              #:keep-artifacts? keep?
              #:timeout timeout
              #:validate-report validate-report))
@@ -887,12 +1424,17 @@
          [frequency (model-frequency)]
          #:model-path [model-path #f]
          #:executable [executable #f]
+         #:dielectrics? [dielectrics? #t]
+         #:dielectric-solver [dielectric-solver 'dense]
+         #:solver-tolerance [solver-tolerance #f]
+         #:solver-iterations [solver-iterations #f]
          #:keep-artifacts? [keep? #f]
          #:timeout [timeout #f])
   (unless (and (real? frequency) (> frequency 0))
     (raise-argument-error 'nec2c-measure-impedance "positive-real?" frequency))
   (define-values (run report)
-    (runner-keywords model-path executable keep? timeout
+    (runner-keywords model-path executable dielectrics? dielectric-solver
+                     solver-tolerance solver-iterations keep? timeout
                      (list "PT -1" (frequency-card frequency) "XQ 0")
                      (lambda (report)
                        (define actual
@@ -952,12 +1494,17 @@
          #:step [step #f]
          #:model-path [model-path #f]
          #:executable [executable #f]
+         #:dielectrics? [dielectrics? #t]
+         #:dielectric-solver [dielectric-solver 'dense]
+         #:solver-tolerance [solver-tolerance #f]
+         #:solver-iterations [solver-iterations #f]
          #:keep-artifacts? [keep? #f]
          #:timeout [timeout #f])
   (define-values (count increment)
     (sweep-count-and-increment 'nec2c-vswr-sweep start stop steps step))
   (define-values (run report)
-    (runner-keywords model-path executable keep? timeout
+    (runner-keywords model-path executable dielectrics? dielectric-solver
+                     solver-tolerance solver-iterations keep? timeout
                      (list "PT -1" (frequency-card start count increment) "XQ 0")
                      (lambda (report)
                        (define parsed (parsed-nec2c-report-feeds report))
@@ -1012,10 +1559,12 @@
           (number-field 'nec2c theta-step "theta step")
           (number-field 'nec2c phi-step "phi step")))
 
-(define (run-pattern cards expected-count model-path executable keep? timeout)
+(define (run-pattern cards expected-count model-path executable dielectrics?
+                     dielectric-solver solver-tolerance solver-iterations keep? timeout)
   (define-values (run report)
     (runner-keywords
-     model-path executable keep? timeout cards
+     model-path executable dielectrics? dielectric-solver
+     solver-tolerance solver-iterations keep? timeout cards
      (lambda (report)
        (define actual (length (parsed-nec2c-report-patterns report)))
        (unless (= actual expected-count)
@@ -1033,6 +1582,10 @@
          #:step [step 1]
          #:model-path [model-path #f]
          #:executable [executable #f]
+         #:dielectrics? [dielectrics? #t]
+         #:dielectric-solver [dielectric-solver 'dense]
+         #:solver-tolerance [solver-tolerance #f]
+         #:solver-iterations [solver-iterations #f]
          #:keep-artifacts? [keep? #f]
          #:timeout [timeout #f])
   (define grounded? (analysis-grounded? model-path))
@@ -1048,7 +1601,8 @@
     (run-pattern
      (list "PT -1" (frequency-card frequency)
            (radiation-card 1 (length angles) (- 90 elevation) start 0 step))
-     (length angles) model-path executable keep? timeout))
+     (length angles) model-path executable dielectrics? dielectric-solver
+     solver-tolerance solver-iterations keep? timeout))
   (nec2c-pattern run 'azimuth elevation samples))
 
 (define (approximately=? a b [epsilon 1e-6])
@@ -1079,6 +1633,10 @@
          #:step [step 1]
          #:model-path [model-path #f]
          #:executable [executable #f]
+         #:dielectrics? [dielectrics? #t]
+         #:dielectric-solver [dielectric-solver 'dense]
+         #:solver-tolerance [solver-tolerance #f]
+         #:solver-iterations [solver-iterations #f]
          #:keep-artifacts? [keep? #f]
          #:timeout [timeout #f])
   (define grounded? (analysis-grounded? model-path))
@@ -1103,7 +1661,8 @@
     (run-pattern
      (list "PT -1" (frequency-card frequency)
            (radiation-card (length theta-values) 2 0 azimuth step 180))
-     (* 2 (length theta-values)) model-path executable keep? timeout))
+     (* 2 (length theta-values)) model-path executable dielectrics?
+     dielectric-solver solver-tolerance solver-iterations keep? timeout))
   (define ordered
     (for/list ([angle (in-list angles)])
       (define-values (theta phi) (elevation-angle->nec angle azimuth))
@@ -1118,6 +1677,10 @@
          #:phi-step [phi-step 5]
          #:model-path [model-path #f]
          #:executable [executable #f]
+         #:dielectrics? [dielectrics? #t]
+         #:dielectric-solver [dielectric-solver 'dense]
+         #:solver-tolerance [solver-tolerance #f]
+         #:solver-iterations [solver-iterations #f]
          #:keep-artifacts? [keep? #f]
          #:timeout [timeout #f])
   (define grounded? (analysis-grounded? model-path))
@@ -1132,7 +1695,8 @@
            (radiation-card (length theta-values) (length phi-values)
                            0 0 theta-step phi-step))
      (* (length theta-values) (length phi-values))
-     model-path executable keep? timeout))
+     model-path executable dielectrics? dielectric-solver
+     solver-tolerance solver-iterations keep? timeout))
   (define grid (nec2c-pattern-grid run theta-values phi-values samples))
   (set-nec2c-pattern-grid-diagnostics!
    grid (enrich-diagnostics report frequency))
@@ -1142,19 +1706,22 @@
          [frequency (model-frequency)]
          #:model-path [model-path #f]
          #:executable [executable #f]
+         #:dielectrics? [dielectrics? #t]
+         #:dielectric-solver [dielectric-solver 'dense]
+         #:solver-tolerance [solver-tolerance #f]
+         #:solver-iterations [solver-iterations #f]
          #:keep-artifacts? [keep? #f]
          #:timeout [timeout #f])
   (unless (and (real? frequency) (> frequency 0))
     (raise-argument-error 'nec2c-segment-diagnostics "positive-real?" frequency))
   (define-values (_run report)
     (runner-keywords
-     model-path executable keep? timeout
+     model-path executable dielectrics? dielectric-solver
+     solver-tolerance solver-iterations keep? timeout
      (list "PT 0" "PQ 0" (frequency-card frequency) "XQ 0")
      (lambda (report)
        (unless (pair? (parsed-nec2c-report-currents report))
-         (error 'nec2c-segment-diagnostics "NEC2C returned no segment currents"))
-       (unless (pair? (parsed-nec2c-report-charges report))
-         (error 'nec2c-segment-diagnostics "NEC2C returned no segment charge densities")))))
+         (error 'nec2c-segment-diagnostics "NEC2C returned no segment currents")))))
   (enrich-diagnostics report frequency))
 
 (struct resolved-near-field-section
@@ -1182,17 +1749,30 @@
           (/ (apply + (map point3-y feeds)) count)
           (/ (apply + (map point3-z feeds)) count)))
 
-(define (model-surface-corners)
+(define (cuboid-bound-corners cuboid)
+  (define-values (minimum maximum) (model-cuboid-bounds cuboid))
+  (for*/list ([x (in-list (list (first minimum) (first maximum)))]
+              [y (in-list (list (second minimum) (second maximum)))]
+              [z (in-list (list (third minimum) (third maximum)))])
+    (point3 x y z)))
+
+(define (model-geometry-corners)
   (define geometry
     (near-field-surface-call 'model-nec2c-surface-geometry))
-  (if geometry
-      (append*
-       (for/list ([patch
-                   (in-list
-                    (near-field-surface-call
-                     'nec2c-surface-geometry-patches geometry))])
-         (near-field-surface-call 'nec2c-surface-patch-corners patch)))
-      '()))
+  (append
+   (if geometry
+       (append*
+        (for/list ([patch
+                    (in-list
+                     (near-field-surface-call
+                      'nec2c-surface-geometry-patches geometry))])
+          (near-field-surface-call 'nec2c-surface-patch-corners patch)))
+       '())
+   (append*
+    (for/list ([cuboid (in-list (model-cuboids))]
+               #:when (eq? 'dielectric
+                           (em-material-kind (model-cuboid-material cuboid))))
+      (cuboid-bound-corners cuboid)))))
 
 (define (model-axis-bounds accessor surface-corners)
   (define extrema
@@ -1319,6 +1899,10 @@
          #:max-samples [max-samples 250000]
          #:model-path [model-path #f]
          #:executable [executable #f]
+         #:dielectrics? [dielectrics? #t]
+         #:dielectric-solver [dielectric-solver 'dense]
+         #:solver-tolerance [solver-tolerance #f]
+         #:solver-iterations [solver-iterations #f]
          #:keep-artifacts? [keep? #f]
          #:timeout [timeout #f])
   (unless (and (finite-real? frequency) (positive? frequency))
@@ -1334,7 +1918,10 @@
     (raise-argument-error
      'nec2c-near-field-planes "a nonempty list of near-field-section values" requests))
   (define centroid (model-feed-centroid))
-  (define surface-corners (model-surface-corners))
+  ;; Resolve one shared geometry envelope before deciding whether this run
+  ;; enables dielectric loading. This keeps loaded/reference comparisons on
+  ;; exactly the same sampling planes.
+  (define surface-corners (model-geometry-corners))
   (define resolved
     (for/list ([request (in-list requests)])
       (resolve-near-field-section
@@ -1359,7 +1946,8 @@
        (near-field-card quantity section))))
   (define-values (run report)
     (runner-keywords
-     model-path executable keep? timeout cards
+     model-path executable dielectrics? dielectric-solver
+     solver-tolerance solver-iterations keep? timeout cards
      (lambda (report)
        (define actual (length (parsed-nec2c-report-near-fields report)))
        (unless (= actual requested-samples)
@@ -1464,6 +2052,10 @@
          #:phi-step [phi-step 5]
          #:model-path [model-path #f]
          #:executable [executable #f]
+         #:dielectrics? [dielectrics? #t]
+         #:dielectric-solver [dielectric-solver 'dense]
+         #:solver-tolerance [solver-tolerance #f]
+         #:solver-iterations [solver-iterations #f]
          #:keep-artifacts? [keep? #f]
          #:timeout [timeout #f])
   (define who 'nec2c-gain-sweep)
@@ -1488,7 +2080,8 @@
   (define angular-count (* (length theta-values) (length phi-values)))
   (define-values (run report)
     (runner-keywords
-     model-path executable keep? timeout
+     model-path executable dielectrics? dielectric-solver
+     solver-tolerance solver-iterations keep? timeout
      (list "PT -1" (frequency-card start count increment)
            (radiation-card (length theta-values) (length phi-values)
                            0 0 theta-step phi-step))

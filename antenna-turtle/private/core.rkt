@@ -30,6 +30,9 @@
  ;; Extension support. These are consumed by geometry backends rather than
  ;; intended as surface DSL operations.
  register-model-reset-hook!
+ register-wire-clear-hook!
+ (struct-out reflection-context)
+ current-reflection-context
  current-turtle-affine-transform current-geometry-scale
  current-turtle-event-handler
 
@@ -111,6 +114,7 @@
 ;; its scope begins. Turtle state remains in ordinary logical/global space;
 ;; only points crossing the model-geometry boundary are mapped.
 (struct coordinate-warp (origin orientation mapper) #:transparent)
+(struct reflection-context (anchor normal) #:transparent)
 
 (define identity-matrix
   '((1 0 0)
@@ -133,9 +137,11 @@
 (define current-turtle-stack (make-parameter '()))
 (define pending-feed-location (make-parameter #f))
 (define current-coordinate-warp (make-parameter #f))
+(define current-reflection-context (make-parameter #f))
 (define current-radial-iterations (make-parameter '()))
 (define current-turtle-event-handler (make-parameter #f))
 (define model-reset-hooks '())
+(define wire-clear-hooks '())
 
 (define (register-model-reset-hook! hook)
   (unless (and (procedure? hook) (procedure-arity-includes? hook 0))
@@ -143,6 +149,14 @@
      'register-model-reset-hook! "(procedure-arity-includes/c 0)" hook))
   (unless (memq hook model-reset-hooks)
     (set! model-reset-hooks (append model-reset-hooks (list hook))))
+  (void))
+
+(define (register-wire-clear-hook! hook)
+  (unless (and (procedure? hook) (procedure-arity-includes? hook 0))
+    (raise-argument-error
+     'register-wire-clear-hook! "(procedure-arity-includes/c 0)" hook))
+  (unless (memq hook wire-clear-hooks)
+    (set! wire-clear-hooks (append wire-clear-hooks (list hook))))
   (void))
 
 ;; Model settings retain the same zero/one-argument interface as ordinary
@@ -417,7 +431,9 @@
   ;; turtle state. Preserve its unscaled value while resetting transient
   ;; movement and diameter scales with the rest of the construction state.
   (clear-construction-state!
-   (turtle-state-base-diameter (current-turtle-state))))
+   (turtle-state-base-diameter (current-turtle-state)))
+  (for ([hook (in-list wire-clear-hooks)]) (hook))
+  (void))
 
 (define (reset-model!)
   (check-clear-context 'reset-model!)
@@ -1032,9 +1048,14 @@
       [(z) (point3 0 0 1)]))
   (define normal
     (mat*point (turtle-state-orientation entry-state) local-normal))
-  ;; Execute arbitrary user code once. Reflection copies only the geometry it
-  ;; produced, so feeds and unrelated Racket side effects are never repeated.
-  (define results (call-with-values thunk list))
+  ;; Execute arbitrary user code once. Reflection copies only declarative
+  ;; geometry, so feeds and unrelated Racket side effects are never repeated.
+  ;; Extension geometry can inspect this context and register its reflected
+  ;; counterpart during the single execution.
+  (define results
+    (parameterize ([current-reflection-context
+                    (reflection-context anchor normal)])
+      (call-with-values thunk list)))
   (unless (eq? (current-antenna-model) entry-model)
     (error 'reflect "the body may not reset or replace the current model"))
   (define current-edges (model-edges entry-model))

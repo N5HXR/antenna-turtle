@@ -75,9 +75,19 @@
       (turn up 90)
       (with-wire
         (move forward 0.5 feed start)))
+    ;; A disabled dielectric still participates in the sampling envelope so
+    ;; loaded and reference runs remain directly comparable.
+    (define bounds-foam (dielectric name bounds-foam er 2.5))
+    (from-here
+      (move forward 6)
+      (move up 0.5)
+      (cuboid name distant-dielectric
+              size '(1 1 1)
+              material bounds-foam))
     (nec2c-executable integration-executable)
     (define fields
       (nec2c-near-field-planes
+       #:dielectrics? #f
        #:planes
        (list
         (near-field-section
@@ -85,10 +95,10 @@
     (define section (first (nec2c-near-field-result-sections fields)))
     (define x-values (nec2c-near-field-section-u-values section))
     (define z-values (nec2c-near-field-section-v-values section))
-    ;; The four-metre body extends to X=+/-2 m. At 300 MHz, its automatic
-    ;; margin should be nearly another metre on both sides.
-    (check-true (< (first x-values) -2.9))
-    (check-true (> (last x-values) 2.9))
+    ;; The dielectric extends to X=6.5 m. At 300 MHz, its automatic margin
+    ;; should be nearly another metre, symmetrically about the feed centroid.
+    (check-true (< (first x-values) -7.4))
+    (check-true (> (last x-values) 7.4))
     ;; A grounded model samples only NEC's physical upper half-space.
     (check-equal? (first z-values) 0)
     (check-true (> (last z-values) 2.4))

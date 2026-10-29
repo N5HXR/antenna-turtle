@@ -52,6 +52,12 @@
   (nec2c-surface-current-sample
    150 1 (point3 0 0 0)
    (list 0.003+0.001i 0.002-0.0005i 0.0+0.0i))))
+(set-nec2c-diagnostics-volume-currents!
+ diagnostics
+ (list
+  (nec2c-volume-current-sample
+   150 1 1 1 1 (point3 0.5 0 0) (point3 0.1 0.1 0.1)
+   (list 0.01+0.02i 0.0+0.0i 0.03-0.01i))))
 (set-nec2c-pattern-grid-diagnostics! pattern diagnostics)
 
 (define near-fields
@@ -74,6 +80,11 @@
   (model-frequency 150)
   (wire-on)
   (spread forward 1 feed center)
+  (define report-dielectric (dielectric name report-foam er 3.5))
+  (from-here
+    (move right 0.5)
+    (cuboid name report-volume size '(0.1 0.1 0.1)
+            material report-dielectric anchor center))
   (define destination (make-temporary-file "nec2c-report-~a.html" #f
                                            (current-directory)))
   (dynamic-wind
@@ -87,6 +98,9 @@
      (check-regexp-match #rx"pattern_frequency_mhz" html)
      (check-regexp-match #rx"segment_samples" html)
      (check-regexp-match #rx"surface_current_samples" html)
+     (check-regexp-match #rx"volume_current_samples" html)
+     (check-regexp-match #rx"dielectric_volumes" html)
+     (check-regexp-match #rx"dielectric J magnitude" html)
      (check-regexp-match #rx"current_density" html)
      (check-regexp-match #rx"charge_density" html)
      (check-regexp-match #rx"power_budget" html)

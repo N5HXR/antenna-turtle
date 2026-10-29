@@ -8,6 +8,7 @@
          "solid-csg.rkt"
          "solid-csg-dsl.rkt"
          "stl-import.rkt"
+         "lumped-element-dsl.rkt"
          (for-syntax racket/base racket/list syntax/parse))
 
 (provide body sheet port lumped-element dielectric conductor with-material mesh-plane
@@ -332,78 +333,6 @@
          #`(add-lumped-port '#,(syntax-e #'direction) #,@keyword-arguments))]
     [(_ . _)
      (raise-syntax-error 'port "expected (port DIRECTION setting value ...)" stx)]))
-
-(define-syntax (lumped-element stx)
-  (syntax-parse stx
-    [(_ direction:id setting ...)
-     (unless (memq (syntax-e #'direction) valid-directions)
-       (raise-syntax-error 'lumped-element
-                           "expected a turtle direction" stx #'direction))
-     (define values
-       (settings
-        'lumped-element stx #'(setting ...)
-        '(name resistance inductance capacitance topology caps
-               gap width depth size anchor priority precedence)
-        (string-append
-         "expected name, resistance, inductance, capacitance, topology, caps, "
-         "gap, width, depth, size, anchor, priority, or precedence setting/value pairs")))
-     (unless (hash-has-key? values 'gap)
-       (raise-syntax-error 'lumped-element "gap setting is required" stx))
-     (unless (ormap (lambda (key) (hash-has-key? values key))
-                    '(resistance inductance capacitance))
-       (raise-syntax-error 'lumped-element
-                           "an electrical value is required" stx))
-     (when (and (hash-has-key? values 'size)
-                (or (hash-has-key? values 'width)
-                    (hash-has-key? values 'depth)))
-       (raise-syntax-error 'lumped-element
-                           "use either size or width/depth" stx))
-     (unless (or (hash-has-key? values 'size)
-                 (and (hash-has-key? values 'width)
-                      (hash-has-key? values 'depth)))
-       (raise-syntax-error 'lumped-element
-                           "size or both width and depth are required" stx))
-     (define topology
-       (and (hash-has-key? values 'topology)
-            (literal-expression
-             (hash-ref values 'topology) '(series parallel)
-             'lumped-element stx "topology must be series or parallel")))
-     (define common
-       (append
-        (append
-         (if (hash-has-key? values 'name)
-             (list #'#:name (name-expression (hash-ref values 'name)))
-             '())
-         (list #'#:gap (hash-ref values 'gap)))
-        (optional-keyword values 'resistance #'#:resistance)
-        (optional-keyword values 'inductance #'#:inductance)
-        (optional-keyword values 'capacitance #'#:capacitance)
-        (if topology (list #'#:topology topology) '())
-        (optional-keyword values 'caps #'#:caps)
-        (if (hash-has-key? values 'anchor)
-            (list #'#:anchor
-                  (literal-expression
-                   (hash-ref values 'anchor) '(start center end)
-                   'lumped-element stx "anchor must be start, center, or end"))
-            '())
-        (precedence-keywords values)))
-     (if (hash-has-key? values 'size)
-         (let ([size (hash-ref values 'size)])
-           #`(let-values ([(transverse-width transverse-depth)
-                           (transverse-size 'lumped-element #,size)])
-               (add-lumped-element
-                '#,(syntax-e #'direction)
-                #:width transverse-width #:depth transverse-depth
-                #,@common)))
-         #`(add-lumped-element
-            '#,(syntax-e #'direction)
-            #:width #,(hash-ref values 'width)
-            #:depth #,(hash-ref values 'depth)
-            #,@common))]
-    [(_ . _)
-     (raise-syntax-error
-      'lumped-element
-      "expected (lumped-element DIRECTION setting value ...)" stx)]))
 
 (define-syntax (cuboid stx)
   (syntax-parse stx

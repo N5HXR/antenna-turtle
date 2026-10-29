@@ -2,7 +2,8 @@
 
 (require racket/list
          (prefix-in m: manifold)
-         "solid-core.rkt")
+         "solid-core.rkt"
+         "nec2c-dielectric.rkt")
 
 (provide
  current-solid-material
@@ -54,9 +55,16 @@
   (positive-finite 'cuboid length "length")
   (positive-finite 'cuboid width "width")
   (positive-finite 'cuboid height "height")
-  (register-temporary
-   name (m:cube length width height #:center? #t)
-   material precedence anchor metal-thickness))
+  (define body
+    (register-temporary
+     name (m:cube length width height #:center? #t)
+     material precedence anchor metal-thickness))
+  ;; Cuboids are backend-neutral analytic geometry. Record the declaration
+  ;; after solid placement succeeds, using the solid scene's effective name so
+  ;; both representations retain one identity.
+  (add-model-cuboid
+   (solid-body-name body) material (list length width height) #:anchor anchor)
+  body)
 
 (define (dimension-list who value count)
   (define dimensions

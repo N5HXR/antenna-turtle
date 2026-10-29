@@ -6,7 +6,9 @@
          "core.rkt"
          "material.rkt"
          "mesh-constraint.rkt"
+         "nec2c-dielectric.rkt"
          "lumped-component.rkt"
+         "wire-lumped.rkt"
          "solid-placement.rkt")
 
 (provide
@@ -492,6 +494,11 @@
    scene (append (solid-scene-components scene) (list component)))
   component)
 
+;; The backend-neutral lumped-element DSL calls this hook only when transverse
+;; dimensions were supplied.  Wire-only declarations therefore remain usable
+;; on installations without Manifold.
+(current-solid-lumped-element-handler add-lumped-element)
+
 (define (point+scaled point vector scale)
   (point3 (+ (point3-x point) (* scale (point3-x vector)))
           (+ (point3-y point) (* scale (point3-y vector)))
@@ -609,6 +616,7 @@
     (unless (m:solid-closed? solid) (m:solid-close! solid)))
   ;; Ports and sheets are subordinate to the physical bodies they touch.
   (current-solid-scene (solid-scene '() '() '() '()))
+  (clear-model-cuboids)
   (clear-mesh-constraints)
   (void))
 

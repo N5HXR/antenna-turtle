@@ -10,6 +10,9 @@
          racket/runtime-path
          racket/string
          "core.rkt"
+         "material.rkt"
+         "nec2c-dielectric.rkt"
+         "nec2c-result-json.rkt"
          "nec2c.rkt")
 
 (provide write-html-report write-nec2c-html-report)
@@ -93,6 +96,11 @@
         (exact->inexact (point3-y point))
         (exact->inexact (+ (point3-z point) (model-height)))))
 
+(define (solver-coordinate-list-report coordinates)
+  (list (exact->inexact (list-ref coordinates 0))
+        (exact->inexact (list-ref coordinates 1))
+        (exact->inexact (+ (list-ref coordinates 2) (model-height)))))
+
 (define (feed-report edge)
   (and (wire-edge-feed? edge)
        (hash 'name (format "~a" (wire-edge-feed-name edge))
@@ -159,7 +167,23 @@
           'displacement
           (exact->inexact
            (surface-call 'nec2c-surface-attachment-displacement attachment))))
-       '())))
+       '())
+   'dielectric_volumes
+   (for/list ([volume (in-list (model-cuboids))]
+              #:when (eq? (em-material-kind (model-cuboid-material volume))
+                          'dielectric))
+     (define-values (minimum maximum) (model-cuboid-bounds volume))
+     (define material (model-cuboid-material volume))
+     (hash
+      'name (format "~a" (model-cuboid-name volume))
+      'minimum (solver-coordinate-list-report minimum)
+      'maximum (solver-coordinate-list-report maximum)
+      'material
+      (hash 'name (format "~a" (em-material-name material))
+            'relative_permittivity
+            (exact->inexact (em-material-relative-permittivity material))
+            'conductivity_s_per_m
+            (exact->inexact (em-material-electric-conductivity material)))))))
 
 (define (feedpoint-sample-report frequency sample reflection return-loss vswr)
   (define feedpoint
@@ -283,6 +307,21 @@
                            (in-list
                             (nec2c-surface-current-sample-current-density sample))])
                  (complex-report component))))
+       'volume_current_samples
+       (for/list ([sample
+                   (in-list (nec2c-diagnostics-volume-currents diagnostics))])
+         (hash
+          'cell_id (nec2c-volume-current-sample-cell-id sample)
+          'box_id (nec2c-volume-current-sample-box-id sample)
+          'region_id (nec2c-volume-current-sample-region-id sample)
+          'material_id (nec2c-volume-current-sample-material-id sample)
+          'center (point-report (nec2c-volume-current-sample-center sample))
+          'size (point-report (nec2c-volume-current-sample-size sample))
+          'current_density
+          (for/list ([component
+                      (in-list
+                       (nec2c-volume-current-sample-current-density sample))])
+            (complex-report component))))
        'power_budget
        (let ([budget (nec2c-diagnostics-power-budget diagnostics)])
          (if (not budget)
@@ -339,6 +378,56 @@ CSS
   (cond
     [(nec2c-sweep-result? result) (nec2c-sweep-result-run result)]
     [(nec2c-gain-sweep-result? result) (nec2c-gain-sweep-result-run result)]))
+
+(define (machine-provenance run selected-frequency)
+  (define result (nec2c-run-info-machine-result run))
+  (if (not result)
+      'null
+      (let* ([producer (nec2c-machine-result-producer result)]
+             [jobs (nec2c-machine-result-jobs result)]
+             [executions
+              (append*
+               (for/list ([job (in-list jobs)])
+                 (nec2c-result-job-executions job)))]
+             [selected
+              (for/first ([execution (in-list executions)]
+                          #:when (and
+                                  (equal? (nec2c-result-execution-status execution) "ok")
+                                  (same-frequency?
+                                   selected-frequency
+                                   (nec2c-result-execution-frequency-mhz execution))
+                                  (pair? (nec2c-result-execution-far-fields execution))))
+                execution)])
+        (hash
+         'schema_version 1
+         'completion_status (nec2c-machine-result-completion-status result)
+         'producer
+         (hash 'program (nec2c-result-producer-program producer)
+               'program_version (nec2c-result-producer-program-version producer)
+               'dielectric_feature_revision
+               (nec2c-result-producer-dielectric-feature-revision producer))
+         'diagnostics
+         (map nec2c-result-diagnostic-raw
+              (nec2c-machine-result-diagnostics result))
+         'jobs
+         (for/list ([job (in-list jobs)])
+           (hash 'job_index (nec2c-result-job-job-index job)
+                 'dielectric (nec2c-result-job-dielectric job)
+                 'mesh_states (nec2c-result-job-mesh-states job)
+                 'ground_states (nec2c-result-job-ground-states job)
+                 'omitted_requests (nec2c-result-job-omitted-requests job)))
+         'selected_execution
+         (if selected
+             (hash
+              'execution_index (nec2c-result-execution-execution-index selected)
+              'frequency_mhz (nec2c-result-execution-frequency-mhz selected)
+              'mesh_state_id (nec2c-result-execution-mesh-state-id selected)
+              'ground_state_id (nec2c-result-execution-ground-state-id selected)
+              'excitation (nec2c-result-execution-excitation selected)
+              'trigger (nec2c-result-execution-trigger selected)
+              'solver (nec2c-result-execution-solver selected)
+              'power (nec2c-result-execution-power selected))
+             'null)))))
 
 (define (write-nec2c-html-report result destination
                                   #:pattern [supplied-pattern #f]
@@ -415,6 +504,7 @@ CSS
                  'version (format "~a" (nec2c-run-info-version run))
                  'elapsed_ms (nec2c-run-info-elapsed-ms run)
                  'exit_code (nec2c-run-info-exit-code run))
+           'machine_provenance (machine-provenance run selected-frequency)
            'measurements measurements)
      'geometry (geometry-report)
      'pattern (pattern-report pattern)

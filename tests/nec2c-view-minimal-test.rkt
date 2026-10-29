@@ -9,3 +9,7 @@
 (check-true (procedure? show-radiation-cut))
 (check-true (procedure? show-radiation-pattern-3d))
 (check-true (procedure? write-html-report))
+(define-values (_required-comparison-keywords comparison-keywords)
+  (procedure-keywords show-radiation-comparison))
+(check-not-false (member '#:difference? comparison-keywords))
+(check-not-false (member '#:difference-range-db comparison-keywords))

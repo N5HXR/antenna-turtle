@@ -1511,8 +1511,9 @@ are recorded in the simulation manifest.
 
 ### `(lumped-element direction setting value ...)`
 
-Places an ideal two-terminal OpenEMS R, L, C, or compound RLC region centered
-on the turtle. Its complete contextual signature is:
+Places an ideal two-terminal R, L, C, or compound RLC element at the turtle.
+The same form supports inline NEC wire loads and spatial OpenEMS components.
+Its complete contextual signature is:
 
 ```racket
 (lumped-element direction
@@ -1520,16 +1521,45 @@ on the turtle. Its complete contextual signature is:
   [resistance ohms] [inductance henries] [capacitance farads]
   [topology (series | parallel)] [caps boolean]
   gap length
-  (size size | width width depth depth)
+  [(size size | width width depth depth)]
   [anchor (start | center | end)]
   [priority integer | precedence integer])
 ```
 
-`direction` is its terminal axis. `gap` and either `size`, or both `width` and
-`depth`, are required, as is at least one of `resistance`, `inductance`, and
-`capacitance`. `name` is optional and otherwise generated. A scalar `size`
-gives a square profile; a two-element list gives `(width depth)`. Like ports,
-elements accept `anchor start`, `anchor center`, and `anchor end`:
+`direction` is its terminal axis. `gap` and at least one of `resistance`,
+`inductance`, and `capacitance` are required. `name` is optional and otherwise
+generated.
+
+Inside `with-wire`, omit `size`, `width`, and `depth` to mark the current wire
+vertex for NEC2C loading:
+
+```racket
+(with-wire
+  (move forward 1 feed center)
+  (lumped-element forward
+    name trap
+    resistance 18000
+    inductance 1.8e-6
+    capacitance 56e-12
+    topology parallel
+    gap 0.02)
+  (move forward 1))
+```
+
+The declaration does not move the turtle. At NEC export the vertex must have
+exactly two collinear incident wires along `direction`. The exporter shortens
+each adjacent wire by half of `gap`, inserts a dedicated one-segment bridge,
+and loads that segment. `topology series` emits NEC load type 0 and `topology
+parallel` emits type 1. Feedpoints and lumped elements cannot occupy the same
+wire vertex. A declaration made outside `with-wire` may resolve to a vertex
+within `snap-length`, but must still match exactly one vertex.
+`reflect` duplicates wire lumped elements along with the wire geometry.
+`show-model` displays their centers as orange diamond markers.
+
+Supplying `size`, or both `width` and `depth`, also creates the spatial OpenEMS
+component. A scalar `size` gives a square profile; a two-element list gives
+`(width depth)`. Spatial elements accept `anchor start`, `anchor center`, and
+`anchor end`:
 
 ```racket
 (with-scale millimeters
@@ -1549,12 +1579,14 @@ When multiple electrical values are supplied, `topology series` or `topology
 parallel` is required. A topology on a pure R, L, or C is harmless. `caps`
 defaults to `#t`; specify `#f` explicitly to disable OpenEMS terminal caps.
 
-Spatial dimensions follow `with-scale`; electrical quantities remain SI. All
-six region faces become required mesh coordinates. The backend rejects a
-component with a terminal face that provably does not touch conductive solid
+For NEC wire placement, `anchor center` is currently required. Spatial
+dimensions and the NEC gap follow `with-scale`; electrical quantities remain
+SI. All six OpenEMS region faces become required mesh coordinates. The backend
+rejects a component with a terminal face that provably does not touch conductive solid
 or sheet geometry and requires its transformed frame to align with the Yee
 grid. `precedence` overrides the normal automatic `dielectric < lumped feature
-< conductor` choice. `clear-bodies` also clears lumped elements.
+< conductor` choice. `clear-bodies` clears spatial lumped elements;
+`clear-wires` and `reset-model!` clear NEC wire declarations.
 
 Export requires OpenEMS 0.37 / CSXCAD 0.7 or newer. Upstream installations
 under `/usr/local` are found automatically; set `OPENEMS_ROOT` for another
@@ -2342,6 +2374,36 @@ Every measurement function accepts these common keyword arguments:
 #:timeout seconds-or-#f
 ```
 
+### Automatic NEC2C-N5HXR dielectric meshes
+
+For one axis-aligned dielectric cuboid, automatic mode finds the coarsest safe
+cubic lattice within the electrical-resolution and conductor-clearance limits:
+
+```racket
+(nec2c-dielectric-mesh mode auto max-cells 2000)
+```
+
+`max-kh` is an optional quality ceiling and defaults to `0.5`. The planner may
+move each cuboid face by at most the smaller of the shortest material
+wavelength divided by `snap-wavelength-divisor` (default 1000) and the
+smallest cuboid dimension divided by `snap-feature-divisor` (default 100). It
+preserves the cuboid center. The exported resource records the chosen pitch,
+cell count, actual snap, and minimum conductor clearance in an `AUTO_MESH`
+comment.
+
+The planner rejects a result when the bounded snap would contact a conductor,
+violate NEC2C-N5HXR's cell/segment clearance rule, or exceed `max-cells`; it
+does not silently move the antenna. Automatic revision 1 supports one cuboid.
+Multi-volume studies and deliberately tuned lattices retain the manual form:
+
+```racket
+(nec2c-dielectric-mesh
+ max-kh 0.3 max-cells 5000 max-aspect 1.0)
+```
+
+`(plan-nec2c-dielectric)` returns the transparent selected plan for inspection
+without running NEC2C.
+
 An explicit `#:model-path` is used as the base deck. Otherwise the most recent
 `export-nec2c` path for the current model is reused. If neither exists, a base
 deck is generated in a fresh temporary directory. Analysis cards are added to
@@ -2903,12 +2965,13 @@ queued during the drag. Releasing the button restores all full-resolution
 colored surfaces at the final orientation. This keeps a large comparison
 responsive without changing the analyzed data or resting view.
 
-The comparison is absolute, not merely stylistic: all surfaces share the
-largest selected-component peak as their 0 dB color and radial reference, and
-all cameras share the same world-space radius. A lower-gain antenna therefore
-appears both smaller and lower on the common color scale. Each tile title
-reports its own peak in dBi, while one compact horizontal legend reports the
-shared reference. Its tick density adapts to the available width.
+In the ordinary comparison mode, the comparison is absolute, not merely
+stylistic: all surfaces share the largest selected-component peak as their
+0 dB color and radial reference, and all cameras share the same world-space
+radius. A lower-gain antenna therefore appears both smaller and lower on the
+common color scale. Each tile title reports its own peak in dBi, while one
+compact horizontal legend reports the shared reference. Its tick density
+adapts to the available width.
 `#:aspect-ratio` is the requested width/height of the window; `#:width`
 selects the width and the height is derived from both values. The viewer picks
 a row/column arrangement once when it opens, favoring nearly square tiles and
@@ -2924,6 +2987,27 @@ For example:
  #:aspect-ratio 16/9
  #:palette 'inferno)
 ```
+
+Pass `#:difference? #t` to treat the first case as the reference. The first
+tile keeps its ordinary absolute-gain rendering. Every subsequent tile uses
+the reference surface geometry and colors each direction by its signed
+absolute-gain change, `candidate dBi - reference dBi`. Blue indicates lower
+gain, gray no change, and red higher gain. One shared symmetric difference
+legend defaults to `#:difference-range-db 'auto`: its endpoints are the
+largest absolute difference within 30 dB of the reference peak, with a
+0.1 dB minimum that avoids magnifying numerical noise. Pass a positive number
+for a fixed range. Difference rendering deliberately requires identical theta
+and phi sample grids and at least two cases.
+
+```racket
+(show-radiation-comparison
+ (list (radiation-case "reference" reference-grid)
+       (radiation-case "loaded" loaded-grid))
+ #:difference? #t)
+```
+
+An identical candidate therefore appears uniformly gray. This is the exact
+zero-difference result rather than a missing color range.
 
 `#:mesh-step` controls only the displayed surface mesh, in degrees. Plot3D
 defaults to 5 degrees; OpenGL defaults to 2 degrees and uses every available

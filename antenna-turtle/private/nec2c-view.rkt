@@ -889,6 +889,10 @@
            (list (plot-legend-item "-10 dB" "gray" 'short-dash 'line)))
    #:legend? legend?
    #:x-label "frequency (MHz)"
+   ;; S11 cannot exceed 0 dB, but leaving the automatic upper bound at the
+   ;; highest sample clips half of a near-0 dB line, especially in a short
+   ;; plot window.  Keep a small amount of display-only headroom.
+   #:y-max 0.5
    #:y-label
    (format "return loss / S11 (dB, Z0 = ~a ohms)"
            (network-sweep-reference-impedance normalized))))
@@ -1129,6 +1133,8 @@
                                    #:scale [radial-scale 'arrl]
                                    #:palette [palette 'mmana]
                                    #:color-step [color-step #f]
+                                   #:difference? [difference? #f]
+                                   #:difference-range-db [difference-range-db 'auto]
                                    #:mesh-step [mesh-step 2]
                                    #:aspect-ratio [aspect-ratio 16/9]
                                    #:width [width 1400])
@@ -1146,6 +1152,8 @@
                    #:scale radial-scale
                    #:palette palette
                    #:color-step color-step
+                   #:difference? difference?
+                   #:difference-range-db difference-range-db
                    #:mesh-step mesh-step
                    #:aspect-ratio aspect-ratio
                    #:width width))
