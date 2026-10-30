@@ -108,6 +108,9 @@
      (check-regexp-match #rx"near_fields" html)
      (check-regexp-match #rx"NEAR FIELD" html)
      (check-regexp-match #rx"instantaneous magnitude" html)
+     (check-regexp-match #rx"average power vectors" html)
+     (check-regexp-match #rx"instantaneous power intensity" html)
+     (check-regexp-match #rx"instantaneous power vectors" html)
      (check-regexp-match #rx"instantaneous current" html)
      (check-regexp-match #rx"SMOOTH PATCH CURRENTS" html)
      (check-regexp-match #rx"port_samples" html)
@@ -130,6 +133,60 @@
      (write-html-report sweep destination #:pattern pattern #:near-fields #f)
      (check-regexp-match #rx"antenna-turtle-report/nec2c-m1"
                          (file->string destination)))
+   (lambda () (when (file-exists? destination) (delete-file destination)))))
+
+(test-case "NEC2C HTML report encodes unbounded network values as null"
+  (define infinite-sweep
+    (nec2c-sweep-result
+     run 50
+     (list
+      (nec2c-sweep-frequency
+       150
+       (list
+        (nec2c-sweep-sample
+         (feedpoint 150 50+0i)
+         0+0i
+         +inf.0
+         1.0))))))
+  (define destination (make-temporary-file "nec2c-infinite-report-~a.html" #f
+                                           (current-directory)))
+  (dynamic-wind
+   void
+   (lambda ()
+     (write-nec2c-html-report
+      infinite-sweep destination #:pattern pattern #:near-fields #f)
+     (define html (file->string destination))
+     (check-regexp-match #rx"\"s11_db\":null" html))
+   (lambda () (when (file-exists? destination) (delete-file destination)))))
+
+(test-case "NEC2C HTML report describes coax ports and resolved wire loads"
+  (reset-model!)
+  (model-frequency 150)
+  (maximum-segment-length 0.1)
+  (move up 1)
+  (from-here (move forward 0.05) (with-wire (move forward 0.5)))
+  (from-here (move back 0.05) (with-wire (move back 0.5)))
+  (define output-port
+    (wire-port forward name report-output gap 0.1 diameter 0.002))
+  (coax name report-coax output output-port impedance 50 velocity-factor 0.66
+        diameter 0.01 color "dark orange" input-gap 0.02
+    (move down 0.2)
+    (lumped-element down name report-choke inductance 1e-6
+                    topology series gap 0.01)
+    (move down 0.8))
+  (define destination (make-temporary-file "nec2c-coax-report-~a.html" #f
+                                           (current-directory)))
+  (dynamic-wind
+   void
+   (lambda ()
+     (write-nec2c-html-report sweep destination #:pattern pattern #:near-fields #f)
+     (define html (file->string destination))
+     (check-true (string-contains? html "\"coaxes\":[{"))
+     (check-true (string-contains? html "\"ports\":[{"))
+     (check-true (string-contains? html "\"transmission_lines\":[{"))
+     (check-true (string-contains? html "\"lumped_loads\":[{"))
+     (check-regexp-match #rx"report-choke" html)
+     (check-regexp-match #rx"coax-shield" html))
    (lambda () (when (file-exists? destination) (delete-file destination)))))
 
 (test-case "a plain NEC2C sweep requires an explicit radiation grid"

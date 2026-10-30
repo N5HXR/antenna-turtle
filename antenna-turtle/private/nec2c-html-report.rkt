@@ -10,10 +10,13 @@
          racket/runtime-path
          racket/string
          "core.rkt"
+         "export-nec2c.rkt"
          "material.rkt"
          "nec2c-dielectric.rkt"
          "nec2c-result-json.rkt"
-         "nec2c.rkt")
+         "nec2c.rkt"
+         "wire-lumped.rkt"
+         "wire-network.rkt")
 
 (provide write-html-report write-nec2c-html-report)
 
@@ -74,17 +77,30 @@
   (write-json value escaped)
   (close-output-port escaped))
 
+(define (finite-real? value)
+  (and (real? value)
+       (let ([converted (exact->inexact value)])
+         (and (not (nan? converted))
+              (not (infinite? converted))))))
+
+;; JSON has no representation for IEEE infinities or NaN.  These values can
+;; arise legitimately in idealized network results (for example, exact zero
+;; reflection or an open circuit), so report them as unavailable rather than
+;; allowing the complete portable-report write to fail.
+(define (json-real value)
+  (if (finite-real? value) (exact->inexact value) 'null))
+
 (define (real-json value)
-  (and (real? value) (exact->inexact value)))
+  (and (finite-real? value) (exact->inexact value)))
 
 (define (complex-report value)
-  (hash 'real (exact->inexact (real-part value))
-        'imaginary (exact->inexact (imag-part value))
-        'magnitude (exact->inexact (magnitude value))
+  (hash 'real (json-real (real-part value))
+        'imaginary (json-real (imag-part value))
+        'magnitude (json-real (magnitude value))
         'phase_degrees
         (if (zero? value)
             0.0
-            (exact->inexact (* 180 (/ (angle value) pi))))))
+            (json-real (* 180 (/ (angle value) pi))))))
 
 (define (point-report point)
   (list (exact->inexact (point3-x point))
@@ -125,17 +141,110 @@
         (surface-call 'nec2c-adjusted-edge-point surfaces edge end)
         (vertex-point
          ((if (eq? end 'start) wire-edge-start wire-edge-end) edge))))
+  (define loads (resolve-wire-loads 'write-nec2c-html-report))
+  (define endpoint-overrides (wire-load-endpoint-overrides loads))
+  (define port-by-edge
+    (for/hash ([port (in-list (model-wire-ports))])
+      (values (wire-port-declaration-edge port) port)))
+  (define coax-by-edge (make-hasheq))
+  (for* ([coax (in-list (model-wire-coaxes))]
+         [edge (in-list (wire-coax-declaration-shield-edges coax))])
+    (hash-set! coax-by-edge edge coax))
+  (define (resolved-edge-point edge end)
+    (define ends (hash-ref endpoint-overrides edge #f))
+    (if (and ends (hash-has-key? ends end))
+        (hash-ref ends end)
+        (edge-point edge end)))
+  (define (edge-report edge)
+    (define port (hash-ref port-by-edge edge #f))
+    (define coax (hash-ref coax-by-edge edge #f))
+    (hash 'id (wire-edge-id edge)
+          'start (solver-point-report (resolved-edge-point edge 'start))
+          'end (solver-point-report (resolved-edge-point edge 'end))
+          'diameter (json-real (wire-edge-diameter edge))
+          'segment_count
+          (nec2c-edge-segment-count edge (maximum-segment-length))
+          'feed (or (feed-report edge) 'null)
+          'role (cond [port "port"] [coax "coax-shield"] [else "wire"])
+          'name (cond [port (format "~a" (wire-port-declaration-name port))]
+                      [coax (format "~a shield" (wire-coax-declaration-name coax))]
+                      [else (format "wire ~a" (wire-edge-id edge))])
+          'coax (if coax (format "~a" (wire-coax-declaration-name coax)) 'null)
+          'color (if (and coax (wire-coax-declaration-color coax))
+                     (format "~a" (wire-coax-declaration-color coax))
+                     'null)))
+  (define (load-report load)
+    (define element (resolved-wire-load-element load))
+    (hash
+     'name (format "~a" (wire-lumped-element-name element))
+     'tag (resolved-wire-load-tag load)
+     'start (solver-point-report (resolved-wire-load-negative-point load))
+     'end (solver-point-report (resolved-wire-load-positive-point load))
+     'center (solver-point-report (wire-lumped-element-center element))
+     'diameter (json-real (resolved-wire-load-diameter load))
+     'topology (format "~a" (wire-lumped-element-topology element))
+     'resistance_ohms (json-real (or (wire-lumped-element-resistance element) 0))
+     'inductance_h (json-real (or (wire-lumped-element-inductance element) 0))
+     'capacitance_f (json-real (or (wire-lumped-element-capacitance element) 0))
+     'negative_wire_id (wire-edge-id (resolved-wire-load-negative-edge load))
+     'positive_wire_id (wire-edge-id (resolved-wire-load-positive-edge load))))
   (hash
    'grounded (model-grounded?)
    'wires
-   (for/list ([edge (in-list (model-edges))])
-     (hash 'id (wire-edge-id edge)
-           'start (solver-point-report (edge-point edge 'start))
-           'end (solver-point-report (edge-point edge 'end))
-           'diameter (exact->inexact (wire-edge-diameter edge))
-           'segment_count
-           (edge-segment-count edge (maximum-segment-length))
-           'feed (or (feed-report edge) 'null)))
+   (append
+    (map edge-report (model-edges))
+    (for/list ([load (in-list loads)])
+      (define report (load-report load))
+      (hash 'id (resolved-wire-load-tag load)
+            'start (hash-ref report 'start)
+            'end (hash-ref report 'end)
+            'diameter (hash-ref report 'diameter)
+            'segment_count 1
+            'feed 'null
+            'role "lumped-load"
+            'name (hash-ref report 'name)
+            'coax 'null
+            'color "dark orange")))
+   'ports
+   (for/list ([port (in-list (model-wire-ports))])
+     (hash 'name (format "~a" (wire-port-declaration-name port))
+           'wire_id (wire-edge-id (wire-port-declaration-edge port))
+           'negative (solver-point-report (wire-port-negative-point port))
+           'positive (solver-point-report (wire-port-positive-point port))
+           'generated (wire-port-declaration-generated? port)))
+   'transmission_lines
+   (for/list ([line (in-list (model-wire-transmission-lines))])
+     (hash
+      'name (format "~a" (wire-transmission-line-name line))
+      'input_port
+      (format "~a" (wire-port-declaration-name
+                     (wire-transmission-line-input-port line)))
+      'output_port
+      (format "~a" (wire-port-declaration-name
+                     (wire-transmission-line-output-port line)))
+      'impedance_ohms (json-real (wire-transmission-line-impedance line))
+      'physical_length_m (json-real (wire-transmission-line-physical-length line))
+      'velocity_factor (json-real (wire-transmission-line-velocity-factor line))
+      'electrical_length_m
+      (json-real (/ (wire-transmission-line-physical-length line)
+                    (wire-transmission-line-velocity-factor line)))))
+   'coaxes
+   (for/list ([coax (in-list (model-wire-coaxes))])
+     (hash
+      'name (format "~a" (wire-coax-declaration-name coax))
+      'shield_wire_ids
+      (map wire-edge-id (wire-coax-declaration-shield-edges coax))
+      'input_port
+      (format "~a" (wire-port-declaration-name
+                     (wire-coax-declaration-input-port coax)))
+      'output_port
+      (format "~a" (wire-port-declaration-name
+                     (wire-coax-declaration-output-port coax)))
+      'diameter (json-real (wire-coax-declaration-diameter coax))
+      'color (if (wire-coax-declaration-color coax)
+                 (format "~a" (wire-coax-declaration-color coax))
+                 'null)))
+   'lumped_loads (map load-report loads)
    'surface_patches
    (if surfaces
        (for/list ([patch
@@ -191,8 +300,8 @@
       [(nec2c-sweep-sample? sample) (nec2c-sweep-sample-feedpoint sample)]
       [(nec2c-gain-sweep-sample? sample) (nec2c-gain-sweep-sample-feedpoint sample)]))
   (hash 'port (format "~a" (nec2c-feedpoint-sample-feed-name feedpoint))
-        'frequency_mhz (exact->inexact frequency)
-        's11_db (- (exact->inexact return-loss))
+        'frequency_mhz (json-real frequency)
+        's11_db (json-real (- return-loss))
         'reflection_coefficient (complex-report reflection)
         'impedance_ohms
         (complex-report (nec2c-feedpoint-sample-impedance feedpoint))))
@@ -281,7 +390,7 @@
         'samples (map pattern-sample-report (nec2c-pattern-grid-samples pattern))))
 
 (define (optional-real value)
-  (if (real? value) (exact->inexact value) 'null))
+  (json-real value))
 
 (define (diagnostics-report diagnostics)
   (if (not diagnostics)

@@ -16,7 +16,8 @@
          "network.rkt"
          "nec2c-capabilities.rkt"
          "nec2c-dielectric.rkt"
-         "nec2c-result-json.rkt")
+         "nec2c-result-json.rkt"
+         "wire-network.rkt")
 
 ;; A runtime path prevents the compiler from eagerly compiling the optional
 ;; Manifold-backed surface module on wire-only installations.
@@ -233,6 +234,23 @@
          [near-fields #:auto #:mutable])
   #:auto-value '()
   #:transparent)
+
+(define (parsed-nec2c-report-with-feeds report feeds)
+  (define replacement
+    (parsed-nec2c-report feeds (parsed-nec2c-report-patterns report)))
+  (set-parsed-nec2c-report-currents!
+   replacement (parsed-nec2c-report-currents report))
+  (set-parsed-nec2c-report-charges!
+   replacement (parsed-nec2c-report-charges report))
+  (set-parsed-nec2c-report-surface-currents!
+   replacement (parsed-nec2c-report-surface-currents report))
+  (set-parsed-nec2c-report-volume-currents!
+   replacement (parsed-nec2c-report-volume-currents report))
+  (set-parsed-nec2c-report-power-budgets!
+   replacement (parsed-nec2c-report-power-budgets report))
+  (set-parsed-nec2c-report-near-fields!
+   replacement (parsed-nec2c-report-near-fields report))
+  replacement)
 
 (struct exn:fail:nec2c exn:fail (run-info) #:transparent)
 
@@ -1212,20 +1230,35 @@
              (define classic
                (with-handlers ([exn:fail? (lambda (_) #f)])
                  (parse-nec2c-output output-path)))
+             ;; NEC2C-N5HXR 1.3.1's schema-v1 writer currently publishes the
+             ;; current contributed by the network at a source segment, not
+             ;; the total source current printed in ANTENNA INPUT PARAMETERS.
+             ;; That makes impedance and accepted power wrong whenever the
+             ;; source is attached to a TL/NT terminal. Use the authoritative
+             ;; source row from the classic report for our own generated
+             ;; network models until the producer schema is corrected. All
+             ;; field/current/power datasets continue to come from JSON.
+             (define combined
+               (if (and classic
+                        (pair? (model-wire-transmission-lines))
+                        (pair? (parsed-nec2c-report-feeds classic)))
+                   (parsed-nec2c-report-with-feeds
+                    adapted (parsed-nec2c-report-feeds classic))
+                   adapted))
              (when (and classic
                         (pair? (parsed-nec2c-report-charges classic)))
                (set-parsed-nec2c-report-charges!
-                adapted (parsed-nec2c-report-charges classic)))
+                combined (parsed-nec2c-report-charges classic)))
              ;; The current schema-v1 writer records one execution for a
              ;; consecutive NE/NH request pair even though the classic report
              ;; contains both field tables.  Prefer the larger complete set
              ;; until the producer publishes both executions in JSON.
              (when (and classic
                         (> (length (parsed-nec2c-report-near-fields classic))
-                           (length (parsed-nec2c-report-near-fields adapted))))
+                           (length (parsed-nec2c-report-near-fields combined))))
                (set-parsed-nec2c-report-near-fields!
-                adapted (parsed-nec2c-report-near-fields classic)))
-             adapted]
+                combined (parsed-nec2c-report-near-fields classic)))
+             combined]
             [else (parse-nec2c-output output-path)]))
         ;; Run request-specific completeness checks before deleting successful
         ;; temporary artifacts. A malformed or truncated report is therefore

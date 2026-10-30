@@ -1588,6 +1588,83 @@ grid. `precedence` overrides the normal automatic `dielectric < lumped feature
 < conductor` choice. `clear-bodies` clears spatial lumped elements;
 `clear-wires` and `reset-model!` clear NEC wire declarations.
 
+### `(wire-port direction setting value ...)`
+
+Declares a named differential fixture segment for a NEC transmission line:
+
+```racket
+(define antenna-feed
+  (wire-port forward
+    name antenna-feed
+    gap {2 * inch}
+    diameter 0.002
+    anchor center))
+```
+
+`direction` points from the negative terminal to the positive terminal.
+`gap` is required; `diameter` defaults to the current wire diameter and
+`anchor` defaults to `center`. `anchor start` puts the negative terminal at the
+turtle and `anchor end` puts the positive terminal there. The returned
+`wire-port-declaration` is passed to `coax` or `transmission-line`. NEC export
+always emits the fixture with exactly one segment. `show-model` draws its
+negative and positive terminals as blue and turquoise markers.
+
+### `(coax setting value ... body ...)`
+
+Models coax as an ideal, non-radiating NEC `TL` for the internal differential
+mode plus a radiating turtle wire for current on the shield exterior:
+
+```racket
+(coax name feedline
+      output antenna-feed
+      impedance 50
+      velocity-factor 0.66
+      diameter 0.0103
+      color "dark orange"
+      input-gap inch
+      input-direction forward
+      feed input
+  (move down {4 * meters}))
+```
+
+The body starts at the output port's negative terminal and traces from the
+antenna toward the input measurement plane with wire generation already on.
+At its end, `coax` creates a fed input port whose negative terminal joins the
+shield path. `impedance` defaults to 50 ohms. `velocity-factor`, `diameter`,
+and `input-gap` are required; `input-direction` defaults to `forward`.
+Optional `color` accepts a Plot color string or symbol and changes only the
+visible shield-exterior route in `show-model`.
+`feed input` is optional documentation of the only revision-1 feed location.
+
+The NEC line length is the body's physical route length divided by velocity
+factor. The shield path is ordinary wire geometry, may contain inline
+`lumped-element` declarations, radiates, and appears in current plots. Ending
+the body leaves the shield open; grounding, chassis, counterpoise, and choke
+behavior must be modeled explicitly. Active NEC dielectric volumes and NEC
+surface bodies are rejected with this revision. The internal ideal line is
+not drawn and has no direct radiation or coupling.
+
+See `examples/coax-fed-20m-dipole.rkt` for direct-feed, symmetric-coax, and
+geometrically unbalanced comparisons over perfect ground.
+
+### `(transmission-line setting value ...)`
+
+The low-level layer behind `coax` connects two `wire-port` values:
+
+```racket
+(transmission-line
+  name line
+  input input-port
+  output antenna-feed
+  impedance 50
+  physical-length 4.7
+  velocity-factor 0.66)
+```
+
+Both ports must already exist and a port may participate in only one
+revision-1 line. The form does not add an excitation; `coax` supplies the fed
+input fixture for the common case.
+
 Export requires OpenEMS 0.37 / CSXCAD 0.7 or newer. Upstream installations
 under `/usr/local` are found automatically; set `OPENEMS_ROOT` for another
 installation prefix.
@@ -2591,10 +2668,13 @@ workspaces: a combined 3-D view with independently switchable antenna geometry
 and radiation pattern, the same Smith/S11/return-loss/VSWR and impedance plot
 viewer used by the OpenEMS report, and an interactive azimuth-pattern cut at a
 continuously selectable elevation angle, plus selectable planar near fields.
-The near-field workspace displays E, H, and time-average Poynting magnitude;
-total envelope, instantaneous magnitude, and Cartesian components; phase
-animation; and linear or relative-dB scaling. Hover reports the complete
-complex vector. All planes of one quantity share a stable reference maximum.
+The near-field workspace displays E and H envelopes, instantaneous magnitude,
+and Cartesian components. `POWER` derives time-average and instantaneous
+Poynting intensity from co-registered complex E and H samples, with selectable
+average or animated instantaneous vector overlays. Phase animation and linear
+or relative-dB scaling are available where meaningful. Hover reports the
+complete complex E/H vector or the selected average/instantaneous Poynting
+vector. All planes of one quantity share a stable reference maximum.
 Cells on or immediately adjacent to wire and PEC patch geometry, inside a
 closed PEC body, or on/below a configured ground plane are masked and do not
 participate in that reference maximum, because those NEC values are singular,
@@ -2638,8 +2718,23 @@ unchanged.
 The 3-D model can also color its NEC segments by current magnitude or phase,
 animate instantaneous signed current, and display charge-density magnitude or
 instantaneous signed charge. A compact legend reports the applicable peak and
-units. The report shows NEC's input/radiated/loss/efficiency power budget below
-the geometry controls. These diagnostics come from the supplied radiation grid;
+units. Current magnitude may be referenced to all conductors, the selected
+wire, the selected coax shield, or a fixed current, and its logarithmic floor
+is adjustable.
+
+When `MARKERS / INSPECTOR` is enabled, hovering over a conductor segment shows
+its complex current, phase, charge density, and normalized current; clicking
+pins the readout. Port terminals and resolved lumped loads have visible markers.
+A load readout additionally calculates its impedance, voltage drop, and complex
+power at the report frequency. A coax-shield segment or load can open a profile
+of shield-current magnitude and phase versus distance from the antenna, with
+load positions identified. Ordinary wire segments do not claim a local
+"power" value: NEC supplies segment current and charge, while complex power is
+only calculated across an actual lumped load. Clearing `MARKERS / INSPECTOR`
+hides all of these markers and disables both hover and pinned detail boxes.
+
+The report shows NEC's input/radiated/loss/efficiency power budget below the
+geometry controls. These diagnostics come from the supplied radiation grid;
 when a gain sweep supplies the report pattern, the writer performs one compact
 diagnostic solve at the selected report frequency rather than retaining current
 tables at every sweep frequency.

@@ -11,12 +11,17 @@
          "export-common.rkt"
          "material.rkt"
          "nec2c-dielectric.rkt"
-         "wire-lumped.rkt")
+         "wire-lumped.rkt"
+         "wire-network.rkt")
 
 (provide export-nec2c
          write-nec2c-deck
          last-nec2c-export-path
-         nec2c-feed-segment)
+         nec2c-feed-segment
+         nec2c-edge-segment-count
+         (struct-out resolved-wire-load)
+         resolve-wire-loads
+         wire-load-endpoint-overrides)
 
 (define last-export (box #f))
 ;; Keep this as a runtime *path*, rather than a runtime module path.  The
@@ -113,8 +118,13 @@
                                  (ground-spec-relative-permittivity ground))
               (coordinate-string who (ground-spec-conductivity ground)))]))
 
+(define (nec2c-edge-segment-count edge max-length)
+  (if (wire-port-edge? edge)
+      1
+      (edge-segment-count edge max-length)))
+
 (define (nec2c-feed-segment edge max-length)
-  (define count (edge-segment-count edge max-length))
+  (define count (nec2c-edge-segment-count edge max-length))
   (case (wire-edge-feed-location edge)
     [(start) 1]
     [(center) (quotient (add1 count) 2)]
@@ -324,6 +334,7 @@
 (define (write-nec2c-deck out [analysis-cards '()]
                            #:dielectric-resource [dielectric-resource #f])
   (define who 'export-nec2c)
+  (validate-wire-network-declarations! who)
   (define max-length (require-segmentation! who))
   (define surface-candidate
     (surface-call 'model-nec2c-surface-geometry))
@@ -334,9 +345,17 @@
            'nec2c-surface-geometry-patches surface-candidate))
          surface-candidate))
   (define wire-loads (resolve-wire-loads who))
+  (define transmission-lines (model-wire-transmission-lines))
   (when (and surface-geometry (pair? wire-loads))
     (raise-arguments-error
      who "wire lumped elements are not yet supported with NEC surface bodies"))
+  (when (and surface-geometry (pair? transmission-lines))
+    (raise-arguments-error
+     who "transmission lines are not yet supported with NEC surface bodies"))
+  (when (and dielectric-resource (pair? transmission-lines))
+    (raise-arguments-error
+     who
+     "NEC2C-N5HXR does not support transmission lines with dielectric volumes"))
   (define endpoint-overrides (wire-load-endpoint-overrides wire-loads))
   (validate-ground-geometry! who surface-geometry)
   (fprintf out "CM ~a\n" (model-title))
@@ -362,7 +381,7 @@
     (define b (if (and ends (hash-has-key? ends 'end))
                   (hash-ref ends 'end)
                   (edge-export-point surface-geometry edge 'end)))
-    (define count (edge-segment-count edge max-length))
+    (define count (nec2c-edge-segment-count edge max-length))
     (fprintf out
              "GW ~a ~a ~a ~a ~a ~a ~a ~a ~a\n"
              (wire-edge-id edge)
@@ -400,6 +419,21 @@
   (write-ground-card out who)
   (for ([load (in-list wire-loads)])
     (write-wire-load-card out who load))
+  (for ([line (in-list transmission-lines)])
+    (define input-edge
+      (wire-port-declaration-edge
+       (wire-transmission-line-input-port line)))
+    (define output-edge
+      (wire-port-declaration-edge
+       (wire-transmission-line-output-port line)))
+    (fprintf out "TL ~a 1 ~a 1 ~a ~a 0 0 0 0\n"
+             (wire-edge-id input-edge)
+             (wire-edge-id output-edge)
+             (coordinate-string who (wire-transmission-line-impedance line))
+             (coordinate-string
+              who
+              (/ (wire-transmission-line-physical-length line)
+                 (wire-transmission-line-velocity-factor line)))))
   (for ([edge (in-list (model-edges))]
         #:when (wire-edge-feed? edge))
     (define voltage (feed-voltage edge))
