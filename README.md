@@ -641,8 +641,9 @@ returns transparent Racket values without printing or opening a window:
 By default, a NEC2C report samples electric and magnetic fields on three
 orthogonal planes through the feedpoint centroid. Each plane is at least two
 wavelengths square and leaves at least one wavelength beyond the model's
-geometric extrema. The report can display E, H, and time-average power flow on
-linear or logarithmic scales. Use `#:near-fields #f` for the lighter report, or
+geometric extrema. The report can display E, H, and average or animated
+instantaneous Poynting intensity and vectors on linear or logarithmic scales.
+Use `#:near-fields #f` for the lighter report, or
 pass explicit `near-field-section` values to choose planes, bounds, and sample
 counts; see the API manual for the full form.
 

@@ -857,6 +857,48 @@ Reflected construction duplicates the marker as well as its adjoining wire.
 `show-model` draws wire lumped elements as orange diamonds so their resolved
 locations can be checked before starting a solver run.
 
+NEC coaxial feedlines combine two models: an ideal `TL` network carries the
+non-radiating differential mode inside the cable, while an explicit turtle
+wire carries radiating common-mode current on the outside of the shield. Make
+the antenna-side differential fixture explicit, then trace the shield from the
+antenna toward the radio:
+
+```racket
+(define antenna-feed
+  (wire-port forward
+    name antenna-feed
+    gap {2 * inch}
+    diameter 0.002))
+
+(coax name feedline
+      output antenna-feed
+      velocity-factor 0.66
+      diameter 0.0103
+      color "dark orange"
+      input-gap inch
+      feed input
+  (move down {4 * meters}))
+```
+
+The direction of `wire-port` runs from cold/negative to hot/positive. The coax
+body begins at that negative terminal, so a dipole cold arm and shield exterior
+form the expected three-way junction there. The generated input port is the
+reported feedpoint. Its impedance therefore includes the ideal line transform
+and whatever common-mode behavior the explicit shield geometry produces.
+Ending the route leaves the shield open rather than grounding it implicitly.
+Add `color "dark orange"` (or another Plot color string or symbol) to make the
+shield route visually distinct in `show-model`; port polarity keeps its own
+blue/turquoise markers.
+Inline wire `lumped-element` forms can represent a first-order common-mode
+choke on the shield path.
+
+This is not geometrical coax: the center conductor and shield interior are not
+drawn, do not radiate, and do not couple to nearby objects. Revision 1 is
+lossless and wire-only, and cannot be combined with NEC dielectric volumes or
+surface bodies. See `examples/coax-fed-20m-dipole.rkt` for a comparison of a
+direct feed, a symmetric coax-fed dipole, and an intentionally unbalanced
+case.
+
 For OpenEMS, add a transverse `size` or `width` and `depth` to create a spatial
 two-terminal region:
 
@@ -1433,6 +1475,16 @@ amperes/metre at every solver patch. The portable HTML report can color both
 wires and patches by current magnitude or phase, animate instantaneous current
 or charge, and optionally Gouraud-shade patch currents across shared patch
 corners while retaining the visible mesh. It also displays the power budget.
+Current colors can use a global, selected-wire, selected-coax, or fixed-amperes
+reference, with an adjustable logarithmic floor. With `MARKERS / INSPECTOR`
+enabled, hover over a wire segment to read its complex current, phase, charge
+density, and normalized current; click to pin the box. Port and lumped-load
+markers expose their identities, and a load also reports its calculated
+impedance, voltage drop, and complex power. Coax shield segments offer a plot
+of current magnitude and phase along the feed line, with choke/load positions
+marked. Turn off `MARKERS / INSPECTOR` to hide the markers and disable the
+hover and pinned detail boxes together. An ordinary wire segment reports
+current and charge rather than a misleading local power figure.
 Its 2-D pattern hover readout includes complex
 E-theta/E-phi magnitude and phase, relative phase, axial ratio, tilt, and
 handedness. Ordinary frequency and gain sweeps suppress NEC's default current
@@ -1447,10 +1499,14 @@ full wavelength of margin. Surface-body patch corners participate in those
 bounds as well, so large PEC structures cannot be clipped to wire-only limits.
 For a grounded model, vertical planes begin at `z=0` and use their samples only
 in NEC's physical upper half-space instead of wasting half below ground.
-The `NEAR FIELD` report workspace switches among
-those planes and displays complex E, H, or derived time-average power flow with
-envelope, Cartesian-component, instantaneous-phase, linear, and logarithmic
-views.
+The `NEAR FIELD` report workspace switches among those planes and displays
+complex E and H with envelope, Cartesian-component, and instantaneous-phase
+views. Its `POWER` modes derive both time-average and instantaneous Poynting
+intensity from the co-registered complex E and H samples. Average and animated
+instantaneous power vectors can be overlaid on the plane; all heat maps support
+linear and logarithmic scales. Instantaneous vectors may reverse locally where
+reactive energy moves back and forth, while the average vectors show net power
+transport.
 
 Samples on or immediately adjacent to wires and PEC patches, inside a closed
 PEC body, on the ground plane, or below ground are singular, source-defined,

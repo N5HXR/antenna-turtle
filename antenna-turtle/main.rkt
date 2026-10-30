@@ -15,6 +15,8 @@
          "private/nec2c-result-json.rkt"
          "private/wire-lumped.rkt"
          "private/lumped-element-dsl.rkt"
+         "private/wire-network.rkt"
+         "private/wire-network-dsl.rkt"
          "private/view.rkt"
          k-infix
          (planet jphelps/loop:1:25)
@@ -96,6 +98,8 @@
  (all-from-out "private/nec2c-result-json.rkt")
  (all-from-out "private/wire-lumped.rkt")
  (all-from-out "private/lumped-element-dsl.rkt")
+ (all-from-out "private/wire-network.rkt")
+ (all-from-out "private/wire-network-dsl.rkt")
  wavelength
  half-wave
  quarter-wave

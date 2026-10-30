@@ -2,6 +2,8 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createPlotWorkspace, Plotly } from "./plot-workspace.js";
 import { makeCollapsibleSettingsPanel } from "./panel-collapse.js";
+import { loadImpedance } from "./nec2c-inspector.js";
+import { averagePoynting, instantaneousPoynting } from "./field-math.js";
 import {
   componentGainRange,
   gainOf,
@@ -54,6 +56,31 @@ function threeColorCss(color) {
   return `rgb(${Math.round(color.r * 255)},${Math.round(color.g * 255)},${Math.round(color.b * 255)})`;
 }
 
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, character => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[character]);
+}
+
+function formatEngineering(value, units) {
+  if (!Number.isFinite(value)) return `unavailable ${units}`.trim();
+  if (value === 0) return `0 ${units}`.trim();
+  const prefixes = [[1e9, "G"], [1e6, "M"], [1e3, "k"], [1, ""],
+    [1e-3, "m"], [1e-6, "µ"], [1e-9, "n"], [1e-12, "p"]];
+  const magnitude = Math.abs(value);
+  const [scale, prefix] = prefixes.find(([candidate]) => magnitude >= candidate) || [1e-12, "p"];
+  return `${(value / scale).toPrecision(4)} ${prefix}${units}`.trim();
+}
+
+function impedanceMagnitude(impedance) {
+  return Math.hypot(impedance.real, impedance.imaginary);
+}
+
+function dbRelative(value, reference) {
+  return 20 * Math.log10(Math.max(Number.EPSILON, value) /
+    Math.max(Number.EPSILON, reference));
+}
+
 function fieldVector(sample, quantity) {
   const values = sample?.[quantity];
   if (!Array.isArray(values) || values.length !== 6) return null;
@@ -78,12 +105,23 @@ function averagePoyntingSample(sample) {
   const electric = fieldVector(sample, "electric");
   const magnetic = fieldVector(sample, "magnetic");
   if (!electric || !magnetic) return null;
-  const multiplyConjugateReal = (a, b) => a[0] * b[0] + a[1] * b[1];
-  return [
-    0.5 * (multiplyConjugateReal(electric[1], magnetic[2]) - multiplyConjugateReal(electric[2], magnetic[1])),
-    0.5 * (multiplyConjugateReal(electric[2], magnetic[0]) - multiplyConjugateReal(electric[0], magnetic[2])),
-    0.5 * (multiplyConjugateReal(electric[0], magnetic[1]) - multiplyConjugateReal(electric[1], magnetic[0])),
-  ];
+  return averagePoynting(complexVectorPhasor(electric), complexVectorPhasor(magnetic));
+}
+
+function complexVectorPhasor(vector) {
+  return {
+    real: vector.map(component => component[0]),
+    imaginary: vector.map(component => component[1]),
+  };
+}
+
+function instantaneousPoyntingSample(sample, phaseDegrees) {
+  const electric = fieldVector(sample, "electric");
+  const magnetic = fieldVector(sample, "magnetic");
+  if (!electric || !magnetic) return null;
+  return instantaneousPoynting(
+    complexVectorPhasor(electric), complexVectorPhasor(magnetic),
+    phaseDegrees * Math.PI / 180);
 }
 
 function feedCentroid(data) {
@@ -125,6 +163,7 @@ function addGeometry(data, group) {
   const presentationRadius = Math.max(
     authoredBounds.getSize(new THREE.Vector3()).length() * 0.0012, 1e-7);
   const segments = [];
+  const markers = [];
   let surfaceMesh = null;
   const surfaceVertexRanges = [];
   const surfaceVertexKeys = [];
@@ -212,11 +251,17 @@ function addGeometry(data, group) {
     for (let index = 0; index < count; ++index) {
       const a = start.clone().lerp(end, index / count);
       const b = start.clone().lerp(end, (index + 1) / count);
-      const material = new THREE.MeshBasicMaterial({ color: 0x8eeaff, depthTest: false });
+      const baseColor = wire.color && wire.color !== "null"
+        ? new THREE.Color(String(wire.color).replace(/\s+/g, "")) : new THREE.Color(0x8eeaff);
+      const material = new THREE.MeshBasicMaterial({ color: baseColor, depthTest: false });
       const conductor = cylinderBetween(a.toArray(), b.toArray(), radius, material);
       conductor.renderOrder = 3;
       conductor.userData.segmentKey = `${wire.id}:${index + 1}`;
-      conductor.userData.baseColor = 0x8eeaff;
+      conductor.userData.baseColor = baseColor.getHex();
+      conductor.userData.wire = wire;
+      conductor.userData.segmentIndex = index + 1;
+      conductor.userData.segmentCount = count;
+      conductor.userData.segmentCenter = a.clone().add(b).multiplyScalar(0.5).toArray();
       group.add(conductor);
       segments.push(conductor);
     }
@@ -226,8 +271,42 @@ function addGeometry(data, group) {
         new THREE.SphereGeometry(radius * 2.8, 18, 10), feedMaterial);
       marker.position.copy(point);
       marker.renderOrder = 4;
+      marker.userData.inspectorType = "feed";
+      marker.userData.feed = wire.feed;
+      marker.userData.wire = wire;
       group.add(marker);
+      markers.push(marker);
     }
+  }
+  const portMaterials = {
+    negative: new THREE.MeshStandardMaterial({ color: 0x36a3ff, emissive: 0x103caa,
+      emissiveIntensity: 1, depthTest: false }),
+    positive: new THREE.MeshStandardMaterial({ color: 0xff556f, emissive: 0xaa102c,
+      emissiveIntensity: 1, depthTest: false }),
+  };
+  for (const port of data.geometry.ports || []) {
+    for (const polarity of ["negative", "positive"]) {
+      const marker = new THREE.Mesh(
+        new THREE.SphereGeometry(presentationRadius * 3.1, 18, 10), portMaterials[polarity]);
+      marker.position.set(...port[polarity]);
+      marker.renderOrder = 6;
+      marker.userData.inspectorType = "port";
+      marker.userData.port = port;
+      marker.userData.polarity = polarity;
+      group.add(marker); markers.push(marker);
+    }
+  }
+  const loadMaterial = new THREE.MeshStandardMaterial({
+    color: 0xffa31a, emissive: 0xff4f00, emissiveIntensity: 1.25, depthTest: false,
+  });
+  for (const load of data.geometry.lumped_loads || []) {
+    const marker = new THREE.Mesh(
+      new THREE.OctahedronGeometry(presentationRadius * 5.2), loadMaterial);
+    marker.position.set(...load.center);
+    marker.renderOrder = 7;
+    marker.userData.inspectorType = "load";
+    marker.userData.load = load;
+    group.add(marker); markers.push(marker);
   }
   if (data.geometry.grounded) {
     const bounds = new THREE.Box3().setFromObject(group);
@@ -241,7 +320,7 @@ function addGeometry(data, group) {
     ground.position.z = 0;
     group.add(ground);
   }
-  return { segments, surfaceMesh, surfacePatches, surfaceVertexRanges,
+  return { segments, markers, surfaceMesh, surfacePatches, surfaceVertexRanges,
     surfaceVertexKeys, surfaceCornerPatches, dielectricMeshes, presentationRadius };
 }
 
@@ -480,11 +559,26 @@ function injectStyles() {
     #nec-controls{left:18px;bottom:18px;width:min(470px,calc(100vw - 36px))}
     #nec-controls .opacity-value{display:inline-block;min-width:42px;text-align:right}
     #segment-controls[hidden],#segment-phase-row[hidden],#power-budget[hidden]{display:none}
+    #current-scale-controls[hidden]{display:none}
     #segment-legend{margin-top:8px}.segment-legend-bar{height:10px;border:1px solid #78edff;
       background:linear-gradient(90deg,#1743ff,#f7fbff,#ff315f)}
     #segment-legend-labels{display:flex;justify-content:space-between;font-size:10px;color:#9ceeff}
     #power-budget{margin-top:8px;padding-top:7px;border-top:1px solid #31efff44;
       color:#fff45c;font-size:10px;line-height:1.45}
+    #conductor-inspector{position:fixed;z-index:8;right:18px;bottom:18px;width:min(390px,calc(100vw - 36px));
+      min-height:118px;font-size:11px;line-height:1.48;pointer-events:auto}
+    #conductor-inspector[hidden],#current-profile[hidden]{display:none}
+    #conductor-inspector .inspector-title{display:flex;align-items:center;justify-content:space-between;
+      color:#fff;font-size:13px;margin-bottom:6px}
+    #conductor-inspector .inspector-grid{display:grid;grid-template-columns:max-content 1fr;gap:2px 12px}
+    #conductor-inspector .inspector-grid span:nth-child(odd){color:#8beeff}
+    #conductor-inspector .inspector-note{margin-top:7px;color:#fff45c}
+    #conductor-inspector button{margin-top:8px}
+    #current-profile{position:fixed;z-index:7;right:18px;top:78px;width:min(720px,calc(100vw - 36px));
+      height:min(390px,45vh);padding:8px}
+    #current-profile-header{display:flex;align-items:center;justify-content:space-between;
+      height:34px;color:#7df9ff;padding:0 5px}
+    #current-profile-plot{height:calc(100% - 34px)}
     #pattern-legend{margin-top:10px}.pattern-legend-bar{height:12px;border:1px solid #78edff;
       border-radius:2px;box-shadow:0 0 8px #00d9ff25}
     .pattern-legend-scale{display:grid;grid-template-columns:46px 1fr;margin-top:4px;
@@ -513,7 +607,8 @@ function injectStyles() {
     #network-plot .hoverlayer .hovertext,#network-plot .hoverlayer .axistext{display:none!important}
     @media(max-width:820px){#nec-tabs{top:8px;right:8px;max-width:calc(100vw - 16px);flex-wrap:wrap}
       #nec-tabs button{min-width:auto}#pattern-2d,#plots-workspace,#near-field-workspace{inset:92px 8px 8px}
-      #near-field-plot{inset:104px 0 0}}
+      #near-field-plot{inset:104px 0 0}#conductor-inspector{right:8px;bottom:8px;width:calc(100vw - 16px)}
+      #current-profile{right:8px;top:92px;width:calc(100vw - 16px)}}
   `;
   document.head.append(style);
 }
@@ -545,6 +640,7 @@ export async function startNec2cReport(data) {
   scene.add(geometryGroup, patternGroup, axisGroup);
   const geometryDisplay = addGeometry(data, geometryGroup);
   const geometrySegments = geometryDisplay.segments;
+  const geometryMarkers = geometryDisplay.markers;
   const diagnostics = data.diagnostics && data.diagnostics !== "null" ? data.diagnostics : null;
   const segmentSamples = new Map((diagnostics?.segment_samples || []).map(sample =>
     [`${sample.wire_id}:${sample.segment}`, sample]));
@@ -609,12 +705,22 @@ export async function startNec2cReport(data) {
     <input id="segment-phase" type="range" min="0" max="359" step="1" value="0"></div>
     <div id="segment-legend" hidden><div class="segment-legend-bar"></div>
     <div id="segment-legend-labels"><span></span><span></span><span></span></div></div>
+    <div id="current-scale-controls" class="row" hidden>
+    <label for="current-reference">CURRENT REF</label><select id="current-reference">
+    <option value="global">all conductors</option><option value="wire">selected wire</option>
+    <option value="coax">selected coax</option><option value="fixed">fixed amperes</option></select>
+    <input id="current-fixed-reference" type="number" min="1e-15" step="any" value="1" hidden
+      aria-label="fixed current reference in amperes"></div>
+    <div id="current-floor-row" class="row" hidden><label for="current-floor">FLOOR
+    <span id="current-floor-value">−30 dB</span></label>
+    <input id="current-floor" type="range" min="-80" max="-10" step="1" value="-30"></div>
     <div class="row"><label for="pattern-opacity">PATTERN OPACITY
     <span id="pattern-opacity-value" class="opacity-value">100%</span></label>
     <input id="pattern-opacity" type="range" min="0.1" max="1" step="0.05" value="1"></div>
     <div class="row"><label><input id="model-visible" type="checkbox" checked> MODEL</label>
     <label><input id="pattern-visible" type="checkbox" checked> PATTERN</label>
     <label><input id="axes-visible" type="checkbox" checked> AXES</label>
+    <label><input id="inspector-enabled" type="checkbox" checked> MARKERS / INSPECTOR</label>
     <button id="reset-view" type="button">RESET VIEW</button></div>
     <div class="row"><label><input id="color-bands" type="checkbox"> 3 dB COLOR BANDS</label></div>
     <div id="pattern-legend"><div class="pattern-legend-bar"></div>
@@ -625,6 +731,22 @@ export async function startNec2cReport(data) {
     <span style="color:#6688ff">Z vertical</span></div><div id="power-budget"></div>`;
   document.body.append(controlsPanel);
   makeCollapsibleSettingsPanel(controlsPanel);
+  const inspector = document.createElement("section");
+  inspector.id = "conductor-inspector";
+  inspector.className = "panel";
+  inspector.hidden = true;
+  document.body.append(inspector);
+  const currentProfile = document.createElement("section");
+  currentProfile.id = "current-profile";
+  currentProfile.className = "panel";
+  currentProfile.hidden = true;
+  currentProfile.innerHTML = `<div id="current-profile-header"><span></span>
+    <button id="current-profile-close" type="button">CLOSE</button></div>
+    <div id="current-profile-plot"></div>`;
+  document.body.append(currentProfile);
+  currentProfile.querySelector("#current-profile-close").addEventListener("click", () => {
+    currentProfile.hidden = true;
+  });
   const componentSelect = controlsPanel.querySelector("#pattern-component");
   const scaleSelect = controlsPanel.querySelector("#pattern-scale");
   const paletteSelect = controlsPanel.querySelector("#pattern-palette");
@@ -637,6 +759,12 @@ export async function startNec2cReport(data) {
   const segmentPhaseRow = controlsPanel.querySelector("#segment-phase-row");
   const segmentPhaseSlider = controlsPanel.querySelector("#segment-phase");
   const segmentLegend = controlsPanel.querySelector("#segment-legend");
+  const currentScaleControls = controlsPanel.querySelector("#current-scale-controls");
+  const currentReferenceSelect = controlsPanel.querySelector("#current-reference");
+  const currentFixedReference = controlsPanel.querySelector("#current-fixed-reference");
+  const currentFloorRow = controlsPanel.querySelector("#current-floor-row");
+  const currentFloorSlider = controlsPanel.querySelector("#current-floor");
+  const inspectorEnabled = controlsPanel.querySelector("#inspector-enabled");
   const powerBudget = diagnostics?.power_budget;
   for (const option of segmentDisplay.querySelectorAll('option[value^="volume-current"]')) {
     option.hidden = !hasVolumeCurrents;
@@ -663,6 +791,39 @@ export async function startNec2cReport(data) {
     samples.map(sample => complexVectorEnvelope(sample.current_density))));
   const volumeCurrentMaximum = Math.max(Number.EPSILON, ...volumeCurrentSamples
     .map(sample => complexVectorEnvelope(sample.current_density)));
+  const wiresById = new Map((data.geometry.wires || []).map(wire => [Number(wire.id), wire]));
+  const coaxesByName = new Map((data.geometry.coaxes || []).map(coax => [String(coax.name), coax]));
+  const currentMaximumByWire = new Map();
+  for (const sample of segmentSamples.values()) {
+    const id = Number(sample.wire_id);
+    currentMaximumByWire.set(id, Math.max(currentMaximumByWire.get(id) || 0,
+      sample.current?.magnitude || 0));
+  }
+  const currentMaximumByCoax = new Map();
+  for (const coax of data.geometry.coaxes || []) {
+    currentMaximumByCoax.set(String(coax.name), Math.max(Number.EPSILON,
+      ...(coax.shield_wire_ids || []).map(id => currentMaximumByWire.get(Number(id)) || 0)));
+  }
+  let inspectorHit = null;
+  let inspectorPinned = false;
+
+  function selectedWire() {
+    return inspectorHit?.object?.userData?.wire || null;
+  }
+
+  function currentReferenceMaximum() {
+    const mode = currentReferenceSelect.value;
+    const wire = selectedWire();
+    if (mode === "wire" && wire) return currentMaximumByWire.get(Number(wire.id)) || currentMaximum;
+    if (mode === "coax" && wire?.coax && wire.coax !== "null") {
+      return currentMaximumByCoax.get(String(wire.coax)) || currentMaximum;
+    }
+    if (mode === "fixed") {
+      const fixed = Number(currentFixedReference.value);
+      if (Number.isFinite(fixed) && fixed > 0) return fixed;
+    }
+    return currentMaximum;
+  }
 
   function signedColor(value, maximum) {
     const amount = Math.min(1, Math.abs(value) / Math.max(maximum, Number.EPSILON));
@@ -676,9 +837,10 @@ export async function startNec2cReport(data) {
     return new THREE.Color().setHSL(phase / 360, 0.9, 0.58);
   }
 
-  function magnitudeColor(value, maximum) {
-    const db = 20 * Math.log10(Math.max(value?.magnitude || 0, maximum * 1e-4) / maximum);
-    return colorAt("viridis", Math.max(-30, db));
+  function magnitudeColor(value, maximum, floor = -30) {
+    const db = 20 * Math.log10(Math.max(value?.magnitude || 0, maximum * 1e-8) / maximum);
+    const bounded = Math.max(floor, Math.min(0, db));
+    return colorAt("viridis", 30 * bounded / Math.abs(floor));
   }
 
   function instantaneous(value) {
@@ -686,11 +848,178 @@ export async function startNec2cReport(data) {
     return (value?.real || 0) * Math.cos(radians) - (value?.imaginary || 0) * Math.sin(radians);
   }
 
+  function inspectorRows(rows) {
+    return `<div class="inspector-grid">${rows.map(([label, value]) =>
+      `<span>${escapeHtml(label)}</span><span>${value}</span>`).join("")}</div>`;
+  }
+
+  function complexText(value, units) {
+    if (!value || !Number.isFinite(value.magnitude)) return `unavailable ${units}`;
+    return `${formatEngineering(value.magnitude, units)} ∠ ${Number(value.phase_degrees).toFixed(1)}°`;
+  }
+
+  function currentRows(sample) {
+    if (!sample?.current) return [["current", "unavailable"]];
+    const magnitude = Number(sample.current.magnitude);
+    const reference = currentReferenceMaximum();
+    const inputPower = Number(powerBudget?.input_power_w);
+    const rows = [
+      ["current", complexText(sample.current, "A")],
+      ["global reference", `${dbRelative(magnitude, currentMaximum).toFixed(2)} dB`],
+      ["display reference", `${dbRelative(magnitude, reference).toFixed(2)} dB`],
+    ];
+    if (inputPower > 0) rows.push(["normalized current",
+      `${formatEngineering(magnitude / Math.sqrt(inputPower), "A/√W")}`]);
+    if (sample.charge_density && Number.isFinite(sample.charge_density.magnitude)) {
+      rows.push(["charge density", complexText(sample.charge_density, "C/m")]);
+    }
+    return rows;
+  }
+
+  function renderInspector(hit) {
+    if (!inspectorEnabled.checked || !hit) { inspector.hidden = true; return; }
+    inspectorHit = hit;
+    const userData = hit.object.userData || {};
+    let title = "CONDUCTOR";
+    let rows = [];
+    let note = "";
+    let profileCoax = null;
+    if (userData.segmentKey) {
+      const wire = userData.wire || {};
+      const sample = segmentSamples.get(userData.segmentKey);
+      title = `${wire.name || `wire ${wire.id}`} · segment ${userData.segmentIndex}/${userData.segmentCount}`;
+      rows = [
+        ["role", escapeHtml(wire.role || "wire")],
+        ["position", `(${(userData.segmentCenter || []).map(value => Number(value).toPrecision(5)).join(", ")}) m`],
+        ...currentRows(sample),
+        ["frequency", `${Number(diagnostics?.frequency_mhz).toPrecision(7)} MHz`],
+      ];
+      if (wire.coax && wire.coax !== "null") profileCoax = String(wire.coax);
+      if (!sample) note = "No solver diagnostic sample is available for this segment.";
+    } else if (userData.inspectorType === "load") {
+      const load = userData.load;
+      const sample = segmentSamples.get(`${load.tag}:1`);
+      const impedance = loadImpedance(load, diagnostics?.frequency_mhz);
+      const currentMagnitude = Number(sample?.current?.magnitude);
+      const voltageMagnitude = currentMagnitude * impedanceMagnitude(impedance);
+      const realPower = 0.5 * currentMagnitude ** 2 * impedance.real;
+      const reactivePower = 0.5 * currentMagnitude ** 2 * impedance.imaginary;
+      title = `${load.name} · ${load.topology} load`;
+      rows = [
+        ["position", `(${load.center.map(value => Number(value).toPrecision(5)).join(", ")}) m`],
+        ["R / L / C", `${formatEngineering(load.resistance_ohms, "Ω")} · ` +
+          `${formatEngineering(load.inductance_h, "H")} · ${formatEngineering(load.capacitance_f, "F")}`],
+        ["impedance", `${formatEngineering(impedance.real, "Ω")} ${impedance.imaginary < 0 ? "−" : "+"} ` +
+          `j${formatEngineering(Math.abs(impedance.imaginary), "Ω")}`],
+        ...currentRows(sample),
+        ["voltage drop", formatEngineering(voltageMagnitude, "V")],
+        ["real / reactive power", `${formatEngineering(realPower, "W")} · ` +
+          `${formatEngineering(reactivePower, "var")}`],
+      ];
+      const adjacent = [load.negative_wire_id, load.positive_wire_id]
+        .map(id => wiresById.get(Number(id))).find(wire => wire?.coax && wire.coax !== "null");
+      if (adjacent) profileCoax = String(adjacent.coax);
+      note = "Load voltage and complex power are calculated from the NEC segment-current phasor.";
+    } else if (userData.inspectorType === "port") {
+      const port = userData.port;
+      const sample = segmentSamples.get(`${port.wire_id}:1`);
+      title = `${port.name} · ${userData.polarity} terminal`;
+      rows = [
+        ["position", `(${port[userData.polarity].map(value => Number(value).toPrecision(5)).join(", ")}) m`],
+        ["port wire", `${port.wire_id}`],
+        ["generated", port.generated ? "yes" : "no"],
+        ...currentRows(sample),
+      ];
+    } else if (userData.inspectorType === "feed") {
+      const feed = userData.feed;
+      title = `${feed.name} · excitation`;
+      rows = [["wire", `${userData.wire?.id ?? "unknown"}`],
+        ["amplitude", `${Number(feed.amplitude).toPrecision(5)} V`],
+        ["phase", `${Number(feed.phase_degrees).toFixed(1)}°`]];
+    }
+    inspector.innerHTML = `<div class="inspector-title"><span>${escapeHtml(title)}</span>` +
+      `<span>${inspectorPinned ? "PINNED" : "HOVER"}</span></div>${inspectorRows(rows)}` +
+      (note ? `<div class="inspector-note">${escapeHtml(note)}</div>` : "") +
+      (profileCoax ? `<button type="button" data-coax-profile="${escapeHtml(profileCoax)}">` +
+        `SHOW COAX CURRENT PROFILE</button>` : "");
+    inspector.hidden = false;
+    inspector.querySelector("[data-coax-profile]")?.addEventListener("click", event => {
+      showCoaxProfile(event.currentTarget.dataset.coaxProfile);
+    });
+  }
+
+  function showCoaxProfile(name) {
+    const coax = coaxesByName.get(String(name));
+    if (!coax) return;
+    const distances = [], magnitudes = [], phases = [], wireIds = [], segmentNumbers = [];
+    const edgeEnds = new Map();
+    let distance = 0;
+    for (const idValue of coax.shield_wire_ids || []) {
+      const id = Number(idValue);
+      const wire = wiresById.get(id);
+      if (!wire) continue;
+      const length = new THREE.Vector3(...wire.start).distanceTo(new THREE.Vector3(...wire.end));
+      const count = Math.max(1, Number(wire.segment_count) || 1);
+      for (let segment = 1; segment <= count; ++segment) {
+        const sample = segmentSamples.get(`${id}:${segment}`);
+        if (!sample?.current) continue;
+        distances.push(distance + length * (segment - 0.5) / count);
+        magnitudes.push(Number(sample.current.magnitude));
+        phases.push(Number(sample.current.phase_degrees));
+        wireIds.push(id); segmentNumbers.push(segment);
+      }
+      distance += length;
+      edgeEnds.set(id, distance);
+    }
+    if (!magnitudes.length) return;
+    const maximum = Math.max(...magnitudes, Number.EPSILON);
+    const relative = magnitudes.map(value => dbRelative(value, maximum));
+    const loads = (data.geometry.lumped_loads || []).filter(load =>
+      edgeEnds.has(Number(load.negative_wire_id)) || edgeEnds.has(Number(load.positive_wire_id)));
+    const loadDistance = load => edgeEnds.get(Number(load.negative_wire_id)) ??
+      edgeEnds.get(Number(load.positive_wire_id));
+    currentProfile.querySelector("#current-profile-header span").textContent =
+      `${name} · shield current from antenna toward input`;
+    currentProfile.hidden = false;
+    Plotly.react(currentProfile.querySelector("#current-profile-plot"), [{
+      type: "scatter", mode: "lines+markers", name: "|I|", x: distances, y: relative,
+      line: { color: "#39efff", width: 3 }, marker: { size: 5, color: "#ff3bd4" },
+      customdata: magnitudes.map((value, index) =>
+        [value, phases[index], wireIds[index], segmentNumbers[index]]),
+      hovertemplate: `distance %{x:.5g} m<br>|I| %{customdata[0]:.5g} A<br>` +
+        `relative %{y:.2f} dB<br>phase %{customdata[1]:.1f}°<br>` +
+        `wire %{customdata[2]} segment %{customdata[3]}<extra></extra>`,
+    }, {
+      type: "scatter", mode: "lines", name: "phase", x: distances, y: phases, yaxis: "y2",
+      line: { color: "#fff45c", width: 1.5, dash: "dot" }, hoverinfo: "skip",
+    }], {
+      paper_bgcolor: "rgba(3,6,17,0)", plot_bgcolor: "rgba(5,14,29,.78)",
+      font: { family: '"DejaVu Sans Mono", monospace', color: "#d8fbff" },
+      margin: { l: 65, r: 65, t: 28, b: 54 }, hovermode: "closest",
+      xaxis: { title: "distance from antenna feed (m)", gridcolor: "#245069" },
+      yaxis: { title: "shield current (dB relative)", gridcolor: "#245069" },
+      yaxis2: { title: "phase (degrees)", overlaying: "y", side: "right", range: [-180, 180],
+        color: "#fff45c" },
+      shapes: loads.map(load => ({ type: "line", x0: loadDistance(load), x1: loadDistance(load),
+        yref: "paper", y0: 0, y1: 1, line: { color: "#ff8c1a", width: 2, dash: "dash" } })),
+      annotations: loads.map(load => ({ x: loadDistance(load), yref: "paper", y: 1,
+        text: load.name, showarrow: false, yanchor: "bottom", font: { color: "#ffb347", size: 10 } })),
+      legend: { orientation: "h", x: 0, y: 1.12 },
+    }, { responsive: true, displaylogo: false,
+      toImageButtonOptions: { format: "svg", filename: `${name}-shield-current` } });
+  }
+
   function updateSegmentDisplay() {
     const mode = segmentDisplay.value;
     const instantaneousMode = mode.endsWith("instantaneous");
+    const wireCurrentMode = mode.startsWith("current-");
+    const currentReference = currentReferenceMaximum();
+    const currentFloor = Number(currentFloorSlider.value);
     segmentPhaseRow.hidden = !instantaneousMode;
     segmentLegend.hidden = mode === "geometry";
+    currentScaleControls.hidden = !wireCurrentMode;
+    currentFloorRow.hidden = !wireCurrentMode;
+    currentFixedReference.hidden = currentReferenceSelect.value !== "fixed";
     const labels = segmentLegend.querySelectorAll("span");
     if (mode === "volume-current-magnitude") {
       labels[0].textContent = "−30 dB"; labels[1].textContent = "volume polarization J";
@@ -703,8 +1032,8 @@ export async function startNec2cReport(data) {
       segmentLegend.querySelector(".segment-legend-bar").style.background =
         "linear-gradient(90deg,#00f,#0ff,#0f0,#ff0,#f00,#f0f,#00f)";
     } else if (mode === "current-magnitude") {
-      labels[0].textContent = "−30 dB"; labels[1].textContent = "current";
-      labels[2].textContent = `${currentMaximum.toPrecision(4)} A` +
+      labels[0].textContent = `${currentFloor} dB`; labels[1].textContent = "current";
+      labels[2].textContent = `${currentReference.toPrecision(4)} A` +
         (hasSurfaceCurrents ? ` · ${surfaceCurrentMaximum.toPrecision(4)} A/m surface` : "");
       segmentLegend.querySelector(".segment-legend-bar").style.background =
         "linear-gradient(90deg,#440154,#21918c,#fde725)";
@@ -720,7 +1049,7 @@ export async function startNec2cReport(data) {
     } else if (instantaneousMode) {
       const volumeMode = mode.startsWith("volume-current");
       const maximum = volumeMode ? volumeCurrentMaximum
-        : mode.startsWith("current") ? currentMaximum : chargeMaximum;
+        : mode.startsWith("current") ? currentReference : chargeMaximum;
       const units = volumeMode ? "A/m²" : mode.startsWith("current") ? "A" : "C/m";
       labels[0].textContent = `−${maximum.toPrecision(3)} ${units}`;
       labels[1].textContent = "instantaneous";
@@ -733,16 +1062,18 @@ export async function startNec2cReport(data) {
     for (const mesh of geometrySegments) {
       const sample = segmentSamples.get(mesh.userData.segmentKey);
       let color = new THREE.Color(mesh.userData.baseColor);
-      if (sample && mode === "current-magnitude") color = magnitudeColor(sample.current, currentMaximum);
+      if (sample && mode === "current-magnitude")
+        color = magnitudeColor(sample.current, currentReference, currentFloor);
       else if (sample && mode === "current-phase") color = phaseColor(sample.current);
       else if (sample && mode === "current-instantaneous")
-        color = signedColor(instantaneous(sample.current), currentMaximum);
+        color = signedColor(instantaneous(sample.current), currentReference);
       else if (sample && mode === "charge-magnitude")
         color = magnitudeColor(sample.charge_density, chargeMaximum);
       else if (sample && mode === "charge-instantaneous")
         color = signedColor(instantaneous(sample.charge_density), chargeMaximum);
       mesh.material.color.copy(color);
     }
+    if (!inspector.hidden && inspectorHit) renderInspector(inspectorHit);
     for (const { mesh, sample } of volumeCurrentMeshes) {
       mesh.visible = mode.startsWith("volume-current");
       let color = new THREE.Color(0x31efff);
@@ -911,6 +1242,16 @@ export async function startNec2cReport(data) {
   });
   segmentDisplay.addEventListener("change", updateSegmentDisplay);
   surfaceSmoothing.addEventListener("change", updateSegmentDisplay);
+  currentReferenceSelect.addEventListener("change", () => {
+    currentFixedReference.hidden = currentReferenceSelect.value !== "fixed";
+    updateSegmentDisplay();
+  });
+  currentFixedReference.addEventListener("input", updateSegmentDisplay);
+  currentFloorSlider.addEventListener("input", () => {
+    controlsPanel.querySelector("#current-floor-value").textContent =
+      `${Number(currentFloorSlider.value)} dB`;
+    updateSegmentDisplay();
+  });
   segmentPhaseSlider.addEventListener("input", () => {
     segmentPhaseDegrees = Number(segmentPhaseSlider.value);
     segmentPlaying = false;
@@ -921,6 +1262,55 @@ export async function startNec2cReport(data) {
   controlsPanel.querySelector("#segment-play").addEventListener("click", event => {
     segmentPlaying = !segmentPlaying;
     event.currentTarget.textContent = segmentPlaying ? "PAUSE" : "PLAY";
+  });
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+  let pointerDown = null;
+  function inspectorIntersection(event) {
+    if (!inspectorEnabled.checked || activeView !== "viewer3d") return null;
+    const bounds = canvas.getBoundingClientRect();
+    pointer.x = 2 * (event.clientX - bounds.left) / bounds.width - 1;
+    pointer.y = 1 - 2 * (event.clientY - bounds.top) / bounds.height;
+    raycaster.setFromCamera(pointer, camera);
+    return raycaster.intersectObjects([...geometryMarkers, ...geometrySegments], false)[0] || null;
+  }
+  function selectInspectorHit(hit, pinned) {
+    inspectorHit = hit;
+    inspectorPinned = Boolean(hit) && pinned;
+    if (!hit) { inspector.hidden = true; return; }
+    if (["wire", "coax"].includes(currentReferenceSelect.value) &&
+        segmentDisplay.value.startsWith("current-")) updateSegmentDisplay();
+    else renderInspector(hit);
+  }
+  canvas.addEventListener("pointerdown", event => {
+    pointerDown = [event.clientX, event.clientY];
+  });
+  canvas.addEventListener("pointermove", event => {
+    if (inspectorPinned || !inspectorEnabled.checked) return;
+    const hit = inspectorIntersection(event);
+    canvas.style.cursor = hit ? "pointer" : "default";
+    selectInspectorHit(hit, false);
+  });
+  canvas.addEventListener("pointerleave", () => {
+    canvas.style.cursor = "default";
+    if (!inspectorPinned) selectInspectorHit(null, false);
+  });
+  canvas.addEventListener("pointerup", event => {
+    const moved = pointerDown ? Math.hypot(event.clientX - pointerDown[0],
+      event.clientY - pointerDown[1]) : Infinity;
+    pointerDown = null;
+    if (moved > 4 || !inspectorEnabled.checked) return;
+    const hit = inspectorIntersection(event);
+    selectInspectorHit(hit, Boolean(hit));
+  });
+  inspectorEnabled.addEventListener("change", () => {
+    for (const marker of geometryMarkers) marker.visible = inspectorEnabled.checked;
+    if (!inspectorEnabled.checked) {
+      inspectorHit = null; inspectorPinned = false;
+      inspector.hidden = true; currentProfile.hidden = true;
+      canvas.style.cursor = "default";
+    }
+    updateSegmentDisplay();
   });
   updateSegmentDisplay();
   rebuildPattern();
@@ -1001,10 +1391,7 @@ export async function startNec2cReport(data) {
     <label for="near-field-quantity">FIELD</label><select id="near-field-quantity">
       <option value="electric">E</option><option value="magnetic">H</option>
       <option value="power">POWER</option></select>
-    <label for="near-field-mode">VIEW</label><select id="near-field-mode">
-      <option value="envelope">total envelope</option><option value="instantaneous">instantaneous magnitude</option>
-      <option value="x">X component</option><option value="y">Y component</option>
-      <option value="z">Z component</option></select>
+    <label for="near-field-mode">VIEW</label><select id="near-field-mode"></select>
     <label for="near-field-scale">SCALE</label><select id="near-field-scale">
       <option value="log">log</option><option value="linear">linear</option></select>
     <button id="near-field-play" type="button">PAUSE</button>
@@ -1029,6 +1416,50 @@ export async function startNec2cReport(data) {
   const fieldFloorSlider = fieldWorkspace.querySelector("#near-field-floor");
   let fieldPhaseDegrees = 0;
   let fieldPlaying = true;
+  const electromagneticFieldModes = [
+    ["envelope", "total envelope"],
+    ["instantaneous", "instantaneous magnitude"],
+    ["x", "X component"], ["y", "Y component"], ["z", "Z component"],
+  ];
+  const powerFieldModes = [
+    ["power-average-magnitude", "average power intensity"],
+    ["power-average-vectors", "average power vectors"],
+    ["power-instantaneous-magnitude", "instantaneous power intensity"],
+    ["power-instantaneous-vectors", "instantaneous power vectors"],
+  ];
+  let previousFieldQuantity = "electric";
+  let electromagneticFieldMode = "envelope";
+  let powerFieldMode = "power-average-magnitude";
+  const fieldReferenceCache = new Map();
+
+  function setFieldModeOptions() {
+    const power = fieldQuantitySelect.value === "power";
+    if (fieldModeSelect.value) {
+      if (previousFieldQuantity === "power") powerFieldMode = fieldModeSelect.value;
+      else electromagneticFieldMode = fieldModeSelect.value;
+    }
+    const modes = power ? powerFieldModes : electromagneticFieldModes;
+    fieldModeSelect.replaceChildren(...modes.map(([value, label]) => {
+      const option = document.createElement("option");
+      option.value = value; option.textContent = label;
+      return option;
+    }));
+    fieldModeSelect.value = power ? powerFieldMode : electromagneticFieldMode;
+    previousFieldQuantity = fieldQuantitySelect.value;
+  }
+
+  function instantaneousFieldMode(quantity = fieldQuantitySelect.value,
+                                  mode = fieldModeSelect.value) {
+    return quantity === "power"
+      ? mode.startsWith("power-instantaneous-") : mode === "instantaneous";
+  }
+
+  function vectorFieldMode(quantity = fieldQuantitySelect.value,
+                           mode = fieldModeSelect.value) {
+    return quantity === "power" && mode.endsWith("-vectors");
+  }
+
+  setFieldModeOptions();
 
   function fieldAvailability() {
     const section = nearFieldSections[Number(fieldPlaneSelect.value) || 0];
@@ -1041,16 +1472,17 @@ export async function startNec2cReport(data) {
     if (fieldQuantitySelect.selectedOptions[0]?.disabled) {
       fieldQuantitySelect.value = fields.has("electric") ? "electric" : "magnetic";
     }
-    const phaseRelevant = fieldModeSelect.value === "instantaneous" && fieldQuantitySelect.value !== "power";
+    const phaseRelevant = instantaneousFieldMode();
     fieldPhaseSlider.disabled = !phaseRelevant;
     fieldWorkspace.querySelector("#near-field-play").disabled = !phaseRelevant;
   }
 
   function fieldValue(sample, quantity, mode, phaseDegrees) {
     if (quantity === "power") {
-      const vector = averagePoyntingSample(sample) || [0, 0, 0];
-      const component = { x: 0, y: 1, z: 2 }[mode];
-      return component === undefined ? Math.hypot(...vector) : Math.abs(vector[component]);
+      const vector = instantaneousFieldMode(quantity, mode)
+        ? instantaneousPoyntingSample(sample, phaseDegrees)
+        : averagePoyntingSample(sample);
+      return Math.hypot(...(vector || [0, 0, 0]));
     }
     const vector = fieldVector(sample, quantity);
     if (!vector) return 0;
@@ -1060,18 +1492,32 @@ export async function startNec2cReport(data) {
   }
 
   function fieldReferenceMaximum(quantity, mode) {
-    const referenceMode = mode === "instantaneous" ? "envelope" : mode;
-    return Math.max(Number.EPSILON, ...nearFieldSections.flatMap((section, sectionIndex) =>
-      section.samples.flatMap((sample, sampleIndex) =>
-        nearFieldMasks[sectionIndex]?.[sampleIndex]
-          ? [] : [fieldValue(sample, quantity, referenceMode, 0)])));
+    const cacheKey = `${quantity}:${mode}`;
+    if (fieldReferenceCache.has(cacheKey)) return fieldReferenceCache.get(cacheKey);
+    const phases = quantity === "power" && instantaneousFieldMode(quantity, mode)
+      ? Array.from({ length: 18 }, (_, index) => index * 10) : [0];
+    const referenceMode = quantity !== "power" && mode === "instantaneous" ? "envelope" : mode;
+    let maximum = Number.EPSILON;
+    for (const [sectionIndex, section] of nearFieldSections.entries()) {
+      for (const [sampleIndex, sample] of section.samples.entries()) {
+        if (nearFieldMasks[sectionIndex]?.[sampleIndex]) continue;
+        for (const phase of phases)
+          maximum = Math.max(maximum, fieldValue(sample, quantity, referenceMode, phase));
+      }
+    }
+    fieldReferenceCache.set(cacheKey, maximum);
+    return maximum;
   }
 
-  function fieldHover(sample, quantity, value, relativeDb) {
+  function fieldHover(sample, quantity, mode, phaseDegrees, value, relativeDb) {
     const units = quantity === "electric" ? "V/m" : quantity === "magnetic" ? "A/m" : "W/m²";
-    const vector = quantity === "power" ? averagePoyntingSample(sample) : fieldVector(sample, quantity);
+    const vector = quantity === "power"
+      ? (instantaneousFieldMode(quantity, mode)
+        ? instantaneousPoyntingSample(sample, phaseDegrees) : averagePoyntingSample(sample))
+      : fieldVector(sample, quantity);
     const detail = quantity === "power"
-      ? `S=(${vector.map(component => component.toPrecision(4)).join(", ")}) ${units}`
+      ? `${instantaneousFieldMode(quantity, mode) ? "S(t)" : "⟨S⟩"}=(` +
+        `${(vector || [0, 0, 0]).map(component => component.toPrecision(4)).join(", ")}) ${units}`
       : ["X", "Y", "Z"].map((axis, index) => {
         const component = vector?.[index] || [0, 0];
         const magnitude = complexMagnitude(component);
@@ -1079,6 +1525,57 @@ export async function startNec2cReport(data) {
         return `${axis} ${magnitude.toPrecision(4)} ∠ ${phase.toFixed(1)}°`;
       }).join("<br>");
     return `${value.toPrecision(5)} ${units}<br>${relativeDb.toFixed(2)} dB relative<br>${detail}`;
+  }
+
+  function powerVector(sample, mode, phaseDegrees) {
+    return instantaneousFieldMode("power", mode)
+      ? instantaneousPoyntingSample(sample, phaseDegrees)
+      : averagePoyntingSample(sample);
+  }
+
+  function powerVectorTrace(section, exclusionMask, mode, phaseDegrees, maximum, floor) {
+    const width = section.u_values.length, height = section.v_values.length;
+    const uComponent = { x: 0, y: 1, z: 2 }[section.u_axis];
+    const vComponent = { x: 0, y: 1, z: 2 }[section.v_axis];
+    const stride = Math.max(1, Math.ceil(Math.max(width, height) / 18));
+    const uSpan = Math.abs(section.u_values.at(-1) - section.u_values[0]);
+    const vSpan = Math.abs(section.v_values.at(-1) - section.v_values[0]);
+    const arrowLength = 0.72 * Math.min(
+      uSpan / Math.max(1, Math.ceil(width / stride)),
+      vSpan / Math.max(1, Math.ceil(height / stride)));
+    const x = [], y = [];
+    for (let v = Math.floor(stride / 2); v < height; v += stride) {
+      for (let u = Math.floor(stride / 2); u < width; u += stride) {
+        const index = u + v * width;
+        if (exclusionMask[index]) continue;
+        const vector = powerVector(section.samples[index], mode, phaseDegrees) || [0, 0, 0];
+        const projectedMagnitude = Math.hypot(vector[uComponent], vector[vComponent]);
+        const relativeMagnitude = projectedMagnitude / Math.max(maximum, Number.EPSILON);
+        if (!(relativeMagnitude >= 10 ** (floor / 10))) continue;
+        // Direction is the primary information in this overlay; the heat map
+        // already carries magnitude.  Keep even weak visible vectors at about
+        // half of their sampling cell instead of shrinking them to ticks.
+        const length = arrowLength * (0.7 + 0.3 * Math.sqrt(Math.min(1, relativeMagnitude)));
+        const du = length * vector[uComponent] / projectedMagnitude;
+        const dv = length * vector[vComponent] / projectedMagnitude;
+        const centerU = Number(section.u_values[u]), centerV = Number(section.v_values[v]);
+        const startU = centerU - du * 0.5, startV = centerV - dv * 0.5;
+        const endU = centerU + du * 0.5, endV = centerV + dv * 0.5;
+        const wing = 0.27;
+        const wingU = -du * wing, wingV = -dv * wing;
+        const sideU = -wingV * 0.58, sideV = wingU * 0.58;
+        x.push(startU, endU, null,
+          endU, endU + wingU + sideU, null,
+          endU, endU + wingU - sideU, null);
+        y.push(startV, endV, null,
+          endV, endV + wingV + sideV, null,
+          endV, endV + wingV - sideV, null);
+      }
+    }
+    return {
+      type: "scatter", mode: "lines", x, y, hoverinfo: "skip", showlegend: false,
+      line: { color: instantaneousFieldMode("power", mode) ? "#ffca48" : "#7dff9a", width: 2 },
+    };
   }
 
   function drawNearField() {
@@ -1107,21 +1604,27 @@ export async function startNec2cReport(data) {
         const value = fieldValue(sample, quantity, mode, fieldPhaseDegrees);
         const relativeDb = dbFactor * Math.log10(Math.max(value, maximum * 1e-12) / maximum);
         row.push(logarithmic ? Math.max(floor, relativeDb) : value);
-        hoverRow.push(fieldHover(sample, quantity, value, relativeDb));
+        hoverRow.push(fieldHover(sample, quantity, mode, fieldPhaseDegrees, value, relativeDb));
       }
       rows.push(row); hover.push(hoverRow);
     }
     const units = quantity === "electric" ? "V/m" : quantity === "magnetic" ? "A/m" : "W/m²";
     const colorscale = [[0, "#030611"], [.2, "#35116e"], [.45, "#007fb0"],
       [.7, "#20dfb3"], [.88, "#fff04b"], [1, "#ff3b52"]];
-    return Plotly.react(fieldWorkspace.querySelector("#near-field-plot"), [{
+    const traces = [{
       type: "heatmap", x: section.u_values, y: section.v_values, z: rows,
       customdata: hover, hovertemplate: `%{customdata}<extra></extra>`,
       colorscale, zmin: logarithmic ? floor : 0, zmax: logarithmic ? 0 : maximum,
       colorbar: { title: logarithmic ? "relative dB" : units, tickfont: { color: "#9ceeff" } },
       zsmooth: "best", connectgaps: false,
-    }], {
-      title: { text: `${quantity === "power" ? "Average power flow" : quantity.toUpperCase() + " field"} · ` +
+    }];
+    if (vectorFieldMode(quantity, mode))
+      traces.push(powerVectorTrace(
+        section, exclusionMask, mode, fieldPhaseDegrees, maximum, floor));
+    const powerTitle = instantaneousFieldMode(quantity, mode)
+      ? "Instantaneous power flow" : "Average power flow";
+    return Plotly.react(fieldWorkspace.querySelector("#near-field-plot"), traces, {
+      title: { text: `${quantity === "power" ? powerTitle : quantity.toUpperCase() + " field"} · ` +
         `${String(section.normal_axis).toUpperCase()}-normal at ${Number(section.position).toPrecision(5)} m`,
         font: { color: "#7df9ff", size: 18 }, x: .02 },
       paper_bgcolor: "rgba(3,6,17,0)", plot_bgcolor: "#030611",
@@ -1133,7 +1636,10 @@ export async function startNec2cReport(data) {
     }, { responsive: true, displaylogo: false, scrollZoom: true,
       toImageButtonOptions: { format: "png", filename: "nec2c-near-field" } });
   }
-  [fieldPlaneSelect, fieldQuantitySelect, fieldModeSelect, fieldScaleSelect]
+  fieldQuantitySelect.addEventListener("change", () => {
+    setFieldModeOptions(); drawNearField();
+  });
+  [fieldPlaneSelect, fieldModeSelect, fieldScaleSelect]
     .forEach(element => element.addEventListener("change", drawNearField));
   fieldFloorSlider.addEventListener("input", () => {
     fieldWorkspace.querySelector("#near-field-floor-value").textContent = `−${Math.abs(Number(fieldFloorSlider.value))} dB`;
@@ -1166,6 +1672,12 @@ export async function startNec2cReport(data) {
     fieldWorkspace.hidden = view !== "nearfield";
     if (plotWorkspace) view === "plots" ? plotWorkspace.show() : plotWorkspace.hide();
     document.getElementById("metadata-panel").hidden = !canvasView;
+    if (!canvasView) {
+      inspector.hidden = true;
+      currentProfile.hidden = true;
+    } else if (inspectorEnabled.checked && inspectorHit) {
+      renderInspector(inspectorHit);
+    }
     tabs.querySelectorAll("button").forEach(button => button.classList.toggle("active", button.dataset.view === view));
     if (canvasView) fitCamera(camera, controls, scene);
     if (view === "pattern2d") drawPolar().then(() => Plotly.Plots.resize(polarWorkspace.querySelector("#pattern-polar")));
@@ -1188,8 +1700,7 @@ export async function startNec2cReport(data) {
     requestAnimationFrame(animate);
     const elapsed = Math.min(0.1, Math.max(0, (now - previousFrame) / 1000));
     previousFrame = now;
-    if (activeView === "nearfield" && fieldPlaying && fieldModeSelect.value === "instantaneous" &&
-        fieldQuantitySelect.value !== "power") {
+    if (activeView === "nearfield" && fieldPlaying && instantaneousFieldMode()) {
       fieldPhaseDegrees = (fieldPhaseDegrees + elapsed * 90) % 360;
       fieldPhaseSlider.value = String(Math.round(fieldPhaseDegrees));
       fieldWorkspace.querySelector("#near-field-phase-value").textContent = `${Math.round(fieldPhaseDegrees)}°`;

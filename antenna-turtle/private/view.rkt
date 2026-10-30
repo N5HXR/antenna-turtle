@@ -7,7 +7,8 @@
          "material.rkt"
          "nec2c-dielectric.rkt"
          "plot-cursor.rkt"
-         "wire-lumped.rkt")
+         "wire-lumped.rkt"
+         "wire-network.rkt")
 
 (provide show-model
          ;; Exposed from this private module for non-GUI tests and future
@@ -19,6 +20,8 @@
 (define feed-color "firebrick")
 (define dielectric-color "deep sky blue")
 (define lumped-element-color "dark orange")
+(define port-negative-color "royal blue")
+(define port-positive-color "dark turquoise")
 
 (define-runtime-path proportional-plot3d-path "proportional-plot3d.rkt")
 
@@ -76,14 +79,20 @@
   (define edges (model-edges model))
   (when (null? edges)
     (error 'show-model "cannot display an empty model"))
+  (define coax-edge-colors (make-hasheq))
+  (for ([coax (in-list (model-wire-coaxes))]
+        #:when (wire-coax-declaration-color coax))
+    (for ([edge (in-list (wire-coax-declaration-shield-edges coax))])
+      (hash-set! coax-edge-colors edge (wire-coax-declaration-color coax))))
   (define conductors
     (for/list ([edge (in-list edges)])
       (lines3d (edge-points edge)
-               #:color wire-color
+               #:color (hash-ref coax-edge-colors edge wire-color)
                #:width 2)))
   (define feeds
     (filter values (map feed-point edges)))
   (define lumped-elements (model-wire-lumped-elements))
+  (define ports (model-wire-ports))
   (append
    conductors
    (append-map cuboid-renderers (dielectric-cuboids))
@@ -108,6 +117,28 @@
                   #:size 9
                   #:sym 'fullcircle
                   #:label "feed")))
+   (if (null? ports)
+       '()
+       (list
+        (points3d
+         (map (lambda (port)
+                (point3->vector (wire-port-negative-point port)))
+              ports)
+         #:color port-negative-color
+         #:fill-color "white"
+         #:line-width 2
+         #:size 7
+         #:sym 'fullcircle
+         #:label "port -")
+        (points3d
+         (map (lambda (port)
+                (point3->vector (wire-port-positive-point port)))
+              ports)
+         #:color port-positive-color
+         #:fill-color port-positive-color
+         #:size 7
+         #:sym 'fullcircle
+         #:label "port +")))
    (if (null? lumped-elements)
        '()
        (list
@@ -203,7 +234,11 @@
         (list (plot-legend-item "dielectric volume" dielectric-color 'solid 'line)))
     (if (null? (model-wire-lumped-elements))
         '()
-        (list (plot-legend-item "lumped element" lumped-element-color 'solid 'box))))
+        (list (plot-legend-item "lumped element" lumped-element-color 'solid 'box)))
+    (if (null? (model-wire-ports))
+        '()
+        (list (plot-legend-item "port -" port-negative-color 'solid 'box)
+              (plot-legend-item "port +" port-positive-color 'solid 'box))))
    #:legend? legend?
    #:title (model-title)
    #:x-label "x (m)"
