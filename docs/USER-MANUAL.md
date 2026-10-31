@@ -892,6 +892,23 @@ blue/turquoise markers.
 Inline wire `lumped-element` forms can represent a first-order common-mode
 choke on the shield path.
 
+Place an idealized transformer between two explicit ports with
+`ideal-transformer`. A 2:1 output-to-input turns ratio transforms a nominal
+200-ohm antenna load to 50 ohms:
+
+```racket
+(ideal-transformer
+  name transformer-4:1
+  input coax-primary
+  output antenna-feed
+  turns-ratio 2)
+```
+
+The primitive uses a 0.001-ohm primary-referred series resistance to make the
+otherwise singular ideal-transformer Y matrix finite for NEC. Raw
+`two-port-y` remains available for fixed-frequency equivalent circuits and
+parameters exported by network-design tools.
+
 This is not geometrical coax: the center conductor and shield interior are not
 drawn, do not radiate, and do not couple to nearby objects. Revision 1 is
 lossless and wire-only, and cannot be combined with NEC dielectric volumes or

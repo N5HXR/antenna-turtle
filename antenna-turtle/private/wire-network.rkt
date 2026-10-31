@@ -12,6 +12,7 @@
  add-wire-port-declaration
  add-transmission-line-declaration
  add-y-network-declaration
+ add-ideal-transformer-declaration
  call-with-coax-declaration
  model-wire-ports
  model-wire-transmission-lines
@@ -323,6 +324,33 @@
     (wire-y-network name input-port output-port y11 y12 y22))
   (current-wire-y-networks (append networks (list network)))
   network)
+
+;; An exact ideal transformer has a singular Y matrix and cannot be written on
+;; a finite NEC NT card. A small primary-referred series resistance makes the
+;; constraint finite. For n = Voutput/Vinput, the resulting matrix is
+;;
+;;   [ 1/r       -1/(n r)   ]
+;;   [ -1/(n r)   1/(n^2 r) ]
+;;
+;; and a load Z at the output is seen as Z/n^2 + r at the input.
+(define (add-ideal-transformer-declaration
+         #:name [requested-name #f]
+         #:input input-port
+         #:output output-port
+         #:turns-ratio turns-ratio
+         #:series-resistance [series-resistance 0.001])
+  (define who 'ideal-transformer)
+  (positive-real who turns-ratio "turns ratio")
+  (positive-real who series-resistance "series resistance")
+  (define n turns-ratio)
+  (define r series-resistance)
+  (add-y-network-declaration
+   #:name requested-name
+   #:input input-port
+   #:output output-port
+   #:y11 (/ 1 r)
+   #:y12 (- (/ 1 (* n r)))
+   #:y22 (/ 1 (* n n r))))
 
 (define (call-with-coax-declaration thunk
                                     #:name requested-name

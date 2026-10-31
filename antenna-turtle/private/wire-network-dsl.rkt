@@ -3,7 +3,7 @@
 (require "wire-network.rkt"
          (for-syntax racket/base racket/list syntax/parse))
 
-(provide wire-port transmission-line two-port-y coax)
+(provide wire-port transmission-line two-port-y ideal-transformer coax)
 
 (begin-for-syntax
   (define valid-directions
@@ -131,6 +131,31 @@
      (raise-syntax-error
       'two-port-y
       "expected (two-port-y setting value ...)" stx)]))
+
+(define-syntax (ideal-transformer stx)
+  (syntax-parse stx
+    [(_ setting ...)
+     (define-values (values body)
+       (parse-leading-settings
+        'ideal-transformer stx #'(setting ...)
+        '(name input output turns-ratio series-resistance)))
+     (unless (null? body)
+       (raise-syntax-error 'ideal-transformer
+                           "unexpected expression after settings" stx
+                           (car body)))
+     (define arguments
+       (append
+        (optional-keyword values 'name #'#:name name-expression)
+        (list #'#:input (require-setting 'ideal-transformer stx values 'input)
+              #'#:output (require-setting 'ideal-transformer stx values 'output)
+              #'#:turns-ratio
+              (require-setting 'ideal-transformer stx values 'turns-ratio))
+        (optional-keyword values 'series-resistance #'#:series-resistance)))
+     #`(add-ideal-transformer-declaration #,@arguments)]
+    [(_ . _)
+     (raise-syntax-error
+      'ideal-transformer
+      "expected (ideal-transformer setting value ...)" stx)]))
 
 (define-syntax (coax stx)
   (syntax-parse stx

@@ -181,3 +181,15 @@ configuration in a later multiport milestone.
 terminal-axis location at the turtle without changing the electrical axis.
 The centered behavior remains the default. Scalar ~size~ values also describe
 a square transverse profile; two-element lists retain rectangular profiles.
+
+* TODO Add analytic frequency-dependent NEC2C lumped networks
+Deferred; do not begin implementation without a new decision to schedule it.
+Define compact ~net-ladder~, ~net-multiport~, and ~net-attach~ forms for RLC
+matching networks, filters, and shared-input diplexers. Extend NEC2C-N5HXR to
+evaluate analytic two-port providers at every ~FR~ frequency, avoiding sampled
+Y-parameter tables and interpolation for circuits whose equations are known.
+Preserve classic ~NT~ and ~TL~ behavior, support multiple two-port branches
+sharing one segment, and validate native sweeps against repeated static-~NT~
+runs. See ~docs/NEC2C-FREQUENCY-DEPENDENT-NETWORK-SPEC.md~. OpenEMS reuse is a
+future postprocessing/layout consideration and is not part of the first
+revision.

@@ -127,6 +127,21 @@ export function interpolatedPolarization(pattern, table, elevation, azimuth) {
   };
 }
 
+// Convert a conventional polar angle in a vertical plane into the spherical
+// direction used by the report data.  Zero degrees is the selected bearing at
+// the horizon, 90 is zenith, 180 is the opposite horizon, and (for free-space
+// patterns) 270 is nadir.
+export function elevationPlaneDirection(angle, bearing) {
+  const normalized = ((angle % 360) + 360) % 360;
+  const forwardBearing = ((bearing % 360) + 360) % 360;
+  const reverseBearing = (forwardBearing + 180) % 360;
+  if (normalized <= 90)
+    return { elevation: normalized, azimuth: forwardBearing };
+  if (normalized <= 270)
+    return { elevation: 180 - normalized, azimuth: reverseBearing };
+  return { elevation: normalized - 360, azimuth: forwardBearing };
+}
+
 export function globalGainRange(pattern, component) {
   const gains = pattern.samples.map(sample => gainOf(sample, component)).filter(Number.isFinite);
   if (!gains.length) return null;

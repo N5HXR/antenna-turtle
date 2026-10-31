@@ -1665,6 +1665,36 @@ Both ports must already exist and a port may participate in only one
 revision-1 line. The form does not add an excitation; `coax` supplies the fed
 input fixture for the common case.
 
+### `(two-port-y setting value ...)`
+
+Connects two existing `wire-port` fixtures with a reciprocal NEC `NT` network.
+The required settings are `input`, `output`, `y11`, `y12`, and `y22`; the
+admittances are complex siemens and remain constant throughout a frequency
+sweep. Optional `name` identifies the declaration. This low-level form is
+appropriate for a fixed-frequency equivalent circuit or externally calculated
+Y parameters.
+
+### `(ideal-transformer setting value ...)`
+
+Creates the finite NEC Y-network approximation of an ideal transformer:
+
+```racket
+(ideal-transformer
+  name transformer-4:1
+  input primary-port
+  output antenna-port
+  turns-ratio 2)
+```
+
+`turns-ratio` is `Voutput/Vinput`, so an output load `Z` is seen at the input
+as `Z / turns-ratio^2`. Thus a 2:1 turns ratio is a 4:1 impedance
+transformation. Because an exact ideal transformer has a singular Y matrix,
+the generated network includes a primary-referred `series-resistance`, which
+defaults to 0.001 ohm and may be specified explicitly. Its Y terms are
+`1/r`, `-1/(n*r)`, and `1/(n^2*r)`. This is an idealized matching element; use
+`two-port-y` for winding loss, leakage, magnetizing inductance, core loss, or
+measured behavior.
+
 Export requires OpenEMS 0.37 / CSXCAD 0.7 or newer. Upstream installations
 under `/usr/local` are found automatically; set `OPENEMS_ROOT` for another
 installation prefix.
@@ -2705,8 +2735,8 @@ Writes a single self-contained interactive HTML report for the wire-native
 NEC2C backend and returns its complete path. The report contains four
 workspaces: a combined 3-D view with independently switchable antenna geometry
 and radiation pattern, the same Smith/S11/return-loss/VSWR and impedance plot
-viewer used by the OpenEMS report, and an interactive azimuth-pattern cut at a
-continuously selectable elevation angle, plus selectable planar near fields.
+viewer used by the OpenEMS report, interactive azimuth and elevation-plane
+pattern cuts, and selectable planar near fields.
 The near-field workspace displays E and H envelopes, instantaneous magnitude,
 and Cartesian components. `POWER` derives time-average and instantaneous
 Poynting intensity from co-registered complex E and H samples, with selectable
@@ -2787,8 +2817,14 @@ keeps model Z perceptually screen-up and places model Y across the screen, so
 the Yagi elements read horizontally without allowing camera roll to redefine
 physical vertical.
 
-The 2-D cut uses linear-power interpolation between NEC angular samples and
-reports both the plotted value and absolute gain on hover. Its polarization
+The 2-D pattern workspace can show either an azimuth cut at a selectable
+elevation or an elevation-plane cut at a selectable bearing. Grounded models
+show the upper elevation semicircle; free-space models show the complete
+vertical plane. The display defaults to the conventional outer 30 dB, with
+adjustable 30/40/60/80 dB depth. This prevents exact or
+near-exact numerical nulls from compressing the useful outer pattern into an
+apparently circular trace. The cut uses linear-power interpolation between NEC
+angular samples and reports both the plotted value and absolute gain on hover. Its polarization
 readout additionally reports interpolated complex E-theta and E-phi magnitude
 and phase, their relative phase, axial ratio, tilt, and handedness. Relative cuts use
 the total pattern's maximum gain as zero—even while viewing a polarization

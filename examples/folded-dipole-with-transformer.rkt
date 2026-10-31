@@ -5,22 +5,24 @@
  frequency 14.1
  ground real)
 
+(define leg (* 0.93 quarter-wave))
+
 (move up 10)
 
 (from-here
   (reflect forward
     (move forward (half centimeter))
     (with-wire
-      (move forward quarter-wave)
-      (move up (half foot))
-      (move back (+ quarter-wave (half centimeter))))))
+      (move forward leg)
+      (move up (* 2/3 meter))
+      (move back (+ leg (half centimeter))))))
 
 (define feedpoint
   (from-here
     (wire-port forward
                name antenna-feed
                gap centimeter
-               diameter centimeter)))
+               diameter (current-wire-diameter))))
 
 ;; The folded-dipole port follows the horizontal feed gap. The transformer
 ;; primary points from shield to inner conductor along the vertical coax axis.
@@ -31,7 +33,7 @@
     (wire-port up
                name transformer-primary
                gap centimeter
-               diameter centimeter)))
+               diameter (current-wire-diameter))))
 
 ;; This draws the outer conductor and creates a 50-ohm NEC TL from its driven
 ;; input port to transformer-primary. The NT card connects that same primary
@@ -47,17 +49,17 @@
       feed input
       (move down (- 10 foot)))
 
-(two-port-y
+(ideal-transformer
  name transformer-4:1
  input transformer-primary
  output feedpoint
- y11 999.968228-0.002500i
- y12 -499.984114+0.000750i
- y22 249.992057-0.000625i)
+ turns-ratio 2)
 
-(show-model)
+;(show-model)
 
 ; (export-nec2c "folded-dipole-with-transformer.nec")
 (define s (nec2c-vswr-sweep 12 16 #:steps 201))
-(show-return-loss-sweep s)
-(show-smith-chart s)
+;(show-return-loss-sweep s)
+;(show-smith-chart s)
+
+(html-auto-report "scratch/folded-dipole-with-transformer.html")
