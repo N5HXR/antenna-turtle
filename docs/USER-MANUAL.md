@@ -976,9 +976,9 @@ floating label that can cover or overflow the data.
 Simulation values can be queried directly without unpacking backend structs:
 
 ```racket
-(impedance-at two-port 2400 #:port 'input #:interpolate? #t)
+(impedance-at two-port 2400 #:port 'input)
 (s-parameter-db-at two-port 2400
-                   #:from 'input #:to 'output #:interpolate? #t)
+                   #:from 'input #:to 'output)
 
 (define pattern (radiation-pattern two-port))
 (maximum-gain pattern)
@@ -987,9 +987,9 @@ Simulation values can be queried directly without unpacking backend structs:
 (front-to-side-ratio pattern)
 ```
 
-Named ports remove any need to remember S-matrix indexes. Exact samples are
-used by default; interpolation must be requested explicitly and never extends
-beyond the sampled range. See the measurement-query section of `docs/API.md`
+Named ports remove any need to remember S-matrix indexes. Queries interpolate
+by default and never extend beyond the sampled range; pass `#:interpolate? #f`
+when an exact sample is required. See the measurement-query section of `docs/API.md`
 for impedance, matching, polarization, field, and discovery helpers.
 
 The familiar network plots show the diagonal reflection and active input
@@ -1300,9 +1300,9 @@ The same result supports the ordinary measurement functions and retains each
 complete pattern grid:
 
 ```racket
-(maximum-gain-at-frequency performance 906 #:interpolate? #t)
-(realized-horizon-gain-at-frequency performance 906 #:interpolate? #t)
-(impedance-at performance 906 #:interpolate? #t)
+(maximum-gain-at-frequency performance 906)
+(realized-horizon-gain-at-frequency performance 906)
+(impedance-at performance 906)
 
 (define interesting-mode
   (radiation-pattern-at-frequency performance 1660))
@@ -1529,6 +1529,28 @@ Customize or disable this work at report generation time:
 (write-nec2c-html-report sweep "yagi-light.html"
                          #:pattern sphere #:near-fields #f)
 ```
+
+For a complete first-look report using the current model's ordinary defaults,
+the one-step form is:
+
+```racket
+(html-auto-report "antenna-report.html")
+```
+
+This makes a 301-point linear sweep from half an octave below through half an
+octave above `model-frequency` (`frequency / sqrt(2)` through
+`frequency * sqrt(2)`), makes a 5-degree spherical pattern exactly at the model
+frequency, and includes the report's automatic near-field planes. Network
+values at the model frequency are interpolated when it falls between sweep
+samples. The function returns the completed report path. When any of those
+choices need to change, use the sweep, radiation-grid, and report functions
+separately as shown above.
+
+Portable NEC2C reports round serialized numeric display data to eight
+significant digits, gzip the JSON payload, and embed its base64 representation
+in the same HTML file. A current Chrome, Firefox, or Chromium-based Edge browser
+decompresses it locally through the standard Compression Streams API. Opening a
+report does not upload its contents or require a web server.
 
 The aliases `'x`, `'y`, and `'z` name a plane by its normal; `'yz`, `'xz`, and
 `'xy` name the same planes by their contained axes. Missing positions and

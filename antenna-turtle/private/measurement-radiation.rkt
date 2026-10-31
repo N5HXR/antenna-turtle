@@ -168,7 +168,7 @@
 
 (define (gain-at pattern #:azimuth azimuth #:elevation elevation
                  #:component [component 'total]
-                 #:interpolate? [interpolate? #f])
+                 #:interpolate? [interpolate? #t])
   (interpolated-pattern-value
    'gain-at (pattern-samples 'gain-at pattern) azimuth elevation
    (gain-accessor 'gain-at component) interpolate-db-power interpolate?))
@@ -207,25 +207,25 @@
    interpolate?))
 
 (define (maximum-gain-at-frequency result frequency
-                                   #:interpolate? [interpolate? #f])
+                                   #:interpolate? [interpolate? #t])
   (gain-sweep-value-at
    'maximum-gain-at-frequency result frequency
    nec2c-gain-sweep-sample-maximum-gain-db interpolate?))
 
 (define (realized-maximum-gain-at-frequency
-         result frequency #:interpolate? [interpolate? #f])
+         result frequency #:interpolate? [interpolate? #t])
   (gain-sweep-value-at
    'realized-maximum-gain-at-frequency result frequency
    nec2c-gain-sweep-sample-realized-maximum-gain-db interpolate?))
 
 (define (horizon-gain-at-frequency result frequency
-                                   #:interpolate? [interpolate? #f])
+                                   #:interpolate? [interpolate? #t])
   (gain-sweep-value-at
    'horizon-gain-at-frequency result frequency
    nec2c-gain-sweep-sample-horizon-gain-db interpolate?))
 
 (define (realized-horizon-gain-at-frequency
-         result frequency #:interpolate? [interpolate? #f])
+         result frequency #:interpolate? [interpolate? #t])
   (gain-sweep-value-at
    'realized-horizon-gain-at-frequency result frequency
    nec2c-gain-sweep-sample-realized-horizon-gain-db interpolate?))
@@ -341,13 +341,13 @@
    interpolate?))
 
 (define (axial-ratio-at pattern #:azimuth azimuth #:elevation elevation
-                        #:interpolate? [interpolate? #f])
+                        #:interpolate? [interpolate? #t])
   (ordinary-pattern-value
    'axial-ratio-at pattern azimuth elevation
    nec2c-pattern-sample-axial-ratio interpolate?))
 
 (define (polarization-tilt-at pattern #:azimuth azimuth #:elevation elevation
-                              #:interpolate? [interpolate? #f])
+                              #:interpolate? [interpolate? #t])
   (ordinary-pattern-value
    'polarization-tilt-at pattern azimuth elevation
    nec2c-pattern-sample-tilt-deg interpolate?))
@@ -359,7 +359,7 @@
    (lambda (left _right _fraction) left)))
 
 (define (e-field-at pattern #:azimuth azimuth #:elevation elevation
-                    #:interpolate? [interpolate? #f])
+                    #:interpolate? [interpolate? #t])
   (values
    (ordinary-pattern-value
     'e-field-at pattern azimuth elevation

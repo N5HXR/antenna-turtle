@@ -2,6 +2,7 @@
 
 (require racket/list
          racket/math
+         "core.rkt"
          "measurement-interpolation.rkt"
          "nec2c.rkt"
          "network.rkt"
@@ -10,6 +11,10 @@
 (provide
  impedance-at admittance-at resistance-at reactance-at
  reflection-at s11-db-at return-loss-at vswr-at
+ impedance->reflection-coefficient
+ reflection-coefficient->return-loss reflection-coefficient->vswr
+ impedance->return-loss impedance->vswr
+ return-loss->vswr vswr->return-loss
  s-parameter-at s-parameter-db-at s-parameter-phase-at
  measurement-network-frequencies measurement-network-ports
  characteristic-impedance-at )
@@ -65,7 +70,7 @@
    network-sample-frequency-mhz accessor interpolate-complex interpolate?))
 
 (define (impedance-at result frequency #:port [port #f]
-                      #:interpolate? [interpolate? #f])
+                      #:interpolate? [interpolate? #t])
   (cond
     [(nec2c-impedance-result? result)
      (define samples (nec2c-impedance-result-samples result))
@@ -84,21 +89,21 @@
                        network-sample-impedance)]))
 
 (define (admittance-at result frequency #:port [port #f]
-                       #:interpolate? [interpolate? #f])
+                       #:interpolate? [interpolate? #t])
   (/ 1 (impedance-at result frequency #:port port #:interpolate? interpolate?)))
 
 (define (resistance-at result frequency #:port [port #f]
-                       #:interpolate? [interpolate? #f])
+                       #:interpolate? [interpolate? #t])
   (real-part
    (impedance-at result frequency #:port port #:interpolate? interpolate?)))
 
 (define (reactance-at result frequency #:port [port #f]
-                      #:interpolate? [interpolate? #f])
+                      #:interpolate? [interpolate? #t])
   (imag-part
    (impedance-at result frequency #:port port #:interpolate? interpolate?)))
 
 (define (reflection-at result frequency #:port [port #f]
-                       #:interpolate? [interpolate? #f])
+                       #:interpolate? [interpolate? #t])
   (network-value-at 'reflection-at result frequency port interpolate?
                     network-sample-reflection-coefficient))
 
@@ -106,20 +111,69 @@
   (if (zero? magnitude*) -inf.0 (* 20.0 (/ (log magnitude*) (log 10.0)))))
 
 (define (s11-db-at result frequency #:port [port #f]
-                   #:interpolate? [interpolate? #f])
+                   #:interpolate? [interpolate? #t])
   (magnitude->db
    (magnitude
     (reflection-at result frequency #:port port #:interpolate? interpolate?))))
 
 (define (return-loss-at result frequency #:port [port #f]
-                        #:interpolate? [interpolate? #f])
+                        #:interpolate? [interpolate? #t])
   (- (s11-db-at result frequency #:port port #:interpolate? interpolate?)))
 
 (define (vswr-at result frequency #:port [port #f]
-                 #:interpolate? [interpolate? #f])
+                 #:interpolate? [interpolate? #t])
   (reflection-magnitude->vswr
    (magnitude
     (reflection-at result frequency #:port port #:interpolate? interpolate?))))
+
+(define (positive-system-impedance who value)
+  (unless (and (real? value) (rational? value) (positive? value))
+    (raise-argument-error who "positive finite real system impedance" value))
+  value)
+
+(define (impedance->reflection-coefficient
+         impedance [system-impedance (model-impedance)])
+  (unless (number? impedance)
+    (raise-argument-error 'impedance->reflection-coefficient "number?" impedance))
+  (define z0
+    (positive-system-impedance
+     'impedance->reflection-coefficient system-impedance))
+  (/ (- impedance z0) (+ impedance z0)))
+
+(define (reflection-coefficient->return-loss reflection-coefficient)
+  (unless (number? reflection-coefficient)
+    (raise-argument-error
+     'reflection-coefficient->return-loss "number?" reflection-coefficient))
+  (- (magnitude->db (magnitude reflection-coefficient))))
+
+(define (reflection-coefficient->vswr reflection-coefficient)
+  (unless (number? reflection-coefficient)
+    (raise-argument-error
+     'reflection-coefficient->vswr "number?" reflection-coefficient))
+  (reflection-magnitude->vswr (magnitude reflection-coefficient)))
+
+(define (impedance->return-loss
+         impedance [system-impedance (model-impedance)])
+  (reflection-coefficient->return-loss
+   (impedance->reflection-coefficient impedance system-impedance)))
+
+(define (impedance->vswr impedance [system-impedance (model-impedance)])
+  (reflection-coefficient->vswr
+   (impedance->reflection-coefficient impedance system-impedance)))
+
+(define (return-loss->vswr return-loss-db)
+  (unless (real? return-loss-db)
+    (raise-argument-error 'return-loss->vswr "real?" return-loss-db))
+  (reflection-magnitude->vswr (expt 10.0 (/ (- return-loss-db) 20.0))))
+
+(define (vswr->return-loss vswr)
+  (unless (and (real? vswr) (>= vswr 1))
+    (raise-argument-error 'vswr->return-loss "real >= 1" vswr))
+  (cond
+    [(= vswr 1) +inf.0]
+    [(infinite? vswr) 0.0]
+    [else
+     (reflection-coefficient->return-loss (/ (- vswr 1) (+ vswr 1)))]))
 
 (define (multiport-samples who result from to)
   (unless (openems-multiport-result? result)
@@ -136,21 +190,21 @@
    (openems-multiport-result-s-parameters result)))
 
 (define (s-parameter-at result frequency #:from [from #f] #:to [to #f]
-                        #:interpolate? [interpolate? #f])
+                        #:interpolate? [interpolate? #t])
   (sample-at-frequency
    's-parameter-at (multiport-samples 's-parameter-at result from to) frequency
    openems-s-parameter-sample-frequency-mhz
    openems-s-parameter-sample-value interpolate-complex interpolate?))
 
 (define (s-parameter-db-at result frequency #:from [from #f] #:to [to #f]
-                           #:interpolate? [interpolate? #f])
+                           #:interpolate? [interpolate? #t])
   (magnitude->db
    (magnitude
     (s-parameter-at result frequency #:from from #:to to
                     #:interpolate? interpolate?))))
 
 (define (s-parameter-phase-at result frequency #:from [from #f] #:to [to #f]
-                              #:interpolate? [interpolate? #f])
+                              #:interpolate? [interpolate? #t])
   (* (angle (s-parameter-at result frequency #:from from #:to to
                             #:interpolate? interpolate?))
      (/ 180.0 pi)))

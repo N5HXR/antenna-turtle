@@ -1,8 +1,26 @@
 #lang racket
 
-(require rackunit
+(require file/gunzip
+         net/base64
+         rackunit
          racket/file
+         racket/port
          "../antenna-turtle/main.rkt")
+
+(define (compressed-report-json html)
+  (define match
+    (regexp-match
+     #px"<script type=\"application/gzip\" id=\"antenna-turtle-report-data-gzip\">([^<]+)</script>"
+     html))
+  (unless match
+    (error 'compressed-report-json "report has no inline gzip payload"))
+  (bytes->string/utf-8
+   (call-with-output-bytes
+    (lambda (out)
+      (gunzip-through-ports
+       (open-input-bytes
+        (base64-decode (string->bytes/utf-8 (second match))))
+       out)))))
 
 (define run
   (nec2c-run-info "/usr/bin/nec2c" "test" 12 0 "" ""
@@ -77,7 +95,7 @@
 (test-case "NEC2C HTML report combines wire geometry, plots, and a radiation grid"
   (reset-model!)
   (model-title "Portable <Yagi-shaped> fixture")
-  (model-frequency 150)
+  (model-frequency 150.123456789)
   (wire-on)
   (spread forward 1 feed center)
   (define report-dielectric (dielectric name report-foam er 3.5))
@@ -92,36 +110,39 @@
    (lambda ()
      (write-nec2c-html-report sweep destination #:pattern pattern #:near-fields near-fields)
      (define html (file->string destination))
-     (check-regexp-match #rx"antenna-turtle-report/nec2c-m1" html)
-     (check-true (string-contains? html "Portable \\u003cYagi-shaped> fixture"))
+     (define payload (compressed-report-json html))
+     (define searchable (string-append html payload))
+     (check-regexp-match #rx"antenna-turtle-report/nec2c-m1" payload)
+     (check-regexp-match #rx"\"model_frequency_mhz\":150\\.12346" payload)
+     (check-true (string-contains? payload "Portable <Yagi-shaped> fixture"))
      (check-false (regexp-match? #rx"Portable <Yagi-shaped> fixture" html))
-     (check-regexp-match #rx"pattern_frequency_mhz" html)
-     (check-regexp-match #rx"segment_samples" html)
-     (check-regexp-match #rx"surface_current_samples" html)
-     (check-regexp-match #rx"volume_current_samples" html)
-     (check-regexp-match #rx"dielectric_volumes" html)
-     (check-regexp-match #rx"dielectric J magnitude" html)
-     (check-regexp-match #rx"current_density" html)
-     (check-regexp-match #rx"charge_density" html)
-     (check-regexp-match #rx"power_budget" html)
-     (check-regexp-match #rx"e_theta" html)
-     (check-regexp-match #rx"near_fields" html)
-     (check-regexp-match #rx"NEAR FIELD" html)
-     (check-regexp-match #rx"instantaneous magnitude" html)
-     (check-regexp-match #rx"average power vectors" html)
-     (check-regexp-match #rx"instantaneous power intensity" html)
-     (check-regexp-match #rx"instantaneous power vectors" html)
-     (check-regexp-match #rx"instantaneous current" html)
-     (check-regexp-match #rx"SMOOTH PATCH CURRENTS" html)
-     (check-regexp-match #rx"port_samples" html)
-     (check-regexp-match #rx"3D VIEW" html)
-     (check-regexp-match #rx"2D PATTERN" html)
-     (check-regexp-match #rx"PATTERN OPACITY" html)
-     (check-regexp-match #rx"3 dB COLOR BANDS" html)
-     (check-regexp-match #rx"SHOW SETTINGS" html)
-     (check-regexp-match #rx"total reference" html)
-     (check-regexp-match #rx"plot-hover-readout" html)
-     (check-regexp-match #rx"axes-visible" html))
+     (check-regexp-match #rx"pattern_frequency_mhz" searchable)
+     (check-regexp-match #rx"segment_samples" searchable)
+     (check-regexp-match #rx"surface_current_samples" searchable)
+     (check-regexp-match #rx"volume_current_samples" searchable)
+     (check-regexp-match #rx"dielectric_volumes" searchable)
+     (check-regexp-match #rx"dielectric J magnitude" searchable)
+     (check-regexp-match #rx"current_density" searchable)
+     (check-regexp-match #rx"charge_density" searchable)
+     (check-regexp-match #rx"power_budget" searchable)
+     (check-regexp-match #rx"e_theta" searchable)
+     (check-regexp-match #rx"near_fields" searchable)
+     (check-regexp-match #rx"NEAR FIELD" searchable)
+     (check-regexp-match #rx"instantaneous magnitude" searchable)
+     (check-regexp-match #rx"average power vectors" searchable)
+     (check-regexp-match #rx"instantaneous power intensity" searchable)
+     (check-regexp-match #rx"instantaneous power vectors" searchable)
+     (check-regexp-match #rx"instantaneous current" searchable)
+     (check-regexp-match #rx"SMOOTH PATCH CURRENTS" searchable)
+     (check-regexp-match #rx"port_samples" searchable)
+     (check-regexp-match #rx"3D VIEW" searchable)
+     (check-regexp-match #rx"2D PATTERN" searchable)
+     (check-regexp-match #rx"PATTERN OPACITY" searchable)
+     (check-regexp-match #rx"3 dB COLOR BANDS" searchable)
+     (check-regexp-match #rx"SHOW SETTINGS" searchable)
+     (check-regexp-match #rx"total reference" searchable)
+     (check-regexp-match #rx"plot-hover-readout" searchable)
+     (check-regexp-match #rx"axes-visible" searchable))
    (lambda () (when (file-exists? destination) (delete-file destination)))))
 
 (test-case "generic HTML report entry point dispatches NEC2C without OpenEMS"
@@ -132,7 +153,7 @@
    (lambda ()
      (write-html-report sweep destination #:pattern pattern #:near-fields #f)
      (check-regexp-match #rx"antenna-turtle-report/nec2c-m1"
-                         (file->string destination)))
+                         (compressed-report-json (file->string destination))))
    (lambda () (when (file-exists? destination) (delete-file destination)))))
 
 (test-case "NEC2C HTML report encodes unbounded network values as null"
@@ -156,7 +177,7 @@
      (write-nec2c-html-report
       infinite-sweep destination #:pattern pattern #:near-fields #f)
      (define html (file->string destination))
-     (check-regexp-match #rx"\"s11_db\":null" html))
+     (check-regexp-match #rx"\"s11_db\":null" (compressed-report-json html)))
    (lambda () (when (file-exists? destination) (delete-file destination)))))
 
 (test-case "NEC2C HTML report describes coax ports and resolved wire loads"
@@ -180,13 +201,13 @@
    void
    (lambda ()
      (write-nec2c-html-report sweep destination #:pattern pattern #:near-fields #f)
-     (define html (file->string destination))
-     (check-true (string-contains? html "\"coaxes\":[{"))
-     (check-true (string-contains? html "\"ports\":[{"))
-     (check-true (string-contains? html "\"transmission_lines\":[{"))
-     (check-true (string-contains? html "\"lumped_loads\":[{"))
-     (check-regexp-match #rx"report-choke" html)
-     (check-regexp-match #rx"coax-shield" html))
+     (define payload (compressed-report-json (file->string destination)))
+     (check-true (string-contains? payload "\"coaxes\":[{"))
+     (check-true (string-contains? payload "\"ports\":[{"))
+     (check-true (string-contains? payload "\"transmission_lines\":[{"))
+     (check-true (string-contains? payload "\"lumped_loads\":[{"))
+     (check-regexp-match #rx"report-choke" payload)
+     (check-regexp-match #rx"coax-shield" payload))
    (lambda () (when (file-exists? destination) (delete-file destination)))))
 
 (test-case "a plain NEC2C sweep requires an explicit radiation grid"

@@ -13,6 +13,12 @@
   (with-scale 0.95
     (spread forward half-wave feed center)))
 
+(when #f
+  (begin
+    (html-auto-report "scratch/dipole.html"))
+
+  )
+
 (module+ main
   (define sweep (nec2c-vswr-sweep 5 20 #:steps 1001))
   (show-smith-chart sweep)

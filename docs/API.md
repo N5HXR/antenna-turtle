@@ -2225,39 +2225,40 @@ the data or extend beyond the plotting viewport.
 The measurement API accepts native solver results directly and returns ordinary
 Racket numbers and lists. Frequencies are in MHz, impedance is complex ohms,
 phase and directions are in degrees, and gain and S-parameter levels are in
-dB. An exact sampled frequency or direction is required by default. Add
-`#:interpolate? #t` to interpolate; the API never extrapolates.
+dB. Queries interpolate between sampled frequencies or directions by default;
+pass `#:interpolate? #f` when an exact sample is required. The API never
+extrapolates.
 
 The complete one-port/network signatures are:
 
 ```racket
 (impedance-at result frequency #:port [name #f]
-              #:interpolate? [boolean #f])
+              #:interpolate? [boolean #t])
 (admittance-at result frequency #:port [name #f]
-               #:interpolate? [boolean #f])
+               #:interpolate? [boolean #t])
 (resistance-at result frequency #:port [name #f]
-               #:interpolate? [boolean #f])
+               #:interpolate? [boolean #t])
 (reactance-at result frequency #:port [name #f]
-              #:interpolate? [boolean #f])
+              #:interpolate? [boolean #t])
 (reflection-at result frequency #:port [name #f]
-               #:interpolate? [boolean #f])
+               #:interpolate? [boolean #t])
 (s11-db-at result frequency #:port [name #f]
-           #:interpolate? [boolean #f])
+           #:interpolate? [boolean #t])
 (return-loss-at result frequency #:port [name #f]
-                #:interpolate? [boolean #f])
+                #:interpolate? [boolean #t])
 (vswr-at result frequency #:port [name #f]
-         #:interpolate? [boolean #f])
+         #:interpolate? [boolean #t])
 ```
 
 ```racket
-(impedance-at sweep 435 #:port 'input #:interpolate? #t)
-(admittance-at sweep 435 #:port 'input #:interpolate? #t)
-(resistance-at sweep 435 #:port 'input #:interpolate? #t)
-(reactance-at sweep 435 #:port 'input #:interpolate? #t)
-(reflection-at sweep 435 #:port 'input #:interpolate? #t)
-(s11-db-at sweep 435 #:port 'input #:interpolate? #t)
-(return-loss-at sweep 435 #:port 'input #:interpolate? #t)
-(vswr-at sweep 435 #:port 'input #:interpolate? #t)
+(impedance-at sweep 435 #:port 'input)
+(admittance-at sweep 435 #:port 'input)
+(resistance-at sweep 435 #:port 'input)
+(reactance-at sweep 435 #:port 'input)
+(reflection-at sweep 435 #:port 'input)
+(s11-db-at sweep 435 #:port 'input)
+(return-loss-at sweep 435 #:port 'input)
+(vswr-at sweep 435 #:port 'input)
 ```
 
 The `#:port` argument may be omitted when there is exactly one port. Port
@@ -2266,6 +2267,27 @@ reflection values use rectangular interpolation, so all derived quantities
 remain mutually consistent. `s11-db-at` is the signed S11 magnitude; return
 loss is its positive inverse.
 
+Matching conversions operate on ordinary numbers without requiring a solver
+result. Impedance conversions use the current `model-impedance` by default;
+pass a second argument to use another positive system impedance.
+
+```racket
+(impedance->reflection-coefficient impedance [system-impedance (model-impedance)])
+(impedance->return-loss impedance [system-impedance (model-impedance)])
+(impedance->vswr impedance [system-impedance (model-impedance)])
+(reflection-coefficient->return-loss reflection-coefficient)
+(reflection-coefficient->vswr reflection-coefficient)
+(return-loss->vswr return-loss-db)
+(vswr->return-loss vswr)
+```
+
+```racket
+(impedance->vswr 25-20i)       ; compare with the model impedance
+(impedance->vswr 25-20i 75)    ; compare with a 75-ohm system
+(impedance->return-loss 25-20i)
+(return-loss->vswr 20)         ; approximately 1.22
+```
+
 OpenEMS multiport results expose named matrix queries. `#:from` names the
 excited/input port and `#:to` names the measured/output port; omitting `#:to`
 selects the diagonal reflection term for `#:from`.
@@ -2273,13 +2295,13 @@ selects the diagonal reflection term for `#:from`.
 ```racket
 (s-parameter-at result frequency
                 #:from [input-name #f] #:to [output-name #f]
-                #:interpolate? [boolean #f])
+                #:interpolate? [boolean #t])
 (s-parameter-db-at result frequency
                    #:from [input-name #f] #:to [output-name #f]
-                   #:interpolate? [boolean #f])
+                   #:interpolate? [boolean #t])
 (s-parameter-phase-at result frequency
                       #:from [input-name #f] #:to [output-name #f]
-                      #:interpolate? [boolean #f])
+                      #:interpolate? [boolean #t])
 
 (characteristic-impedance-at result frequency
                              #:input [name 'input]
@@ -2290,11 +2312,11 @@ selects the diagonal reflection term for `#:from`.
 
 ```racket
 (s-parameter-at result 435
-                #:from 'input #:to 'output #:interpolate? #t)
+                #:from 'input #:to 'output)
 (s-parameter-db-at result 435
-                   #:from 'input #:to 'output #:interpolate? #t)
+                   #:from 'input #:to 'output)
 (s-parameter-phase-at result 435
-                      #:from 'input #:to 'output #:interpolate? #t)
+                      #:from 'input #:to 'output)
 ```
 
 `s-parameter-phase-at` returns principal phase in the range -180 through 180
@@ -2316,7 +2338,7 @@ power rather than directly in dB.
 
 ```racket
 (gain-at pattern #:azimuth degrees #:elevation degrees
-         #:component [component 'total] #:interpolate? [boolean #f])
+         #:component [component 'total] #:interpolate? [boolean #t])
 (maximum-gain pattern #:component [component 'total])
 (maximum-gain-direction pattern #:component [component 'total])
 (front-to-back-ratio pattern #:component [component 'total]
@@ -2324,17 +2346,17 @@ power rather than directly in dB.
 (front-to-side-ratio pattern #:component [component 'total])
 
 (axial-ratio-at pattern #:azimuth degrees #:elevation degrees
-                #:interpolate? [boolean #f])
+                #:interpolate? [boolean #t])
 (polarization-tilt-at pattern #:azimuth degrees #:elevation degrees
-                      #:interpolate? [boolean #f])
+                      #:interpolate? [boolean #t])
 (polarization-sense-at pattern #:azimuth degrees #:elevation degrees)
 (e-field-at pattern #:azimuth degrees #:elevation degrees
-            #:interpolate? [boolean #f])
+            #:interpolate? [boolean #t])
 ```
 
 ```racket
 (gain-at pattern #:azimuth 45 #:elevation 10
-         #:component 'total #:interpolate? #t)
+         #:component 'total)
 (maximum-gain pattern)                    ; dBi
 (maximum-gain-direction pattern)          ; '(azimuth elevation)
 (front-to-back-ratio pattern)             ; dB
@@ -2659,8 +2681,25 @@ and H consumes twice the spatial point count.
  [#:pattern pattern-grid]
  [#:frequency frequency-mhz]
  [#:near-fields near-field-request]
- [#:title title-or-#f])
+[#:title title-or-#f])
 ```
+
+For an ordinary first look, the one-step convenience entry point derives its
+simulation parameters from the current model:
+
+```racket
+(html-auto-report destination)
+```
+
+It makes a 301-point linear sweep from half an octave below through half an
+octave above `model-frequency` (`frequency / sqrt(2)` through
+`frequency * sqrt(2)`), calculates a 5-degree spherical radiation grid exactly
+at `model-frequency`, and writes the normal portable report with its automatic
+near-field planes. Network values at the model frequency are interpolated when
+it falls between sweep samples. It uses `model-title`, `model-impedance`, the
+model ground, feeds, geometry, and normal NEC2C solver settings, then returns
+the completed report path. Use the separate sweep, radiation-grid, near-field,
+and report operations below when any of those choices need customization.
 
 Writes a single self-contained interactive HTML report for the wire-native
 NEC2C backend and returns its complete path. The report contains four
@@ -2763,6 +2802,13 @@ frequency, impedance, normalized impedance, reflection coefficient, and sample
 provenance. No network connection is
 required to open the resulting file.
 
+Dense numeric report data is rounded to eight significant digits, compressed
+with gzip, and embedded as base64 in the same HTML file. On opening the report,
+the browser expands it locally with the standard Compression Streams API; no
+data is uploaded and no server is needed. This requires a current Chrome,
+Firefox, or Chromium-based Edge browser. The viewer reports a clear error when
+the required `DecompressionStream` API is unavailable.
+
 For an ordinary `nec2c-sweep-result`, supply the radiation grid explicitly:
 
 ```racket
@@ -2819,21 +2865,21 @@ linear power:
 
 ```racket
 (maximum-gain-at-frequency result frequency
-                           #:interpolate? [boolean #f])
+                           #:interpolate? [boolean #t])
 (realized-maximum-gain-at-frequency result frequency
-                                    #:interpolate? [boolean #f])
+                                    #:interpolate? [boolean #t])
 (horizon-gain-at-frequency result frequency
-                           #:interpolate? [boolean #f])
+                           #:interpolate? [boolean #t])
 (realized-horizon-gain-at-frequency result frequency
-                                    #:interpolate? [boolean #f])
+                                    #:interpolate? [boolean #t])
 (maximum-gain-direction-at-frequency result frequency)
 (radiation-pattern-at-frequency result frequency)
 
-;; Idiomatic queries:
-(maximum-gain-at-frequency performance 906 #:interpolate? #t)
-(realized-maximum-gain-at-frequency performance 906 #:interpolate? #t)
-(horizon-gain-at-frequency performance 906 #:interpolate? #t)
-(realized-horizon-gain-at-frequency performance 906 #:interpolate? #t)
+;; Idiomatic queries interpolate scalar values by default:
+(maximum-gain-at-frequency performance 906)
+(realized-maximum-gain-at-frequency performance 906)
+(horizon-gain-at-frequency performance 906)
+(realized-horizon-gain-at-frequency performance 906)
 (maximum-gain-direction-at-frequency performance 906)
 (radiation-pattern-at-frequency performance 906)
 ```

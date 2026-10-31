@@ -13,22 +13,46 @@
 
 (test-case "network measurements support exact and rectangular interpolation"
   (check-equal? (impedance-at network 100) 40+10i)
-  (check-equal? (impedance-at network 150 #:interpolate? #t) 50)
-  (check-equal? (admittance-at network 150 #:interpolate? #t) 1/50)
-  (check-equal? (resistance-at network 150 #:interpolate? #t) 50)
-  (check-equal? (reactance-at network 150 #:interpolate? #t) 0)
-  (check-equal? (reflection-at network 150 #:interpolate? #t) 0.2+0.0i)
-  (check-= (s11-db-at network 150 #:interpolate? #t)
+  (check-equal? (impedance-at network 150) 50)
+  (check-equal? (admittance-at network 150) 1/50)
+  (check-equal? (resistance-at network 150) 50)
+  (check-equal? (reactance-at network 150) 0)
+  (check-equal? (reflection-at network 150) 0.2+0.0i)
+  (check-= (s11-db-at network 150)
            (* 20 (/ (log 0.2) (log 10)))
            1e-10)
-  (check-= (return-loss-at network 150 #:interpolate? #t)
+  (check-= (return-loss-at network 150)
            (- (* 20 (/ (log 0.2) (log 10))))
            1e-10)
-  (check-= (vswr-at network 150 #:interpolate? #t) 1.5 1e-12)
+  (check-= (vswr-at network 150) 1.5 1e-12)
   (check-exn #rx"enable interpolation"
-             (lambda () (impedance-at network 150)))
+             (lambda () (impedance-at network 150 #:interpolate? #f)))
   (check-exn #rx"cannot extrapolate"
-             (lambda () (impedance-at network 50 #:interpolate? #t))))
+             (lambda () (impedance-at network 50))))
+
+(test-case "matching conversions use the model or an explicit system impedance"
+  (define impedance 75+0i)
+  (define reflection 0.2+0.0i)
+  (define return-loss (- (* 20 (/ (log 0.2) (log 10)))))
+  (check-= (magnitude
+            (- (impedance->reflection-coefficient impedance) reflection))
+           0
+           1e-12)
+  (check-= (impedance->return-loss impedance) return-loss 1e-12)
+  (check-= (impedance->vswr impedance) 1.5 1e-12)
+  (check-equal? (impedance->reflection-coefficient 100 100) 0)
+  (check-equal? (impedance->return-loss 100 100) +inf.0)
+  (check-equal? (impedance->vswr 100 100) 1)
+  (check-= (reflection-coefficient->return-loss reflection) return-loss 1e-12)
+  (check-= (reflection-coefficient->vswr reflection) 1.5 1e-12)
+  (check-= (return-loss->vswr return-loss) 1.5 1e-12)
+  (check-= (vswr->return-loss 1.5) return-loss 1e-12)
+  (check-= (return-loss->vswr +inf.0) 1 0)
+  (check-equal? (vswr->return-loss 1) +inf.0)
+  (check-exn exn:fail:contract?
+             (lambda () (impedance->vswr 50 0)))
+  (check-exn exn:fail:contract?
+             (lambda () (vswr->return-loss 0.5))))
 
 (test-case "network measurements require a name for ambiguous ports"
   (define two-port
@@ -62,12 +86,12 @@
 (test-case "S-parameter measurements use named source and destination ports"
   (check-= (magnitude
             (- (s-parameter-at multiport 150
-                               #:from "input" #:to 'output #:interpolate? #t)
+                               #:from "input" #:to 'output)
                0.3))
            0
            1e-12)
   (check-= (s-parameter-db-at multiport 150
-                              #:from 'input #:to 'output #:interpolate? #t)
+                              #:from 'input #:to 'output)
            (* 20 (/ (log 0.3) (log 10)))
            1e-10)
   (check-= (s-parameter-phase-at multiport 100
@@ -102,9 +126,12 @@
 (test-case "radiation measurements expose directions, interpolation, and ratios"
   (check-equal? (gain-at grid #:azimuth 0 #:elevation 0) 10)
   ;; Gain interpolation is performed in linear power, not directly in dB.
-  (check-= (gain-at grid #:azimuth 45 #:elevation 0 #:interpolate? #t)
+  (check-= (gain-at grid #:azimuth 45 #:elevation 0)
            (* 10 (/ (log (/ (+ 10.0 0.1) 2.0)) (log 10.0)))
            1e-10)
+  (check-exn #rx"enable interpolation"
+             (lambda ()
+               (gain-at grid #:azimuth 45 #:elevation 0 #:interpolate? #f)))
   (check-equal? (maximum-gain grid) 10)
   (check-equal? (maximum-gain-direction grid) '(0 0))
   (check-= (front-to-back-ratio grid) 10 1e-10)
@@ -138,7 +165,7 @@
            (pattern-sample 90 0 -10)
            (pattern-sample 180 0 0)
            (pattern-sample 270 0 -10))))
-  (check-= (gain-at cut #:azimuth 45 #:elevation 0 #:interpolate? #t)
+  (check-= (gain-at cut #:azimuth 45 #:elevation 0)
            (* 10 (/ (log (/ (+ 10.0 0.1) 2.0)) (log 10.0)))
            1e-10)
   (check-exn #rx"nec2c-pattern-grid"

@@ -1,6 +1,8 @@
 #lang racket/base
 
-(require json
+(require file/gzip
+         json
+         net/base64
          racket/file
          racket/format
          racket/list
@@ -18,7 +20,7 @@
          "wire-lumped.rkt"
          "wire-network.rkt")
 
-(provide write-html-report write-nec2c-html-report)
+(provide html-auto-report write-html-report write-nec2c-html-report)
 
 (define-runtime-path viewer-bundle "report-assets/viewer.bundle.js")
 (define-runtime-path openems-html-report-path "html-report.rkt")
@@ -49,33 +51,96 @@
   (define api (force surface-api))
   (and api (apply (hash-ref api name) arguments)))
 
-(define (write-json-script value destination)
-  ;; Stream JSON directly into the HTML file.  Large NEC reports can contain
-  ;; both a dense spherical pattern and several field planes; materializing
-  ;; that JSON as one string and then copying it through regexp-replace* causes
-  ;; extreme GC/memory pressure.  This output port preserves the script-safe
-  ;; `<` escape while forwarding every other byte without an intermediate
-  ;; aggregate string.
-  (define (write-chunk bytes start end _non-block? _breakable?)
-    (let loop ([cursor start] [segment-start start])
-      (define less-than
-        (for/first ([index (in-range cursor end)]
-                    #:when (= (bytes-ref bytes index) 60))
-          index))
-      (cond
-        [less-than
-         (when (< segment-start less-than)
-           (write-bytes bytes destination segment-start less-than))
-         (write-bytes #"\\u003c" destination)
-         (loop (add1 less-than) (add1 less-than))]
-        [else
-         (when (< segment-start end)
-           (write-bytes bytes destination segment-start end))]))
-    (- end start))
-  (define escaped
-    (make-output-port 'json-script always-evt write-chunk void))
-  (write-json value escaped)
-  (close-output-port escaped))
+(define report-significant-digits 8)
+
+(define (round-report-real value)
+  (cond
+    [(or (exact-integer? value) (zero? value)) value]
+    [else
+     (define converted (exact->inexact value))
+     (define exponent
+       (inexact->exact
+        (floor (/ (log (abs converted)) (log 10.0)))))
+     (define place (expt 10.0 exponent))
+     ;; Preserve extremely small subnormal values if the decimal place itself
+     ;; underflows. Ordinary NEC results take the rounded branch.
+     (if (zero? place)
+         converted
+         (* (/ (round (* (/ converted place)
+                         (expt 10 (sub1 report-significant-digits))))
+               (expt 10 (sub1 report-significant-digits)))
+            place))]))
+
+(define (write-report-json value destination)
+  ;; Write recursively so dense numeric arrays can be rounded without first
+  ;; copying the complete report tree. Strings and scalar JSON spellings still
+  ;; come from Racket's JSON implementation.
+  (cond
+    [(hash? value)
+     (display "{" destination)
+     (define first? #t)
+     (for ([(key item) (in-hash value)])
+       (unless first? (display "," destination))
+       (set! first? #f)
+       (write-json (if (symbol? key) (symbol->string key) key) destination)
+       (display ":" destination)
+       (write-report-json item destination))
+     (display "}" destination)]
+    [(list? value)
+     (display "[" destination)
+     (for ([item (in-list value)] [index (in-naturals)])
+       (unless (zero? index) (display "," destination))
+       (write-report-json item destination))
+     (display "]" destination)]
+    [(and (real? value) (finite-real? value))
+     (write-json (round-report-real value) destination)]
+    [else (write-json value destination)]))
+
+(define (write-compressed-report-data value destination)
+  ;; Stream JSON -> gzip -> base64 through bounded pipes. Large field reports
+  ;; therefore never require an additional full-size JSON or compressed byte
+  ;; string in memory.
+  (define-values (json-input json-output) (make-pipe 65536))
+  (define-values (gzip-input gzip-output) (make-pipe 65536))
+  (define json-failure (box #f))
+  (define gzip-failure (box #f))
+  (define json-thread
+    (thread
+     (lambda ()
+       (dynamic-wind
+        void
+        (lambda ()
+          (with-handlers ([exn:fail? (lambda (failure)
+                                       (set-box! json-failure failure))])
+            (write-report-json value json-output)))
+        (lambda () (close-output-port json-output))))))
+  (define gzip-thread
+    (thread
+     (lambda ()
+       (dynamic-wind
+        void
+        (lambda ()
+          (with-handlers ([exn:fail? (lambda (failure)
+                                       (set-box! gzip-failure failure))])
+            ;; A fixed timestamp keeps identical reports reproducible.
+            (gzip-through-ports json-input gzip-output #f 0)))
+        (lambda () (close-output-port gzip-output))))))
+  (with-handlers
+      ([exn:fail?
+        (lambda (failure)
+          (kill-thread gzip-thread)
+          (kill-thread json-thread)
+          (raise failure))])
+    (base64-encode-stream gzip-input destination #"")
+    (thread-wait gzip-thread)
+    (cond
+      [(unbox gzip-failure)
+       (kill-thread json-thread)
+       (raise (unbox gzip-failure))]
+      [else
+       (thread-wait json-thread)
+       (when (unbox json-failure)
+         (raise (unbox json-failure)))])))
 
 (define (finite-real? value)
   (and (real? value)
@@ -483,6 +548,40 @@
 CSS
   )
 
+(define report-loader-js #<<JS
+(async()=>{
+  try {
+    if (typeof DecompressionStream !== "function") {
+      throw new Error("This report requires a current browser with the Compression Streams API.");
+    }
+    const encodedNode=document.getElementById("antenna-turtle-report-data-gzip");
+    const encoded=encodedNode.textContent.trim();
+    const binary=atob(encoded);
+    const compressed=new Uint8Array(binary.length);
+    for(let index=0;index<binary.length;index+=1){compressed[index]=binary.charCodeAt(index);}
+    const stream=new Blob([compressed]).stream().pipeThrough(new DecompressionStream("gzip"));
+    const json=await new Response(stream).text();
+    const dataNode=document.createElement("script");
+    dataNode.type="application/json";
+    dataNode.id="antenna-turtle-report-data";
+    dataNode.textContent=json;
+    document.body.appendChild(dataNode);
+    encodedNode.remove();
+    const sourceNode=document.getElementById("antenna-turtle-report-viewer-source");
+    const viewerNode=document.createElement("script");
+    viewerNode.textContent=sourceNode.textContent;
+    sourceNode.remove();
+    document.body.appendChild(viewerNode);
+  } catch (failure) {
+    document.documentElement.dataset.reportReady="error";
+    const detail=document.getElementById("subtitle");
+    detail.textContent=`REPORT ERROR: ${failure.message}`;
+    console.error(failure);
+  }
+})();
+JS
+  )
+
 (define (result-run result)
   (cond
     [(nec2c-sweep-result? result) (nec2c-sweep-result-run result)]
@@ -631,12 +730,39 @@ CSS
       (display "</style></head><body><header><h1 id=\"title\"></h1><div id=\"subtitle\"></div></header>" out)
       (display "<canvas id=\"viewport\"></canvas><div class=\"scanlines\"></div>" out)
       (display "<details class=\"panel\" id=\"metadata-panel\"><summary>SIMULATION METADATA</summary><pre id=\"metadata\"></pre></details>" out)
-      (display "<script type=\"application/json\" id=\"antenna-turtle-report-data\">" out)
-      (write-json-script report-data out)
-      (display "</script><script>" out)
+      (display "<script type=\"application/gzip\" id=\"antenna-turtle-report-data-gzip\">" out)
+      (write-compressed-report-data report-data out)
+      (display "</script><script type=\"text/plain\" id=\"antenna-turtle-report-viewer-source\">" out)
       (display (file->string viewer-bundle) out)
+      (display "</script><script>" out)
+      (display report-loader-js out)
       (display "</script></body></html>" out)))
   complete)
+
+;; Produce a useful first report from only the declarative model. Keep these
+;; choices deliberately broad enough to reveal a displaced resonance or a
+;; nearby mode while retaining useful first-look resolution. The radiation
+;; grid matches nec2c-radiation-grid's normal preview density, and the report
+;; writer supplies its usual automatic near-field planes.
+(define (html-auto-report destination)
+  (unless (path-string? destination)
+    (raise-argument-error 'html-auto-report "path-string?" destination))
+  (define center-frequency (model-frequency))
+  (unless (and (real? center-frequency) (positive? center-frequency))
+    (raise-arguments-error
+     'html-auto-report
+     "the model frequency must be positive"
+     "model frequency (MHz)" center-frequency))
+  (define half-octave (sqrt 2.0))
+  (define sweep
+    (nec2c-vswr-sweep
+     (/ center-frequency half-octave)
+     (* center-frequency half-octave)
+     #:steps 301))
+  (define pattern
+    (nec2c-radiation-grid
+     #:frequency center-frequency #:theta-step 5 #:phi-step 5))
+  (write-nec2c-html-report sweep destination #:pattern pattern))
 
 ;; Keep the common report entry point available in wire-only installations.
 ;; Loading the OpenEMS writer would otherwise pull in Manifold at module load
