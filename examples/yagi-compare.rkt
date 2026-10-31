@@ -65,4 +65,4 @@
 	   (format "ANT: ~a" (car spec))
 	   (nec2c-radiation-grid #:theta-step 1 #:phi-step 1)))))
 
-(show-radiation-comparison cases #:aspect-ratio 16/9 #:palette 'electric #:scale 'arrl)
+(show-radiation-comparison cases #:aspect-ratio 16/9 #:palette 'mmana #:scale 'arrl)

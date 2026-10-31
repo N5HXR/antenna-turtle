@@ -7,12 +7,16 @@
 (provide
  (struct-out wire-port-declaration)
  (struct-out wire-transmission-line)
+ (struct-out wire-y-network)
  (struct-out wire-coax-declaration)
  add-wire-port-declaration
  add-transmission-line-declaration
+ add-y-network-declaration
+ add-ideal-transformer-declaration
  call-with-coax-declaration
  model-wire-ports
  model-wire-transmission-lines
+ model-wire-y-networks
  model-wire-coaxes
  wire-port-negative-point
  wire-port-positive-point
@@ -34,21 +38,35 @@
   (name input-port output-port impedance physical-length velocity-factor)
   #:transparent)
 
+;; A reciprocal, non-radiating two-port described by its short-circuit
+;; admittance matrix.  NEC's NT card takes Y11, Y12, and Y22; reciprocity
+;; supplies Y21 = Y12.
+(struct wire-y-network (name input-port output-port y11 y12 y22)
+  #:transparent)
+
 (struct wire-coax-declaration
   (name input-port output-port line shield-edges diameter color)
   #:transparent)
 
 (define current-wire-ports (make-parameter '()))
 (define current-wire-transmission-lines (make-parameter '()))
+(define current-wire-y-networks (make-parameter '()))
 (define current-wire-coaxes (make-parameter '()))
 
 (define (model-wire-ports) (current-wire-ports))
 (define (model-wire-transmission-lines) (current-wire-transmission-lines))
+(define (model-wire-y-networks) (current-wire-y-networks))
 (define (model-wire-coaxes) (current-wire-coaxes))
+
+(define (y-network-port? port)
+  (for/or ([network (in-list (model-wire-y-networks))])
+    (or (eq? port (wire-y-network-input-port network))
+        (eq? port (wire-y-network-output-port network)))))
 
 (define (clear-wire-network-declarations)
   (current-wire-ports '())
   (current-wire-transmission-lines '())
+  (current-wire-y-networks '())
   (current-wire-coaxes '())
   (void))
 
@@ -63,6 +81,11 @@
 
 (define (finite-real? value)
   (and (real? value) (rational? value)))
+
+(define (finite-complex? value)
+  (and (number? value)
+       (rational? (real-part value))
+       (rational? (imag-part value))))
 
 (define (positive-real who value description)
   (unless (and (finite-real? value) (positive? value))
@@ -128,13 +151,17 @@
       (raise-arguments-error
        who "coax shield route is detached from the input negative terminal"
        "coax" (wire-coax-declaration-name coax)))
-    (when (null? (filter (lambda (edge) (not (memq edge shield)))
-                         (other-incident-edges output output-negative)))
+    ;; A coax may terminate at an NT network port instead of directly at an
+    ;; antenna wire. In that case the network supplies the output circuit.
+    (when (and (not (y-network-port? output))
+               (null? (filter (lambda (edge) (not (memq edge shield)))
+                              (other-incident-edges output output-negative))))
       (raise-arguments-error
        who "coax output negative terminal is not connected to an antenna conductor"
        "coax" (wire-coax-declaration-name coax)
        "port" (wire-port-declaration-name output)))
-    (when (null? (other-incident-edges output output-positive))
+    (when (and (not (y-network-port? output))
+               (null? (other-incident-edges output output-positive)))
       (raise-arguments-error
        who "coax output positive terminal is not connected to an antenna conductor"
        "coax" (wire-coax-declaration-name coax)
@@ -268,6 +295,62 @@
                             physical-length velocity-factor))
   (current-wire-transmission-lines (append lines (list line)))
   line)
+
+(define (add-y-network-declaration
+         #:name [requested-name #f]
+         #:input input-port
+         #:output output-port
+         #:y11 y11
+         #:y12 y12
+         #:y22 y22)
+  (define who 'two-port-y)
+  (unless (registered-port? input-port)
+    (raise-argument-error who "registered wire port" input-port))
+  (unless (registered-port? output-port)
+    (raise-argument-error who "registered wire port" output-port))
+  (when (eq? input-port output-port)
+    (raise-arguments-error who "input and output must be different ports"))
+  (for ([value (in-list (list y11 y12 y22))]
+        [label (in-list '(y11 y12 y22))])
+    (unless (finite-complex? value)
+      (raise-arguments-error
+       who "finite complex admittance in siemens" label value)))
+  (define networks (model-wire-y-networks))
+  (define name
+    (or requested-name
+        (fresh-name "network" networks wire-y-network-name)))
+  (ensure-unique-name who name networks wire-y-network-name "two-port Y network")
+  (define network
+    (wire-y-network name input-port output-port y11 y12 y22))
+  (current-wire-y-networks (append networks (list network)))
+  network)
+
+;; An exact ideal transformer has a singular Y matrix and cannot be written on
+;; a finite NEC NT card. A small primary-referred series resistance makes the
+;; constraint finite. For n = Voutput/Vinput, the resulting matrix is
+;;
+;;   [ 1/r       -1/(n r)   ]
+;;   [ -1/(n r)   1/(n^2 r) ]
+;;
+;; and a load Z at the output is seen as Z/n^2 + r at the input.
+(define (add-ideal-transformer-declaration
+         #:name [requested-name #f]
+         #:input input-port
+         #:output output-port
+         #:turns-ratio turns-ratio
+         #:series-resistance [series-resistance 0.001])
+  (define who 'ideal-transformer)
+  (positive-real who turns-ratio "turns ratio")
+  (positive-real who series-resistance "series resistance")
+  (define n turns-ratio)
+  (define r series-resistance)
+  (add-y-network-declaration
+   #:name requested-name
+   #:input input-port
+   #:output output-port
+   #:y11 (/ 1 r)
+   #:y12 (- (/ 1 (* n r)))
+   #:y22 (/ 1 (* n n r))))
 
 (define (call-with-coax-declaration thunk
                                     #:name requested-name

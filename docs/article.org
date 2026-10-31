@@ -1,0 +1,12 @@
+-*- mode: org; eval: (visual-line-mode 1); -*-
+#+Title: Generating Antenna Geometry with the Turtle Graphics Paradigm
+#+Author: Joshua Stone <yakovdk@gmail.com>
+#+Date: 2026-10-05
+
+* Introduction
+Antenna simulation is a key activity in the amateur radio operator life cycle.  We are fortunate to have so many free and inexpensive tools to fulfill our flights of fancy as we imagine what antennas we might build and use on the bands.  One of the most difficult aspects of antenna simulating is antenna modeling: antennas are, after all, geometry.  And if you are like me, wrangling the geometry can be more painful than it is fun.
+
+Some simulation tools provide more geometry manipulating primitives than others.  If the enterprising ham wants to use the classic NEC card-based text file paradigm, there is no end of typing in and scrutinizing lists of cartesian coordinates.  Some packages provide some rotation, scaling, and mirroring utilities.  Some let you draw your elements with a mouse.  But at some point, we will want to simulate antennas that are far too annoying to type in and nudge around.
+
+It is not uncommon to write a bespoke program outside of the simulation package to generate its geometry.  
+* 

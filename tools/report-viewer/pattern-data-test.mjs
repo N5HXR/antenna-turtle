@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   componentGainRange,
   dbPowerInterpolate,
+  elevationPlaneDirection,
   globalGainRange,
   interpolatedGain,
   interpolatedPolarization,
@@ -59,5 +60,12 @@ assert.equal(quantizedGain(-2.99), 0);
 assert.equal(quantizedGain(-3), -3);
 assert.equal(quantizedGain(-5.99), -3);
 assert.equal(quantizedGain(-31), -30);
+
+assert.deepEqual(elevationPlaneDirection(0, 25), { elevation: 0, azimuth: 25 });
+assert.deepEqual(elevationPlaneDirection(90, 25), { elevation: 90, azimuth: 25 });
+assert.deepEqual(elevationPlaneDirection(135, 25), { elevation: 45, azimuth: 205 });
+assert.deepEqual(elevationPlaneDirection(180, 25), { elevation: 0, azimuth: 205 });
+assert.deepEqual(elevationPlaneDirection(225, 25), { elevation: -45, azimuth: 205 });
+assert.deepEqual(elevationPlaneDirection(315, 25), { elevation: -45, azimuth: 25 });
 
 console.log("pattern data tests passed");

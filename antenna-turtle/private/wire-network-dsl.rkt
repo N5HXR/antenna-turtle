@@ -3,7 +3,7 @@
 (require "wire-network.rkt"
          (for-syntax racket/base racket/list syntax/parse))
 
-(provide wire-port transmission-line coax)
+(provide wire-port transmission-line two-port-y ideal-transformer coax)
 
 (begin-for-syntax
   (define valid-directions
@@ -56,7 +56,7 @@
        (raise-syntax-error 'wire-port "expected a turtle direction" stx #'direction))
      (define-values (values body)
        (parse-leading-settings 'wire-port stx #'(setting ...)
-                               '(name gap diameter anchor)))
+                               '(name gap diameter anchor feed)))
      (unless (null? body)
        (raise-syntax-error 'wire-port "unexpected expression after settings" stx
                            (car body)))
@@ -66,6 +66,10 @@
         (optional-keyword values 'name #'#:name name-expression)
         (list #'#:gap gap)
         (optional-keyword values 'diameter #'#:diameter)
+        (optional-keyword
+         values 'feed #'#:feed-name
+         (lambda (value)
+           #`(format "~a" #,(name-expression value))))
         (optional-keyword
          values 'anchor #'#:anchor
          (lambda (value)
@@ -102,6 +106,56 @@
      (raise-syntax-error
       'transmission-line
       "expected (transmission-line setting value ...)" stx)]))
+
+(define-syntax (two-port-y stx)
+  (syntax-parse stx
+    [(_ setting ...)
+     (define-values (values body)
+       (parse-leading-settings
+        'two-port-y stx #'(setting ...)
+        '(name input output y11 y12 y22)))
+     (unless (null? body)
+       (raise-syntax-error 'two-port-y
+                           "unexpected expression after settings" stx
+                           (car body)))
+     (define arguments
+       (append
+        (optional-keyword values 'name #'#:name name-expression)
+        (list #'#:input (require-setting 'two-port-y stx values 'input)
+              #'#:output (require-setting 'two-port-y stx values 'output)
+              #'#:y11 (require-setting 'two-port-y stx values 'y11)
+              #'#:y12 (require-setting 'two-port-y stx values 'y12)
+              #'#:y22 (require-setting 'two-port-y stx values 'y22))))
+     #`(add-y-network-declaration #,@arguments)]
+    [(_ . _)
+     (raise-syntax-error
+      'two-port-y
+      "expected (two-port-y setting value ...)" stx)]))
+
+(define-syntax (ideal-transformer stx)
+  (syntax-parse stx
+    [(_ setting ...)
+     (define-values (values body)
+       (parse-leading-settings
+        'ideal-transformer stx #'(setting ...)
+        '(name input output turns-ratio series-resistance)))
+     (unless (null? body)
+       (raise-syntax-error 'ideal-transformer
+                           "unexpected expression after settings" stx
+                           (car body)))
+     (define arguments
+       (append
+        (optional-keyword values 'name #'#:name name-expression)
+        (list #'#:input (require-setting 'ideal-transformer stx values 'input)
+              #'#:output (require-setting 'ideal-transformer stx values 'output)
+              #'#:turns-ratio
+              (require-setting 'ideal-transformer stx values 'turns-ratio))
+        (optional-keyword values 'series-resistance #'#:series-resistance)))
+     #`(add-ideal-transformer-declaration #,@arguments)]
+    [(_ . _)
+     (raise-syntax-error
+      'ideal-transformer
+      "expected (ideal-transformer setting value ...)" stx)]))
 
 (define-syntax (coax stx)
   (syntax-parse stx

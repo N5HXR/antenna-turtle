@@ -6,6 +6,7 @@ import { loadImpedance } from "./nec2c-inspector.js";
 import { averagePoynting, instantaneousPoynting } from "./field-math.js";
 import {
   componentGainRange,
+  elevationPlaneDirection,
   gainOf,
   globalGainRange,
   interpolatedGain,
@@ -588,7 +589,7 @@ function injectStyles() {
     #pattern-2d{position:fixed;z-index:3;inset:78px 20px 18px}
     #pattern-2d .pattern-toolbar{position:absolute;z-index:2;left:10px;right:10px;top:0;
       display:flex;align-items:center;gap:10px;padding:9px 12px}
-    #pattern-2d .pattern-toolbar input[type=range]{flex:1}
+    #pattern-2d .pattern-toolbar input[type=range]{flex:1;min-width:90px}
     #pattern-polar{position:absolute;inset:58px 0 0;border:1px solid #31efff44}
     #plots-workspace{position:fixed;z-index:3;inset:78px 20px 18px}
     #near-field-workspace{position:fixed;z-index:3;inset:78px 20px 18px}
@@ -1320,32 +1321,58 @@ export async function startNec2cReport(data) {
   polarWorkspace.hidden = true;
   const minimumElevation = 90 - data.pattern.theta_values.at(-1);
   const maximumElevation = 90 - data.pattern.theta_values[0];
-  polarWorkspace.innerHTML = `<div class="pattern-toolbar panel"><label for="cut-elevation">ELEVATION</label>
-    <input id="cut-elevation" type="range" min="${minimumElevation}" max="${maximumElevation}" step="1" value="0">
-    <span id="cut-elevation-value">0°</span><label for="cut-component">COMPONENT</label>
+  polarWorkspace.innerHTML = `<div class="pattern-toolbar panel"><label for="cut-plane">CUT</label>
+    <select id="cut-plane"><option value="azimuth">azimuth</option><option value="elevation">elevation</option></select>
+    <label id="cut-angle-label" for="cut-angle">ELEVATION</label>
+    <input id="cut-angle" type="range" min="${minimumElevation}" max="${maximumElevation}" step="1" value="0">
+    <span id="cut-angle-value">0°</span><label for="cut-component">COMPONENT</label>
     <select id="cut-component"><option value="total">total</option><option value="vertical">vertical (Eθ)</option>
     <option value="horizontal">horizontal (Eφ)</option></select><label for="cut-reference">DISPLAY</label>
     <select id="cut-reference"><option value="relative">relative</option><option value="absolute">absolute dBi</option></select>
+    <label for="cut-depth">DEPTH</label><select id="cut-depth"><option value="30" selected>30 dB</option>
+    <option value="40">40 dB</option><option value="60">60 dB</option><option value="80">80 dB</option></select>
     </div><div id="pattern-polar"></div>`;
   document.body.append(polarWorkspace);
-  const elevationSlider = polarWorkspace.querySelector("#cut-elevation");
-  if (minimumElevation > 0) elevationSlider.value = minimumElevation;
+  const planeSelect = polarWorkspace.querySelector("#cut-plane");
+  const angleSlider = polarWorkspace.querySelector("#cut-angle");
+  if (minimumElevation > 0) angleSlider.value = minimumElevation;
+
+  function configureCutAngle() {
+    const elevationCut = planeSelect.value === "elevation";
+    const previous = Number(angleSlider.value);
+    angleSlider.min = elevationCut ? 0 : minimumElevation;
+    angleSlider.max = elevationCut ? 359 : maximumElevation;
+    angleSlider.value = elevationCut ? 0 : Math.max(minimumElevation,
+      Math.min(maximumElevation, previous));
+    polarWorkspace.querySelector("#cut-angle-label").textContent =
+      elevationCut ? "BEARING" : "ELEVATION";
+  }
 
   function drawPolar() {
-    const elevation = Number(elevationSlider.value);
+    const elevationCut = planeSelect.value === "elevation";
+    const cutAngle = Number(angleSlider.value);
     const component = polarWorkspace.querySelector("#cut-component").value;
     const absolute = polarWorkspace.querySelector("#cut-reference").value === "absolute";
-    const angles = Array.from({ length: 361 }, (_, index) => index);
-    const gains = angles.map(angle => interpolatedGain(data.pattern, table, elevation, angle, component));
-    const polarization = angles.map(angle =>
-      interpolatedPolarization(data.pattern, table, elevation, angle));
+    const depth = Number(polarWorkspace.querySelector("#cut-depth").value);
+    const grounded = minimumElevation >= 0;
+    const angleStop = elevationCut && grounded ? 180 : 360;
+    const angles = Array.from({ length: angleStop + 1 }, (_, index) => index);
+    const directions = angles.map(angle => elevationCut
+      ? elevationPlaneDirection(angle, cutAngle)
+      : { elevation: cutAngle, azimuth: angle });
+    const gains = directions.map(direction => interpolatedGain(data.pattern, table,
+      direction.elevation, direction.azimuth, component));
+    const polarization = directions.map(direction => interpolatedPolarization(data.pattern, table,
+      direction.elevation, direction.azimuth));
     const globalRange = componentGainRange(data.pattern, component);
     const shown = absolute ? gains : gains.map(gain => gain - globalRange.referencePeak);
     const radialRange = absolute
-      ? [Math.floor(globalRange.minimum / 10) * 10, Math.ceil(globalRange.referencePeak / 10) * 10]
-      : [Math.floor(globalRange.relativeMinimum / 10) * 10, 0];
+      ? [globalRange.referencePeak - depth, globalRange.referencePeak]
+      : [-depth, 0];
     const displayScale = polarDisplayScale(shown, radialRange);
-    polarWorkspace.querySelector("#cut-elevation-value").textContent = `${elevation}°`;
+    polarWorkspace.querySelector("#cut-angle-value").textContent = `${cutAngle}°`;
+    const cutName = elevationCut ? "Elevation" : "Azimuth";
+    const fixedName = elevationCut ? "bearing" : "elevation";
     return Plotly.react(polarWorkspace.querySelector("#pattern-polar"), [{
       type: "scatterpolar", mode: "lines", theta: angles, r: displayScale.radius,
       line: { color: "#39efff", width: 3 }, name: component,
@@ -1353,17 +1380,20 @@ export async function startNec2cReport(data) {
         const state = polarization[index];
         return [gain, shown[index], state.eThetaMagnitude, state.eThetaPhaseDegrees,
           state.ePhiMagnitude, state.ePhiPhaseDegrees, state.phaseDifferenceDegrees,
-          state.axialRatio, state.tiltDegrees, state.sense || "unclassified"];
+          state.axialRatio, state.tiltDegrees, state.sense || "unclassified",
+          directions[index].azimuth, directions[index].elevation];
       }),
-      hovertemplate: `azimuth %{theta:.1f}°<br>${absolute ? "gain" : "relative"} %{customdata[1]:.3f} dB` +
+      hovertemplate: `${elevationCut ? "plane angle" : "azimuth"} %{theta:.1f}°` +
+        (elevationCut ? `<br>direction az %{customdata[10]:.1f}° · el %{customdata[11]:.1f}°` : "") +
+        `<br>${absolute ? "gain" : "relative"} %{customdata[1]:.3f} dB` +
         `<br>absolute %{customdata[0]:.3f} dBi` +
         `<br>|Eθ| %{customdata[2]:.4g} ∠ %{customdata[3]:.1f}°` +
         `<br>|Eφ| %{customdata[4]:.4g} ∠ %{customdata[5]:.1f}°` +
         `<br>Δphase %{customdata[6]:.1f}° · axial %{customdata[7]:.4g}` +
         `<br>tilt %{customdata[8]:.1f}° · %{customdata[9]}` +
-        `<extra>${elevation}° elevation</extra>`,
+        `<extra>${cutAngle}° ${fixedName}</extra>`,
     }], {
-      title: { text: `Azimuth pattern · ${elevation}° elevation · ${component}`,
+      title: { text: `${cutName} pattern · ${cutAngle}° ${fixedName} · ${component}`,
         font: { color: "#7df9ff", size: 19 }, x: 0.02 },
       paper_bgcolor: "rgba(3,6,17,0)", plot_bgcolor: "rgba(5,14,29,.78)",
       font: { family: '"DejaVu Sans Mono", monospace', color: "#d8fbff" },
@@ -1376,9 +1406,11 @@ export async function startNec2cReport(data) {
     }, { responsive: true, displaylogo: false, scrollZoom: true,
       toImageButtonOptions: { format: "svg", filename: "antenna-pattern-cut" } });
   }
-  elevationSlider.addEventListener("input", drawPolar);
+  planeSelect.addEventListener("change", () => { configureCutAngle(); drawPolar(); });
+  angleSlider.addEventListener("input", drawPolar);
   polarWorkspace.querySelector("#cut-component").addEventListener("change", drawPolar);
   polarWorkspace.querySelector("#cut-reference").addEventListener("change", drawPolar);
+  polarWorkspace.querySelector("#cut-depth").addEventListener("change", drawPolar);
 
   const nearFieldSections = Array.isArray(data.near_fields) ? data.near_fields : [];
   const nearFieldMasks = nearFieldSections.map(section =>
