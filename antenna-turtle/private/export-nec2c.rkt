@@ -346,16 +346,23 @@
          surface-candidate))
   (define wire-loads (resolve-wire-loads who))
   (define transmission-lines (model-wire-transmission-lines))
+  (define y-networks (model-wire-y-networks))
   (when (and surface-geometry (pair? wire-loads))
     (raise-arguments-error
      who "wire lumped elements are not yet supported with NEC surface bodies"))
   (when (and surface-geometry (pair? transmission-lines))
     (raise-arguments-error
      who "transmission lines are not yet supported with NEC surface bodies"))
+  (when (and surface-geometry (pair? y-networks))
+    (raise-arguments-error
+     who "two-port Y networks are not yet supported with NEC surface bodies"))
   (when (and dielectric-resource (pair? transmission-lines))
     (raise-arguments-error
      who
      "NEC2C-N5HXR does not support transmission lines with dielectric volumes"))
+  (when (and dielectric-resource (pair? y-networks))
+    (raise-arguments-error
+     who "NEC2C-N5HXR does not support two-port Y networks with dielectric volumes"))
   (define endpoint-overrides (wire-load-endpoint-overrides wire-loads))
   (validate-ground-geometry! who surface-geometry)
   (fprintf out "CM ~a\n" (model-title))
@@ -434,6 +441,21 @@
               who
               (/ (wire-transmission-line-physical-length line)
                  (wire-transmission-line-velocity-factor line)))))
+  (for ([network (in-list y-networks)])
+    (define input-edge
+      (wire-port-declaration-edge (wire-y-network-input-port network)))
+    (define output-edge
+      (wire-port-declaration-edge (wire-y-network-output-port network)))
+    (define (write-admittance value)
+      (values (coordinate-string who (real-part value))
+              (coordinate-string who (imag-part value))))
+    (define-values (y11-real y11-imag) (write-admittance (wire-y-network-y11 network)))
+    (define-values (y12-real y12-imag) (write-admittance (wire-y-network-y12 network)))
+    (define-values (y22-real y22-imag) (write-admittance (wire-y-network-y22 network)))
+    (fprintf out "NT ~a 1 ~a 1 ~a ~a ~a ~a ~a ~a\n"
+             (wire-edge-id input-edge)
+             (wire-edge-id output-edge)
+             y11-real y11-imag y12-real y12-imag y22-real y22-imag))
   (for ([edge (in-list (model-edges))]
         #:when (wire-edge-feed? edge))
     (define voltage (feed-voltage edge))

@@ -23,7 +23,7 @@
 (loop for (role boom-position length) in element-layout
       do (element role boom-position length))
 
-(export-mmana "mmana/yagi.maa")
+;; (export-mmana "mmana/yagi.maa")
 
 (define impedance
   (nec2c-measure-impedance))

@@ -1,0 +1,47 @@
+#lang racket
+
+(require rackunit
+         racket/port
+         "../antenna-turtle/main.rkt")
+
+(test-case "two-port-y exports a reciprocal NEC NT card"
+  (reset-model!)
+  (model title "Y-network fixture" frequency 14.1)
+  (define primary
+    (wire-port up name primary gap centimeter))
+  (move forward meter)
+  (define secondary
+    (wire-port forward name secondary gap centimeter))
+  (two-port-y
+   name transformer-4:1
+   input primary
+   output secondary
+   y11 999.968228-0.002500i
+   y12 -499.984114+0.000750i
+   y22 249.992057-0.000625i)
+  (coax name feedline
+        output primary
+        impedance 50
+        velocity-factor 0.66
+        diameter centimeter
+        input-gap centimeter
+        input-direction up
+        feed input
+        (move down meter))
+  (define deck (call-with-output-string write-nec2c-deck))
+  (check-regexp-match
+   #rx"NT 1 1 2 1 999\\.968228 -0\\.0025 -499\\.984114 0\\.00075 249\\.992057 -0\\.000625"
+   deck)
+  (check-regexp-match #rx"TL 4 1 1 1 50" deck)
+  (check-regexp-match #rx"EX 0 4 1 0 1 0" deck))
+
+(test-case "two-port-y requires different registered ports"
+  (reset-model!)
+  (model frequency 14.1)
+  (define port (wire-port forward name only gap centimeter))
+  (check-exn
+   #rx"input and output must be different ports"
+   (lambda ()
+     (two-port-y
+      input port output port
+      y11 1 y12 0 y22 1))))

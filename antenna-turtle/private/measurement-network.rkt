@@ -2,11 +2,11 @@
 
 (require racket/list
          racket/math
+         racket/runtime-path
          "core.rkt"
          "measurement-interpolation.rkt"
          "nec2c.rkt"
-         "network.rkt"
-         "openems.rkt")
+         "network.rkt")
 
 (provide
  impedance-at admittance-at resistance-at reactance-at
@@ -18,6 +18,33 @@
  s-parameter-at s-parameter-db-at s-parameter-phase-at
  measurement-network-frequencies measurement-network-ports
  characteristic-impedance-at )
+
+;; Network measurements apply equally to NEC2C and OpenEMS data.  OpenEMS
+;; itself needs the optional Manifold backend, however, so load its result
+;; accessors only when an OpenEMS result is actually supplied.  Keeping this
+;; module independent means ordinary wire-model measurements and conversion
+;; helpers remain part of the Windows language.
+(define-runtime-path openems-path "openems.rkt")
+(define optional-openems-bindings (make-hasheq))
+
+(define (optional-openems-binding name)
+  (hash-ref!
+   optional-openems-bindings name
+   (lambda ()
+     (with-handlers ([exn:fail? (lambda (_) #f)])
+       (dynamic-require openems-path name)))))
+
+(define (openems-predicate? name value)
+  (define predicate (optional-openems-binding name))
+  (and predicate (predicate value)))
+
+(define (openems-accessor who name . values)
+  (define accessor (optional-openems-binding name))
+  (unless accessor
+    (raise-user-error
+     who
+     "OpenEMS measurements require the optional Manifold dependency"))
+  (apply accessor values))
 
 (define (name=? left right)
   (or (equal? left right)
@@ -33,8 +60,10 @@
     [(nec2c-sweep-result? result) (nec2c-sweep->network-sweep result)]
     [(nec2c-gain-sweep-result? result)
      (nec2c-gain-sweep->network-sweep result)]
-    [(openems-sweep-result? result) (openems-sweep->network-sweep result)]
-    [(openems-multiport-result? result) (openems-sweep->network-sweep result)]
+    [(openems-predicate? 'openems-sweep-result? result)
+     (openems-accessor who 'openems-sweep->network-sweep result)]
+    [(openems-predicate? 'openems-multiport-result? result)
+     (openems-accessor who 'openems-sweep->network-sweep result)]
     [else
      (raise-argument-error
       who
@@ -176,25 +205,33 @@
      (reflection-coefficient->return-loss (/ (- vswr 1) (+ vswr 1)))]))
 
 (define (multiport-samples who result from to)
-  (unless (openems-multiport-result? result)
+  (unless (openems-predicate? 'openems-multiport-result? result)
     (raise-argument-error who "openems-multiport-result?" result))
   (define names
-    (map openems-result-port-name (openems-multiport-result-ports result)))
+    (map (lambda (port) (openems-accessor who 'openems-result-port-name port))
+         (openems-accessor who 'openems-multiport-result-ports result)))
   (define selected-from (select-name who from names "input port"))
   (define selected-to
     (if to (select-name who to names "output port") selected-from))
   (filter
    (lambda (sample)
-     (and (name=? (openems-s-parameter-sample-input-port sample) selected-from)
-          (name=? (openems-s-parameter-sample-output-port sample) selected-to)))
-   (openems-multiport-result-s-parameters result)))
+     (and (name=? (openems-accessor who 'openems-s-parameter-sample-input-port sample)
+                  selected-from)
+          (name=? (openems-accessor who 'openems-s-parameter-sample-output-port sample)
+                  selected-to)))
+   (openems-accessor who 'openems-multiport-result-s-parameters result)))
 
 (define (s-parameter-at result frequency #:from [from #f] #:to [to #f]
                         #:interpolate? [interpolate? #t])
   (sample-at-frequency
    's-parameter-at (multiport-samples 's-parameter-at result from to) frequency
-   openems-s-parameter-sample-frequency-mhz
-   openems-s-parameter-sample-value interpolate-complex interpolate?))
+   (lambda (sample)
+     (openems-accessor 's-parameter-at
+                       'openems-s-parameter-sample-frequency-mhz sample))
+   (lambda (sample)
+     (openems-accessor 's-parameter-at
+                       'openems-s-parameter-sample-value sample))
+   interpolate-complex interpolate?))
 
 (define (s-parameter-db-at result frequency #:from [from #f] #:to [to #f]
                            #:interpolate? [interpolate? #t])
@@ -220,10 +257,13 @@
       (nec2c-feedpoint-sample-feed-name
        (nec2c-gain-sweep-sample-feedpoint
         (first (nec2c-gain-sweep-result-samples result)))))]
-    [(openems-multiport-result? result)
+    [(openems-predicate? 'openems-multiport-result? result)
      (unique-sorted
-      (map openems-s-parameter-sample-frequency-mhz
-           (openems-multiport-result-s-parameters result)))]
+      (map (lambda (sample)
+             (openems-accessor 'measurement-frequencies
+                               'openems-s-parameter-sample-frequency-mhz sample))
+           (openems-accessor 'measurement-frequencies
+                             'openems-multiport-result-s-parameters result)))]
     [else
      (unique-sorted
       (map network-sample-frequency-mhz
@@ -236,10 +276,14 @@
      (unique-names
       (map nec2c-feedpoint-sample-feed-name
            (nec2c-impedance-result-samples result)))]
-    [(openems-sweep-result? result)
-     (list (openems-sweep-result-port-name result))]
-    [(openems-multiport-result? result)
-     (map openems-result-port-name (openems-multiport-result-ports result))]
+    [(openems-predicate? 'openems-sweep-result? result)
+     (list (openems-accessor 'measurement-ports
+                             'openems-sweep-result-port-name result))]
+    [(openems-predicate? 'openems-multiport-result? result)
+     (map (lambda (port)
+            (openems-accessor 'measurement-ports 'openems-result-port-name port))
+          (openems-accessor 'measurement-ports
+                            'openems-multiport-result-ports result))]
     [else
      (unique-names
       (map network-sample-port-name

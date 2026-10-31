@@ -13,6 +13,7 @@
          "private/nec2c-dielectric.rkt"
          "private/nec2c-dielectric-dsl.rkt"
          "private/nec2c-result-json.rkt"
+         "private/measurement.rkt"
          "private/wire-lumped.rkt"
          "private/lumped-element-dsl.rkt"
          "private/wire-network.rkt"
@@ -62,8 +63,7 @@
                    "private/html-report.rkt"
                    "private/solid-view.rkt"
                    "private/openems.rkt"
-                   "private/openems-power.rkt"
-                   "private/measurement.rkt")
+                   "private/openems-power.rkt")
           (provide
            (all-from-out "private/solid-core.rkt")
            (all-from-out "private/solid-dsl.rkt")
@@ -77,7 +77,6 @@
            (all-from-out "private/html-report.rkt")
            (all-from-out "private/openems.rkt")
            (all-from-out "private/openems-power.rkt")
-           (all-from-out "private/measurement.rkt")
            show-solid-model)
           (set! validate-enabled-scenes! validate-solid-scene!))))
 
@@ -96,6 +95,7 @@
  (all-from-out "private/nec2c-dielectric.rkt")
  (all-from-out "private/nec2c-dielectric-dsl.rkt")
  (all-from-out "private/nec2c-result-json.rkt")
+ (all-from-out "private/measurement.rkt")
  (all-from-out "private/wire-lumped.rkt")
  (all-from-out "private/lumped-element-dsl.rkt")
  (all-from-out "private/wire-network.rkt")
