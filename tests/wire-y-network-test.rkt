@@ -47,6 +47,23 @@
       input port output port
       y11 1 y12 0 y22 1))))
 
+(test-case "named ports survive nested turtle scopes and connect by name"
+  (reset-model!)
+  (model frequency 14.1)
+  (from-here
+    (wire-port primary up gap centimeter))
+  (from-here
+    (move forward meter)
+    (wire-port secondary forward gap centimeter))
+  (define network
+    (two-port-y input primary output secondary y11 1 y12 0 y22 1))
+  (check-equal?
+   (wire-port-declaration-name (wire-y-network-input-port network))
+   'primary)
+  (check-equal?
+   (wire-port-declaration-name (wire-y-network-output-port network))
+   'secondary))
+
 (test-case "ideal-transformer creates a finite turns-ratio constraint"
   (reset-model!)
   (model frequency 14.1)

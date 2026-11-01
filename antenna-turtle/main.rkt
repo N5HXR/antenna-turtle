@@ -13,6 +13,7 @@
          "private/nec2c-dielectric.rkt"
          "private/nec2c-dielectric-dsl.rkt"
          "private/nec2c-result-json.rkt"
+         "private/touchstone.rkt"
          "private/measurement.rkt"
          "private/wire-lumped.rkt"
          "private/lumped-element-dsl.rkt"
@@ -95,6 +96,7 @@
  (all-from-out "private/nec2c-dielectric.rkt")
  (all-from-out "private/nec2c-dielectric-dsl.rkt")
  (all-from-out "private/nec2c-result-json.rkt")
+ (all-from-out "private/touchstone.rkt")
  (all-from-out "private/measurement.rkt")
  (all-from-out "private/wire-lumped.rkt")
  (all-from-out "private/lumped-element-dsl.rkt")
@@ -274,6 +276,60 @@
         descriptor)]
       [_ descriptor]))
 
+  (define (wire-port-name-expression value)
+    (if (identifier? value) #`'#,(syntax-e value) value))
+
+  (define (spread-port-expression direction distance descriptor whole-form)
+    (define items (syntax->list descriptor))
+    (unless (and items (pair? items) (identifier? (car items)))
+      (raise-syntax-error
+       'spread "expected (PORT-NAME setting value ...) after port" whole-form descriptor))
+    (define name (car items))
+    (define settings (cdr items))
+    (when (odd? (length settings))
+      (raise-syntax-error
+       'spread "port settings must be keyword/value pairs" whole-form descriptor))
+    (define values (make-hasheq))
+    (for ([offset (in-range 0 (length settings) 2)])
+      (define key-stx (list-ref settings offset))
+      (define value (list-ref settings (add1 offset)))
+      (unless (and (identifier? key-stx)
+                   (memq (syntax-e key-stx) '(gap diameter anchor feed)))
+        (raise-syntax-error
+         'spread "port settings may be gap, diameter, anchor, or feed"
+         whole-form key-stx))
+      (define key (syntax-e key-stx))
+      (when (hash-has-key? values key)
+        (raise-syntax-error 'spread "port setting may be specified only once"
+                            whole-form key-stx))
+      (hash-set! values key value))
+    (unless (hash-has-key? values 'gap)
+      (raise-syntax-error 'spread "a port clause requires gap" whole-form descriptor))
+    (define anchor
+      (if (hash-has-key? values 'anchor)
+          (let ([value (hash-ref values 'anchor)])
+            (unless (and (identifier? value)
+                         (memq (syntax-e value) '(start center end)))
+              (raise-syntax-error 'spread "port anchor must be start, center, or end"
+                                  whole-form value))
+            #`'#,(syntax-e value))
+          #''center))
+    (define feed-name
+      (if (hash-has-key? values 'feed)
+          #`(format "~a" #,(wire-port-name-expression (hash-ref values 'feed)))
+          #'#f))
+    (define component (move-direction-components direction whole-form))
+    #`(add-spread-wire-port-declaration
+       '#,(syntax-e direction)
+       #,distance
+       #:name '#,(syntax-e name)
+       #:gap #,(hash-ref values 'gap)
+       #:diameter #,(if (hash-has-key? values 'diameter)
+                        (hash-ref values 'diameter)
+                        #'#f)
+       #:anchor #,anchor
+       #:feed-name #,feed-name))
+
   (define (reflection-axis direction whole-form)
     (case (syntax-e direction)
       [(forward forwards back backward backwards) 'x]
@@ -416,6 +472,8 @@
     [(_ direction:id distance:expr)
      (define component (move-direction-components #'direction stx))
      #`(spread-local #,@component distance)]
+    [(_ direction:id distance:expr (~datum port) descriptor:expr)
+     (spread-port-expression #'direction #'distance #'descriptor stx)]
     [(_ direction:id distance:expr (~datum feed) descriptor:expr)
      (define component (move-direction-components #'direction stx))
      (define feed-expression
@@ -429,7 +487,8 @@
       'spread
       (string-append
        "expected (spread direction distance) or "
-       "(spread direction distance feed descriptor)")
+       "(spread direction distance feed descriptor), or "
+       "(spread direction distance port (name gap distance ...))")
       stx)]))
 
 (define-syntax (feed stx)

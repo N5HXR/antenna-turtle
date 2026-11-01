@@ -45,6 +45,66 @@
         feed input
     (move down 1)))
 
+(define (build-catalog-coax-fed-dipole)
+  (reset-model!)
+  (model title "Catalog coax-fed test dipole"
+         frequency 14.2
+         max-length 0.2
+         wire-diameter 0.002
+         ground perfect)
+  (move up 5)
+  (from-here
+    (move forward 0.025)
+    (with-wire (move forward 1)))
+  (from-here
+    (move back 0.025)
+    (with-wire (move back 1)))
+  ;; With exactly one port at the turtle, `coax` can infer its output.
+  (wire-port forward name antenna-feed gap 0.05 diameter 0.002)
+  (coax type RG58
+    (move down 1)))
+
+(define (build-cascaded-coax-fed-dipole)
+  (reset-model!)
+  (model title "Cascaded coax-fed test dipole"
+         frequency 14.2
+         max-length 0.2
+         wire-diameter 0.002
+         ground perfect)
+  (move up 5)
+  (from-here
+    (move forward 0.025)
+    (with-wire (move forward 1)))
+  (from-here
+    (move back 0.025)
+    (with-wire (move back 1)))
+  (wire-port antenna-feed forward gap 0.05 diameter 0.002)
+  ;; The coax name itself resolves to its generated input terminal, so the
+  ;; outer 50-ohm feedline can end at `matching-stub`.
+  (coax name matching-stub type rg6 output antenna-feed feed none
+    (move down 1))
+  (coax name feedline type rg58 output matching-stub
+    (move down 1)))
+
+(define (build-shieldless-coax-fed-dipole)
+  (reset-model!)
+  (model title "Shieldless coax-fed test dipole"
+         frequency 14.2
+         max-length 0.2
+         wire-diameter 0.002
+         ground perfect)
+  (move up 5)
+  (from-here
+    (move forward 0.025)
+    (with-wire (move forward 1)))
+  (from-here
+    (move back 0.025)
+    (with-wire (move back 1)))
+  (wire-port antenna-feed forward gap 0.05 diameter 0.002)
+  (coax name ideal-rg6 type rg6 output antenna-feed shield none
+    (move down 1)
+    (move left 1)))
+
 (test-case "coax creates a visible shield, two one-segment ports, and a TL card"
   (build-coax-fed-dipole)
   (check-equal? (length (model-wire-ports)) 2)
@@ -76,6 +136,67 @@
   (check-equal? (length feeds) 1)
   (check-equal? (wire-edge-feed-name (car feeds)) "feedline")
   (check-equal? (wire-edge-feed-location (car feeds)) 'center))
+
+(test-case "catalog coax supplies RG-58 defaults and finds the local output port"
+  (build-catalog-coax-fed-dipole)
+  (define coax (first (model-wire-coaxes)))
+  (define line (wire-coax-declaration-line coax))
+  (check-equal? (wire-transmission-line-impedance line) 50)
+  (check-equal? (wire-transmission-line-velocity-factor line) .66)
+  (check-equal? (wire-coax-declaration-color coax) "purple")
+  (check-equal? (wire-coax-declaration-diameter coax) (* .195 inch)))
+
+(test-case "coax sections cascade through a passive generated input port"
+  (build-cascaded-coax-fed-dipole)
+  (check-equal? (length (model-wire-transmission-lines)) 2)
+  (define lines (model-wire-transmission-lines))
+  (check-equal? (wire-transmission-line-impedance (first lines)) 75)
+  (check-equal? (wire-transmission-line-velocity-factor (first lines)) .82)
+  (define feeds (filter wire-edge-feed? (model-edges)))
+  (check-equal? (length feeds) 1)
+  (check-equal? (wire-edge-feed-name (car feeds)) "feedline")
+  (define text (deck-text))
+  (check-equal? (length (deck-lines "TL " text)) 2)
+  (check-equal? (length (deck-lines "EX " text)) 1))
+
+(test-case "shield none traces a TL route without a radiating shield wire"
+  (build-shieldless-coax-fed-dipole)
+  (define coax (first (model-wire-coaxes)))
+  (check-equal? (wire-coax-declaration-shield-edges coax) '())
+  (check-equal?
+   (wire-transmission-line-physical-length (wire-coax-declaration-line coax))
+   2)
+  ;; Two dipole arms, the output port, and the generated input port only.
+  (check-equal? (length (model-edges)) 4)
+  (check-equal? (length (deck-lines "TL " (deck-text))) 1))
+
+(test-case "spread inserts a named wire port without overlapping the conductor"
+  (reset-model!)
+  (model frequency 14.2 wire-diameter 0.002)
+  (with-wire
+    (spread forward 10 port (feedpoint gap 2)))
+  (define port (first (model-wire-ports)))
+  (check-equal? (wire-port-declaration-name port) 'feedpoint)
+  (check-equal? (length (model-edges)) 3)
+  (check-equal? (edge-length (wire-port-declaration-edge port)) 2)
+  (check-equal?
+   (sort (map edge-length
+              (filter (lambda (edge) (not (wire-port-edge? edge)))
+                      (model-edges)))
+         <)
+   '(4 4)))
+
+(test-case "spread port anchor selects a segment endpoint"
+  (reset-model!)
+  (model frequency 14.2 wire-diameter 0.002)
+  (with-wire
+    (spread forward 10 port (input-port gap 2 anchor start)))
+  (define port (first (model-wire-ports)))
+  (check-equal? (wire-port-declaration-anchor port) 'start)
+  (check-equal? (length (model-edges)) 2)
+  (check-equal?
+   (sort (map edge-length (model-edges)) <)
+   '(2 8)))
 
 (test-case "network declarations clear with wire geometry"
   (build-coax-fed-dipole)

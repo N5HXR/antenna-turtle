@@ -418,7 +418,7 @@ orientation, scales, settings, and body result values otherwise survive.
 Use a direct `(wire-off)` call as the lower-level way to snip an open point
 trace without first turning the wire on.
 
-### `(spread direction distance [feed descriptor])`
+### `(spread direction distance [feed descriptor] | [port (name gap length ...)])`
 
 Creates one full segment centered at the current position without moving the
 turtle. Conceptually, the turtle stretches a conductor equally in both
@@ -432,6 +432,20 @@ directions and leaves it in place.
 All six `move` direction words are accepted. Opposite names create identical
 geometry with reversed edge orientation, which matters for `'start` and `'end`
 feed locations.
+
+A `port` clause constructs a centered or endpoint differential fixture while
+building the spread, rather than overlaying a second wire on an existing edge:
+
+```racket
+(with-wire
+  (spread forward half-wave
+          port (feedpoint gap inch anchor center)))
+```
+
+The port direction is inferred from `spread`. `gap` is required; `diameter`
+and `feed` are optional; `anchor` defaults to `center` and may be `start`,
+`center`, or `end` relative to the full spread. The resulting conductor has
+one or two ordinary wire edges around the dedicated one-segment port fixture.
 
 ### `(move-nearest)`
 
@@ -1588,26 +1602,23 @@ grid. `precedence` overrides the normal automatic `dielectric < lumped feature
 < conductor` choice. `clear-bodies` clears spatial lumped elements;
 `clear-wires` and `reset-model!` clear NEC wire declarations.
 
-### `(wire-port direction setting value ...)`
+### `(wire-port name direction setting value ...)`
 
 Declares a named differential fixture segment for a NEC transmission line:
 
 ```racket
-(define antenna-feed
-  (wire-port forward
-    name antenna-feed
-    gap {2 * inch}
-    diameter 0.002
-    anchor center))
+(wire-port antenna-feed forward gap {2 * inch} anchor center)
 ```
 
 `direction` points from the negative terminal to the positive terminal.
 `gap` is required; `diameter` defaults to the current wire diameter and
 `anchor` defaults to `center`. `anchor start` puts the negative terminal at the
-turtle and `anchor end` puts the positive terminal there. The returned
-`wire-port-declaration` is passed to `coax` or `transmission-line`. NEC export
-always emits the fixture with exactly one segment. `show-model` draws its
-negative and positive terminals as blue and turquoise markers.
+turtle and `anchor end` puts the positive terminal there. Names are registered
+with the current model, survive nested `from-here` scopes, and can be used
+directly in `output` and `input` settings. The older expression form with
+`name` remains supported for programmatic models. NEC export always emits the
+fixture with exactly one segment. `show-model` draws its negative and positive
+terminals as blue and turquoise markers.
 
 ### `(coax setting value ... body ...)`
 
@@ -1615,26 +1626,46 @@ Models coax as an ideal, non-radiating NEC `TL` for the internal differential
 mode plus a radiating turtle wire for current on the shield exterior:
 
 ```racket
-(coax name feedline
+(coax type rg58
       output antenna-feed
-      impedance 50
-      velocity-factor 0.66
-      diameter 0.0103
-      color "dark orange"
-      input-gap inch
-      input-direction forward
-      feed input
   (move down {4 * meters}))
 ```
 
 The body starts at the output port's negative terminal and traces from the
 antenna toward the input measurement plane with wire generation already on.
-At its end, `coax` creates a fed input port whose negative terminal joins the
-shield path. `impedance` defaults to 50 ohms. `velocity-factor`, `diameter`,
-and `input-gap` are required; `input-direction` defaults to `forward`.
-Optional `color` accepts a Plot color string or symbol and changes only the
-visible shield-exterior route in `show-model`.
-`feed input` is optional documentation of the only revision-1 feed location.
+At its end, `coax` creates a generated input port whose negative terminal joins
+the shield path. `type` selects a catalog profile; current profiles are
+`rg58`, `rg6`, `rg8`, `rg8x`, `rg213`, `rg174`, `rg316`, `rg400`, `rg142`,
+`rg402`, `rg405`, `lmr195`, `lmr240`, `lmr400`, and `lmr600`. Explicit
+`impedance`, `velocity-factor`, `diameter`, `color`, and `input-gap` settings
+override profile values. Without a profile, `impedance` defaults to 50 ohms,
+`diameter` to the current wire diameter, `color` to `"purple"`, and
+`velocity-factor` is required. `input-direction` defaults to `up`.
+
+The generated input is normally fed. Use `feed none` for a passive section in
+a cascade. A named coax may itself be referenced as the input terminal of that
+section, so an antenna-side RG-6 matching section followed by an RG-58
+feedline can be declared as:
+
+```racket
+(coax name quarter-stub type rg6 output antenna-feed feed none
+  (move down {wavelength * 0.82 / 4}))
+(coax name feedline type rg58 output quarter-stub
+  (move down {wavelength * 0.66 / 2}))
+```
+
+By default, `coax` also draws the radiating shield exterior. Use `shield none`
+to model only the ideal differential TL, matching a circuit-simulator
+transmission line while retaining the route's physical length:
+
+```racket
+(coax name ideal-rg6 type rg6 output antenna-feed shield none
+  (move down {66 * feet}))
+```
+
+With `shield none`, the body is an invisible turtle route; it must contain a
+nonzero sequence of motions, and shield-path components such as
+`lumped-element` have no physical conductor to modify.
 
 The NEC line length is the body's physical route length divided by velocity
 factor. The shield path is ordinary wire geometry, may contain inline
@@ -1661,9 +1692,10 @@ The low-level layer behind `coax` connects two `wire-port` values:
   velocity-factor 0.66)
 ```
 
-Both ports must already exist and a port may participate in only one
-revision-1 line. The form does not add an excitation; `coax` supplies the fed
-input fixture for the common case.
+Both ports must already exist. A port may be the input of one line and the
+output of one other line, allowing a serial cascade, but cannot fan out to
+multiple lines in either direction. The form does not add an excitation;
+`coax` supplies the fed input fixture for the common case.
 
 ### `(two-port-y setting value ...)`
 
@@ -2559,6 +2591,25 @@ Runs one frequency, defaulting to `model-frequency`, and returns a
 For multiple feeds, impedance means the active impedance under the declared
 simultaneous excitations. It is not an isolated port impedance or an
 S-parameter measurement.
+
+### `(write-s1p destination sweep [#:reference-impedance ohms] [#:feed name])`
+
+Writes a one-port Touchstone (`.s1p`) file from a `nec2c-vswr-sweep` result or
+a solver-neutral `network-sweep`. Data is emitted as S11 in MHz, real/imaginary
+form (`# MHz S RI R ...`). The reference impedance defaults to the current
+`model impedance` and can be overridden; S11 is recalculated from each complex
+feedpoint impedance for that selected reference.
+
+```racket
+(define sweep (nec2c-vswr-sweep 3.3 4.1 #:steps 161))
+(write-s1p "scratch/antenna.s1p" sweep)
+(write-s1p "scratch/antenna-50.s1p" sweep #:reference-impedance 50)
+```
+
+For a sweep with multiple feeds, provide `#:feed` as its string or symbolic
+name. Export the antenna-only network when the file will be used as a load in
+another simulator; exporting a model that already contains its matching
+network and then recreating that network elsewhere double-counts it.
 
 ### `(nec2c-vswr-sweep start stop [#:steps count | #:step increment] common-keywords ...)`
 

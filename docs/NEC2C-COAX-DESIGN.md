@@ -1,6 +1,9 @@
 # NEC2C Coaxial Feedline Design
 
-Status: experimental revision 1 implemented on `exploratory/coax-feedline`.
+Status: historical design record. The initial revision described here is
+implemented, but the current public grammar—including named port references,
+coax catalog profiles, passive cascades, and inline `spread` ports—is defined
+in `API.md` and `USER-MANUAL.md`.
 
 ## Purpose
 

@@ -59,7 +59,7 @@
     "model-vertices" "model-edges" "wire-used" "edge-length"
     "edge-segment-count"
     "export-nec2c" "export-mmana" "export-matlab"
-    "export-matlab-loft" "show-model" "show-solid-model" "build-model"
+    "export-matlab-loft" "write-s1p" "show-model" "show-solid-model" "build-model"
     "add-body" "add-sheet" "add-lumped-port" "add-lumped-element" "clear-bodies"
     "model-bodies" "model-sheets" "model-ports" "model-components"
     "validate-solid-scene!"
@@ -124,6 +124,7 @@
 (defconst antenna-turtle--macros
   '("model" "move" "point" "spread" "feed" "turn" "reflect"
     "radial-repeat"
+    "wire-port" "transmission-line" "two-port-y" "ideal-transformer" "coax"
     "with-wire" "with-points" "from-here" "with-scale" "with-warp"
     "with-surface" "with-pen" "with-push" "with-material" "with-body"
     "with-traces"
@@ -148,7 +149,7 @@
 
 (defconst antenna-turtle--contextual-keywords
   '("title" "frequency" "impedance" "ground" "height" "max-length"
-    "snaplen" "wire-diameter" "feed" "steps"))
+    "snaplen" "wire-diameter" "feed" "steps" "port"))
 
 ;; These setting names include ordinary Racket identifiers such as `length`,
 ;; `name`, and `path`. Match them only as direct children of the corresponding
@@ -164,9 +165,26 @@
     "engine" "sweep" "profile" "octave" "keep-artifacts" "progress"
     "timeout"))
 
+;; Settings of the wire-network DSL.  As with the solid settings, these are
+;; highlighted only in their declaration forms so identifiers such as `name`,
+;; `input`, or `type` retain their normal Racket meaning elsewhere.
+(defconst antenna-turtle--wire-contextual-keywords
+  '("name" "gap" "diameter" "anchor" "feed"
+    "input" "output" "impedance" "physical-length" "velocity-factor"
+    "type" "color" "input-gap" "input-direction" "shield"
+    "y11" "y12" "y22" "turns-ratio" "series-resistance"))
+
 (defconst antenna-turtle--pairwise-forms
   '("body" "with-body" "with-traces" "sheet" "port" "lumped-element" "dielectric" "conductor" "cuboid" "sphere" "cylinder"
     "capsule" "stl" "simulate"))
+
+(defconst antenna-turtle--wire-pairwise-forms
+  '("wire-port" "transmission-line" "two-port-y" "ideal-transformer" "coax"))
+
+(defconst antenna-turtle--wire-values
+  '("input"
+    "rg58" "rg6" "rg8" "rg8x" "rg213" "rg174" "rg316" "rg400" "rg142"
+    "rg402" "rg405" "lmr195" "lmr240" "lmr400" "lmr600"))
 
 (defconst antenna-turtle--solid-values
   '("pec" "silver" "copper" "gold" "aluminum" "brass" "steel"
@@ -205,7 +223,13 @@
 (defconst antenna-turtle--solid-contextual-keyword-regexp
   (regexp-opt antenna-turtle--solid-contextual-keywords 'symbols))
 
-(defun antenna-turtle--inside-pairwise-form-p (position)
+(defconst antenna-turtle--wire-contextual-keyword-regexp
+  (regexp-opt antenna-turtle--wire-contextual-keywords 'symbols))
+
+(defconst antenna-turtle--spread-port-contextual-keyword-regexp
+  (regexp-opt '("gap" "diameter" "anchor" "feed") 'symbols))
+
+(defun antenna-turtle--inside-pairwise-form-p (position forms)
   "Return non-nil when POSITION is directly inside a pair-wise DSL form."
   (save-excursion
     (goto-char position)
@@ -218,7 +242,7 @@
               (progn
                 (forward-sexp 1)
                 (member (buffer-substring-no-properties start (point))
-                        antenna-turtle--pairwise-forms))
+                        forms))
             (scan-error nil)))))))
 
 (defun antenna-turtle--solid-contextual-keyword-matcher (limit)
@@ -226,7 +250,54 @@
   (catch 'matched
     (while (re-search-forward
             antenna-turtle--solid-contextual-keyword-regexp limit t)
-      (when (antenna-turtle--inside-pairwise-form-p (match-beginning 0))
+      (when (antenna-turtle--inside-pairwise-form-p
+             (match-beginning 0) antenna-turtle--pairwise-forms)
+        (throw 'matched t)))
+    nil))
+
+(defun antenna-turtle--wire-contextual-keyword-matcher (limit)
+  "Find the next wire-network DSL setting name before LIMIT."
+  (catch 'matched
+    (while (re-search-forward
+            antenna-turtle--wire-contextual-keyword-regexp limit t)
+      (when (antenna-turtle--inside-pairwise-form-p
+             (match-beginning 0) antenna-turtle--wire-pairwise-forms)
+        (throw 'matched t)))
+    nil))
+
+(defun antenna-turtle--inside-spread-port-clause-p (position)
+  "Return non-nil when POSITION is in a `(spread ... port (...))` clause."
+  (save-excursion
+    (goto-char position)
+    (let ((port-open (nth 1 (syntax-ppss))))
+      (when port-open
+        (let ((spread-open (nth 1 (syntax-ppss port-open))))
+          (when spread-open
+            (goto-char (1+ spread-open))
+            (skip-chars-forward " \t\r\n")
+            (let ((start (point)))
+              (condition-case nil
+                  (and (progn (forward-sexp 1)
+                              (string= (buffer-substring-no-properties start (point))
+                                       "spread"))
+                       ;; Skip direction and distance, then inspect the
+                       ;; contextual `port` word preceding this descriptor.
+                       (progn (skip-chars-forward " \t\r\n") (forward-sexp 1))
+                       (progn (skip-chars-forward " \t\r\n") (forward-sexp 1))
+                       (progn
+                         (skip-chars-forward " \t\r\n")
+                         (setq start (point))
+                         (forward-sexp 1)
+                         (string= (buffer-substring-no-properties start (point))
+                                  "port")))
+                (scan-error nil))))))))
+
+(defun antenna-turtle--spread-port-contextual-keyword-matcher (limit)
+  "Find settings nested in a spread port clause before LIMIT."
+  (catch 'matched
+    (while (re-search-forward
+            antenna-turtle--spread-port-contextual-keyword-regexp limit t)
+      (when (antenna-turtle--inside-spread-port-clause-p (match-beginning 0))
         (throw 'matched t)))
     nil))
 
@@ -250,11 +321,17 @@
      0 'antenna-turtle-loop-clause-face)
     (antenna-turtle--solid-contextual-keyword-matcher
      0 'antenna-turtle-loop-clause-face)
+    (antenna-turtle--wire-contextual-keyword-matcher
+     0 'antenna-turtle-loop-clause-face)
+    (antenna-turtle--spread-port-contextual-keyword-matcher
+     0 'antenna-turtle-loop-clause-face)
     (,(regexp-opt antenna-turtle--feed-locations 'symbols)
      0 'font-lock-constant-face)
     (,(regexp-opt antenna-turtle--ground-kinds 'symbols)
      0 'font-lock-constant-face)
     (,(regexp-opt antenna-turtle--solid-values 'symbols)
+     0 'font-lock-constant-face)
+    (,(regexp-opt antenna-turtle--wire-values 'symbols)
      0 'font-lock-constant-face)
     (,(regexp-opt antenna-turtle--units 'symbols)
      0 'font-lock-constant-face)
@@ -302,6 +379,11 @@ with INDENT-POINT first, so accept both documented conventions."
     (from-here . 0)
     (with-pen . 0)
     (with-push . 0)
+    (wire-port . 2)
+    (transmission-line . 0)
+    (two-port-y . 0)
+    (ideal-transformer . 0)
+    (coax . 0)
     ;; Pair-wise declarations keep their identifying positional arguments on
     ;; the first line and align subsequent setting/value pairs as a body.
     (body . 1)
