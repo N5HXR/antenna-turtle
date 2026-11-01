@@ -59,7 +59,7 @@
 
 ;(show-model)
 
-; (export-nec2c "folded-dipole-with-transformer.nec")
+;(export-nec2c "folded-dipole-with-transformer.nec")
 (define s (nec2c-vswr-sweep 12 16 #:steps 201))
 ;(show-return-loss-sweep s)
 ;(show-smith-chart s)
