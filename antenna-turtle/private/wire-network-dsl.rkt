@@ -217,12 +217,15 @@
                input-direction feed)))
      (when (null? body)
        (raise-syntax-error 'coax "coax requires a shield-route body" stx))
-     ;; `feed input` was required by the first version, but it has never
-     ;; selected anything other than the generated input port.  Retain it as
-     ;; a compatibility no-op for existing models.
-     (when (hash-has-key? values 'feed)
-       (literal (hash-ref values 'feed) '(input) 'coax stx
-                "revision 1 supports only feed input"))
+     ;; The outermost coax normally supplies the generated input excitation.
+     ;; A passive section uses `feed none` and is driven by an upstream line.
+     (define feed?
+       (if (hash-has-key? values 'feed)
+           (let ([value (hash-ref values 'feed)])
+             (literal value '(input none) 'coax stx
+                      "feed must be input or none")
+             (not (eq? (syntax-e value) 'none)))
+           #t))
      (unless (or (hash-has-key? values 'velocity-factor)
                  (hash-has-key? values 'type))
        (raise-syntax-error
@@ -257,7 +260,8 @@
               #'#:input-gap
               (if (hash-has-key? values 'input-gap)
                   (hash-ref values 'input-gap)
-                  (profile-value #'coax-spec-input-gap #'centimeter)))
+                  (profile-value #'coax-spec-input-gap #'centimeter))
+              #'#:feed? (if feed? #'#t #'#f))
         (if (hash-has-key? values 'input-direction)
             (list #'#:input-direction
                   (literal-direction (hash-ref values 'input-direction) 'coax stx))

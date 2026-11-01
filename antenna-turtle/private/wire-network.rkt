@@ -10,6 +10,7 @@
  (struct-out wire-y-network)
  (struct-out wire-coax-declaration)
  add-wire-port-declaration
+ add-spread-wire-port-declaration
  add-transmission-line-declaration
  add-y-network-declaration
  add-ideal-transformer-declaration
@@ -64,6 +65,21 @@
   (for/or ([network (in-list (model-wire-y-networks))])
     (or (eq? port (wire-y-network-input-port network))
         (eq? port (wire-y-network-output-port network)))))
+
+(define (transmission-line-output-port? port)
+  (for/or ([line (in-list (model-wire-transmission-lines))])
+    (eq? port (wire-transmission-line-output-port line))))
+
+(define (transmission-line-input-port? port)
+  (for/or ([line (in-list (model-wire-transmission-lines))])
+    (eq? port (wire-transmission-line-input-port line))))
+
+(define (downstream-network-port? port)
+  ;; A coax output normally joins an antenna conductor. In a cascade it joins
+  ;; the input terminal of the next TL instead, which supplies both terminals
+  ;; electrically without requiring a radiating wire at that junction.
+  (or (y-network-port? port)
+      (transmission-line-input-port? port)))
 
 (define (clear-wire-network-declarations)
   (current-wire-ports '())
@@ -123,15 +139,21 @@
   (and (wire-port-declaration? port)
        (memq port (model-wire-ports))))
 
+(define (coax-input-port-by-name name)
+  (for/first ([coax (in-list (model-wire-coaxes))]
+              #:when (equal? name (wire-coax-declaration-name coax)))
+    (wire-coax-declaration-input-port coax)))
+
 (define (resolve-wire-port reference [who 'wire-port])
   (cond
     [(registered-port? reference) reference]
     [(or (symbol? reference) (string? reference))
-     (hash-ref
-      (current-wire-port-index) reference
-      (lambda ()
-        (raise-arguments-error who "unknown wire port"
-                               "port" reference)))]
+     ;; A coax name is shorthand for that coax's generated input port. This
+     ;; makes serial declarations read naturally: `output quarter-stub`.
+     (or (hash-ref (current-wire-port-index) reference #f)
+         (coax-input-port-by-name reference)
+         (raise-arguments-error who "unknown wire port or coax terminal"
+                                "port" reference))]
     [else
      (raise-argument-error who
                            "(or/c registered-wire-port? symbol? string?)"
@@ -210,16 +232,17 @@
       (raise-arguments-error
        who "coax shield route is detached from the input negative terminal"
        "coax" (wire-coax-declaration-name coax)))
-    ;; A coax may terminate at an NT network port instead of directly at an
-    ;; antenna wire. In that case the network supplies the output circuit.
-    (when (and (not (y-network-port? output))
+    ;; A coax may terminate at an NT port or at the input of a downstream TL
+    ;; instead of directly at an antenna wire. In that case the network
+    ;; supplies the output circuit.
+    (when (and (not (downstream-network-port? output))
                (null? (filter (lambda (edge) (not (memq edge shield)))
                               (other-incident-edges output output-negative))))
       (raise-arguments-error
        who "coax output negative terminal is not connected to an antenna conductor"
        "coax" (wire-coax-declaration-name coax)
        "port" (wire-port-declaration-name output)))
-    (when (and (not (y-network-port? output))
+    (when (and (not (downstream-network-port? output))
                (null? (other-incident-edges output output-positive)))
       (raise-arguments-error
        who "coax output positive terminal is not connected to an antenna conductor"
@@ -230,9 +253,13 @@
        who "coax output port must not also contain an excitation"
        "coax" (wire-coax-declaration-name coax)
        "port" (wire-port-declaration-name output)))
-    (unless (wire-edge-feed? input-edge)
+    ;; An input is either the model excitation or the output of an upstream
+    ;; line.  The latter permits coax sections to be cascaded at a generated
+    ;; `<coax-name>-input` port.
+    (unless (or (wire-edge-feed? input-edge)
+                (transmission-line-output-port? input))
       (raise-arguments-error
-       who "coax input port is missing its excitation"
+       who "coax input port is missing an excitation or upstream transmission line"
        "coax" (wire-coax-declaration-name coax)
        "port" (wire-port-declaration-name input))))
   (void))
@@ -309,6 +336,69 @@
   (hash-set! (current-wire-port-index) name port)
   port)
 
+;; Insert a port while constructing one centered `spread` wire.  The caller's
+;; turtle state is restored just as spread-local restores it, but the original
+;; conductor is emitted as zero, one, or two edges around the port instead of
+;; one edge that overlaps it.
+(define (add-spread-wire-port-declaration direction distance
+                                           #:name requested-name
+                                           #:gap gap
+                                           #:diameter [diameter #f]
+                                           #:anchor [anchor 'center]
+                                           #:feed-name [feed-name #f])
+  (define who 'spread)
+  (unless (current-wire-active?)
+    (error who "a port clause requires an enclosing with-wire"))
+  (positive-real who distance "spread distance")
+  (positive-real who gap "port gap")
+  (unless (memq anchor '(start center end))
+    (raise-argument-error who "(or/c 'start 'center 'end)" anchor))
+  (define direction-vector (transform-direction who direction))
+  (define scale (current-geometry-scale))
+  (define effective-distance (* distance scale))
+  (define effective-gap (* gap scale))
+  (when (> effective-gap effective-distance)
+    (raise-arguments-error
+     who "port gap may not exceed spread distance"
+     "gap" gap
+     "spread distance" distance))
+  (define center (current-position))
+  (define start (point+scaled center direction-vector (- (/ effective-distance 2))))
+  (define end (point+scaled center direction-vector (/ effective-distance 2)))
+  (define anchor-point
+    (case anchor
+      [(start) start]
+      [(end) end]
+      [else center]))
+  (define result #f)
+  (call-from-here
+   (lambda ()
+     ;; The ordinary port constructor owns registration, port geometry, and
+     ;; feed marking. Temporarily lift the pen so it can do that work.
+     (wire-off)
+     (goto anchor-point)
+     (set! result
+           (add-wire-port-declaration
+            direction
+            #:name requested-name
+            #:gap gap
+            #:diameter diameter
+            #:anchor anchor
+            #:feed-name feed-name))
+     (define negative (wire-port-negative-point result))
+     (define positive (wire-port-positive-point result))
+     (unless (point=? start negative)
+       (goto start)
+       (wire-on)
+       (goto negative)
+       (wire-off))
+     (unless (point=? positive end)
+       (goto positive)
+       (wire-on)
+       (goto end)
+       (wire-off))))
+  result)
+
 (define (add-transmission-line-declaration
          #:name [requested-name #f]
          #:input input-reference
@@ -334,16 +424,14 @@
   (ensure-unique-name who name lines wire-transmission-line-name
                       "transmission line")
   (for ([line (in-list lines)])
-    (when (or (eq? input-port (wire-transmission-line-input-port line))
-              (eq? input-port (wire-transmission-line-output-port line))
-              (eq? output-port (wire-transmission-line-input-port line))
-              (eq? output-port (wire-transmission-line-output-port line)))
+    (when (eq? input-port (wire-transmission-line-input-port line))
       (raise-arguments-error
-       who "revision 1 permits only one transmission line per wire port"
-       "port" (if (or (eq? input-port (wire-transmission-line-input-port line))
-                        (eq? input-port (wire-transmission-line-output-port line)))
-                   (wire-port-declaration-name input-port)
-                   (wire-port-declaration-name output-port)))))
+       who "only one transmission line may originate at a wire port"
+       "port" (wire-port-declaration-name input-port)))
+    (when (eq? output-port (wire-transmission-line-output-port line))
+      (raise-arguments-error
+       who "only one transmission line may terminate at a wire port"
+       "port" (wire-port-declaration-name output-port))))
   (define line
     (wire-transmission-line name input-port output-port impedance
                             physical-length velocity-factor))
@@ -412,7 +500,8 @@
                                     #:diameter diameter
                                     #:color [color #f]
                                     #:input-gap input-gap
-                                    #:input-direction [input-direction 'forward])
+                                    #:input-direction [input-direction 'forward]
+                                    #:feed? [feed? #t])
   (define who 'coax)
   (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
     (raise-argument-error who "(procedure-arity-includes/c 0)" thunk))
@@ -427,6 +516,8 @@
   (positive-real who velocity-factor "velocity factor")
   (unless (or (not color) (string? color) (symbol? color))
     (raise-argument-error who "(or/c #f string? symbol?)" color))
+  (unless (boolean? feed?)
+    (raise-argument-error who "boolean?" feed?))
   (when (> velocity-factor 1)
     (raise-arguments-error who "velocity factor may not exceed 1"
                            "velocity factor" velocity-factor))
@@ -454,7 +545,7 @@
         #:name input-name
         #:gap input-gap
         #:anchor 'start
-        #:feed-name (format "~a" name)
+        #:feed-name (and feed? (format "~a" name))
         #:generated? #t))
      (define line
        (add-transmission-line-declaration

@@ -20,6 +20,7 @@
 (define coax-specifications
   (list
    (spec 'rg58   50 .66 (* .195 inch))
+   (spec 'rg6    75 .82 (* .275 inch))
    (spec 'rg8    50 .66 (* .405 inch))
    (spec 'rg8x   50 .78 (* .242 inch))
    (spec 'rg213  50 .66 (* .405 inch))
