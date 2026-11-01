@@ -905,6 +905,15 @@ antenna-side section first and use its coax name as the outer line's output:
   (move down {wavelength * 0.66 / 2}))
 ```
 
+To compare against a circuit-only matching model, add `shield none`. The
+route still establishes physical cable length for the ideal TL, but no
+shield-exterior wire is drawn or allowed to radiate:
+
+```racket
+(coax name ideal-rg6 type rg6 output antenna-feed shield none
+  (move down {66 * feet}))
+```
+
 Place an idealized transformer between two explicit ports with
 `ideal-transformer`. A 2:1 output-to-input turns ratio transforms a nominal
 200-ohm antenna load to 50 ohms:

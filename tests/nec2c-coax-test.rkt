@@ -86,6 +86,25 @@
   (coax name feedline type rg58 output matching-stub
     (move down 1)))
 
+(define (build-shieldless-coax-fed-dipole)
+  (reset-model!)
+  (model title "Shieldless coax-fed test dipole"
+         frequency 14.2
+         max-length 0.2
+         wire-diameter 0.002
+         ground perfect)
+  (move up 5)
+  (from-here
+    (move forward 0.025)
+    (with-wire (move forward 1)))
+  (from-here
+    (move back 0.025)
+    (with-wire (move back 1)))
+  (wire-port antenna-feed forward gap 0.05 diameter 0.002)
+  (coax name ideal-rg6 type rg6 output antenna-feed shield none
+    (move down 1)
+    (move left 1)))
+
 (test-case "coax creates a visible shield, two one-segment ports, and a TL card"
   (build-coax-fed-dipole)
   (check-equal? (length (model-wire-ports)) 2)
@@ -139,6 +158,17 @@
   (define text (deck-text))
   (check-equal? (length (deck-lines "TL " text)) 2)
   (check-equal? (length (deck-lines "EX " text)) 1))
+
+(test-case "shield none traces a TL route without a radiating shield wire"
+  (build-shieldless-coax-fed-dipole)
+  (define coax (first (model-wire-coaxes)))
+  (check-equal? (wire-coax-declaration-shield-edges coax) '())
+  (check-equal?
+   (wire-transmission-line-physical-length (wire-coax-declaration-line coax))
+   2)
+  ;; Two dipole arms, the output port, and the generated input port only.
+  (check-equal? (length (model-edges)) 4)
+  (check-equal? (length (deck-lines "TL " (deck-text))) 1))
 
 (test-case "spread inserts a named wire port without overlapping the conductor"
   (reset-model!)

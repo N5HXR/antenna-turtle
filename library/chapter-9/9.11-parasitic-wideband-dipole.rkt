@@ -9,28 +9,31 @@
   (define vf 0.82)
   (define match-length (* quarter-wave vf))
   (define feed-length (- half-wave match-length foot))
-  (define spacing (* 4 inches))
-  (define driven-len {802 * inch * 2 * 1.0})
+  (define spacing (* 10 inches))
+  (define driven-len {802 * inch * 2 * 1.02})
   (define parasitic-len {708 * inch * 2 * 1.0})
   
   (move up half-wave)
-  (with-wire
-;    (spread forward driven-len port [feedpoint gap inch]))
-    (spread forward driven-len feed center))
-  (from-here
-    (move up spacing)
-    (with-wire 
-      (spread forward parasitic-len))))
+  (with-scale 1.02
+    (with-wire
+      (spread forward driven-len port [feedpoint gap inch]))
+      ;(spread forward driven-len feed center))
+    (from-here
+      (move up spacing)
+      (with-wire 
+        (spread forward parasitic-len))))
 
-; (coax name quarter-stub
-;       type rg6
-;       output feedpoint
-;       feed none
-;       (move down match-length)))
-       ;(move down foot)
-       ;(lumped-element down gap inch inductance 20e-6)
-       ;(move down {match-length - foot - inch})))
-; 
+ (coax name quarter-stub
+       type rg6
+       output feedpoint
+       shield none
+       ;feed none
+       ;(move down {66 * feet})))
+       (loop repeat 6 do
+             (move down {5.5 * feet - inch})
+             ;(lumped-element down gap inch inductance 50e-6)
+             (move down {5.5 * feet}))))
+
 ; (coax name feedline
 ;       type rg58
 ;       output quarter-stub

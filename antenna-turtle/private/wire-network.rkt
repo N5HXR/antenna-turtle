@@ -164,6 +164,11 @@
        (= (point3-y a) (point3-y b))
        (= (point3-z a) (point3-z b))))
 
+(define (point-distance a b)
+  (sqrt (+ (sqr (- (point3-x a) (point3-x b)))
+           (sqr (- (point3-y a) (point3-y b)))
+           (sqr (- (point3-z a) (point3-z b))))))
+
 (define (wire-port-anchor-point port)
   (define negative (wire-port-negative-point port))
   (define positive (wire-port-positive-point port))
@@ -222,16 +227,17 @@
     (define output-negative (wire-edge-start output-edge))
     (define output-positive (wire-edge-end output-edge))
     (define input-negative (wire-edge-start input-edge))
-    (define first-shield (car shield))
-    (define last-shield (last shield))
-    (unless (edge-touches-vertex? first-shield output-negative)
-      (raise-arguments-error
-       who "coax shield route is detached from the output negative terminal"
-       "coax" (wire-coax-declaration-name coax)))
-    (unless (edge-touches-vertex? last-shield input-negative)
-      (raise-arguments-error
-       who "coax shield route is detached from the input negative terminal"
-       "coax" (wire-coax-declaration-name coax)))
+    (when (pair? shield)
+      (define first-shield (car shield))
+      (define last-shield (last shield))
+      (unless (edge-touches-vertex? first-shield output-negative)
+        (raise-arguments-error
+         who "coax shield route is detached from the output negative terminal"
+         "coax" (wire-coax-declaration-name coax)))
+      (unless (edge-touches-vertex? last-shield input-negative)
+        (raise-arguments-error
+         who "coax shield route is detached from the input negative terminal"
+         "coax" (wire-coax-declaration-name coax))))
     ;; A coax may terminate at an NT port or at the input of a downstream TL
     ;; instead of directly at an antenna wire. In that case the network
     ;; supplies the output circuit.
@@ -501,7 +507,8 @@
                                     #:color [color #f]
                                     #:input-gap input-gap
                                     #:input-direction [input-direction 'forward]
-                                    #:feed? [feed? #t])
+                                    #:feed? [feed? #t]
+                                    #:shield? [shield? #t])
   (define who 'coax)
   (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
     (raise-argument-error who "(procedure-arity-includes/c 0)" thunk))
@@ -518,6 +525,8 @@
     (raise-argument-error who "(or/c #f string? symbol?)" color))
   (unless (boolean? feed?)
     (raise-argument-error who "boolean?" feed?))
+  (unless (boolean? shield?)
+    (raise-argument-error who "boolean?" shield?))
   (when (> velocity-factor 1)
     (raise-arguments-error who "velocity factor may not exceed 1"
                            "velocity factor" velocity-factor))
@@ -530,14 +539,35 @@
   (call-from-here
    (lambda ()
      (goto (wire-port-negative-point output-port))
-     (wire-diameter diameter)
      (define old-count (length (model-edges)))
-     (call-with-wire thunk)
+     (define invisible-length 0)
+     (if shield?
+         (begin
+           (wire-diameter diameter)
+           (call-with-wire thunk))
+         (let ([previous-handler (current-turtle-event-handler)])
+           (parameterize
+               ([current-turtle-event-handler
+                 (lambda (event . arguments)
+                   (when previous-handler
+                     (apply previous-handler event arguments))
+                   (when (eq? event 'move)
+                     (set! invisible-length
+                           (+ invisible-length
+                              (point-distance (first arguments)
+                                              (second arguments))))))])
+             ;; Run the same route with the pen up: it supplies TL physical
+             ;; length but intentionally creates no shield-exterior wire.
+             (thunk))))
      (define shield-edges (drop (model-edges) old-count))
-     (when (null? shield-edges)
+     (when (and shield? (null? shield-edges))
        (error who "coax body must draw a nonzero shield route"))
      (define physical-length
-       (for/sum ([edge (in-list shield-edges)]) (edge-length edge)))
+       (if shield?
+           (for/sum ([edge (in-list shield-edges)]) (edge-length edge))
+           invisible-length))
+     (when (zero? physical-length)
+       (error who "coax body must trace a nonzero route"))
      (define input-name (string->symbol (format "~a-input" name)))
      (define input-port
        (add-wire-port-declaration
@@ -555,7 +585,7 @@
      (set! result
            (wire-coax-declaration name input-port output-port line
                                   shield-edges
-                                  (wire-edge-diameter (car shield-edges))
+                                   diameter
                                   color))))
   (current-wire-coaxes (append coaxes (list result)))
   result)

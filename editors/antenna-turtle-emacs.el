@@ -171,7 +171,7 @@
 (defconst antenna-turtle--wire-contextual-keywords
   '("name" "gap" "diameter" "anchor" "feed"
     "input" "output" "impedance" "physical-length" "velocity-factor"
-    "type" "color" "input-gap" "input-direction"
+    "type" "color" "input-gap" "input-direction" "shield"
     "y11" "y12" "y22" "turns-ratio" "series-resistance"))
 
 (defconst antenna-turtle--pairwise-forms

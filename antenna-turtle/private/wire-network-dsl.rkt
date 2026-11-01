@@ -213,7 +213,7 @@
      (define-values (values body)
        (parse-leading-settings
         'coax stx #'(item ...)
-        '(type name output impedance velocity-factor diameter color input-gap
+        '(type name output impedance velocity-factor diameter color input-gap shield
                input-direction feed)))
      (when (null? body)
        (raise-syntax-error 'coax "coax requires a shield-route body" stx))
@@ -225,6 +225,12 @@
              (literal value '(input none) 'coax stx
                       "feed must be input or none")
              (not (eq? (syntax-e value) 'none)))
+           #t))
+     (define shield?
+       (if (hash-has-key? values 'shield)
+           (let ([value (hash-ref values 'shield)])
+             (literal value '(none) 'coax stx "shield must be none")
+             #f)
            #t))
      (unless (or (hash-has-key? values 'velocity-factor)
                  (hash-has-key? values 'type))
@@ -261,7 +267,8 @@
               (if (hash-has-key? values 'input-gap)
                   (hash-ref values 'input-gap)
                   (profile-value #'coax-spec-input-gap #'centimeter))
-              #'#:feed? (if feed? #'#t #'#f))
+              #'#:feed? (if feed? #'#t #'#f)
+              #'#:shield? (if shield? #'#t #'#f))
         (if (hash-has-key? values 'input-direction)
             (list #'#:input-direction
                   (literal-direction (hash-ref values 'input-direction) 'coax stx))

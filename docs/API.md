@@ -1654,6 +1654,19 @@ feedline can be declared as:
   (move down {wavelength * 0.66 / 2}))
 ```
 
+By default, `coax` also draws the radiating shield exterior. Use `shield none`
+to model only the ideal differential TL, matching a circuit-simulator
+transmission line while retaining the route's physical length:
+
+```racket
+(coax name ideal-rg6 type rg6 output antenna-feed shield none
+  (move down {66 * feet}))
+```
+
+With `shield none`, the body is an invisible turtle route; it must contain a
+nonzero sequence of motions, and shield-path components such as
+`lumped-element` have no physical conductor to modify.
+
 The NEC line length is the body's physical route length divided by velocity
 factor. The shield path is ordinary wire geometry, may contain inline
 `lumped-element` declarations, radiates, and appears in current plots. Ending
