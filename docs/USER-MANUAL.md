@@ -402,6 +402,16 @@ create the same geometry with reversed segment orientation, which matters for
 (with-wire (spread left length feed center))
 ```
 
+To place a named differential port without overlaying a second wire on the
+centered conductor, use `spread`'s `port` clause. `anchor` defaults to
+`center` and may also be `start` or `end` relative to the full span:
+
+```racket
+(with-wire
+  (spread forward half-wave
+          port (feedpoint gap inch anchor center)))
+```
+
 ### 5.4 Temporary Coordinate Contexts
 
 `from-here` restores the complete turtle state after its body but retains all
@@ -864,19 +874,10 @@ the antenna-side differential fixture explicit, then trace the shield from the
 antenna toward the radio:
 
 ```racket
-(define antenna-feed
-  (wire-port forward
-    name antenna-feed
-    gap {2 * inch}
-    diameter 0.002))
+(wire-port antenna-feed forward gap {2 * inch} diameter 0.002)
 
-(coax name feedline
+(coax type rg58
       output antenna-feed
-      velocity-factor 0.66
-      diameter 0.0103
-      color "dark orange"
-      input-gap inch
-      feed input
   (move down {4 * meters}))
 ```
 
@@ -891,6 +892,18 @@ shield route visually distinct in `show-model`; port polarity keeps its own
 blue/turquoise markers.
 Inline wire `lumped-element` forms can represent a first-order common-mode
 choke on the shield path.
+
+Coax profiles include `rg58`, `rg6`, the RG-8/RG-174/RG-3xx families, and
+LMR-195/240/400/600. Profile values can always be overridden. To cascade a
+passive 75-ohm RG-6 matching section with an outer RG-58 feedline, declare the
+antenna-side section first and use its coax name as the outer line's output:
+
+```racket
+(coax name quarter-stub type rg6 output antenna-feed feed none
+  (move down {wavelength * 0.82 / 4}))
+(coax name feedline type rg58 output quarter-stub
+  (move down {wavelength * 0.66 / 2}))
+```
 
 Place an idealized transformer between two explicit ports with
 `ideal-transformer`. A 2:1 output-to-input turns ratio transforms a nominal
@@ -1289,6 +1302,21 @@ window unless the program explicitly calls a `show-*` operation:
 (show-radiation-pattern-opengl sphere #:palette 'magma)
 (show-gain-sweep performance)
 ```
+
+To transfer an antenna-only NEC2C impedance sweep into a matching-network
+tool, write a one-port Touchstone file. The file uses the model reference
+impedance by default; supply `#:reference-impedance` to change the S11
+reference used in the exported data.
+
+```racket
+(define sweep (nec2c-vswr-sweep 3.3 4.1 #:steps 161))
+(write-s1p "scratch/antenna.s1p" sweep)
+(write-s1p "scratch/antenna-50.s1p" sweep #:reference-impedance 50)
+```
+
+For multiple feeds, select one with `#:feed`. Model the antenna alone when it
+is to become a Touchstone load in another simulator; otherwise its matching
+network would be included twice.
 
 When NEC2C-N5HXR dielectric support is in use, a simple one-cuboid model can
 delegate its cubic mesh arithmetic and small commensurability adjustments:

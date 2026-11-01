@@ -59,7 +59,7 @@
     "model-vertices" "model-edges" "wire-used" "edge-length"
     "edge-segment-count"
     "export-nec2c" "export-mmana" "export-matlab"
-    "export-matlab-loft" "show-model" "show-solid-model" "build-model"
+    "export-matlab-loft" "write-s1p" "show-model" "show-solid-model" "build-model"
     "add-body" "add-sheet" "add-lumped-port" "add-lumped-element" "clear-bodies"
     "model-bodies" "model-sheets" "model-ports" "model-components"
     "validate-solid-scene!"

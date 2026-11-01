@@ -13,6 +13,7 @@
          "private/nec2c-dielectric.rkt"
          "private/nec2c-dielectric-dsl.rkt"
          "private/nec2c-result-json.rkt"
+         "private/touchstone.rkt"
          "private/measurement.rkt"
          "private/wire-lumped.rkt"
          "private/lumped-element-dsl.rkt"
@@ -95,6 +96,7 @@
  (all-from-out "private/nec2c-dielectric.rkt")
  (all-from-out "private/nec2c-dielectric-dsl.rkt")
  (all-from-out "private/nec2c-result-json.rkt")
+ (all-from-out "private/touchstone.rkt")
  (all-from-out "private/measurement.rkt")
  (all-from-out "private/wire-lumped.rkt")
  (all-from-out "private/lumped-element-dsl.rkt")
