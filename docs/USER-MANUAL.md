@@ -909,6 +909,14 @@ otherwise singular ideal-transformer Y matrix finite for NEC. Raw
 `two-port-y` remains available for fixed-frequency equivalent circuits and
 parameters exported by network-design tools.
 
+Portable NEC2C reports draw very thin wires with a minimum presentation
+diameter by default, making conductor-current colors and hover inspection easy
+to see. Select `ACTUAL DIAMETER` to restore geometrically scaled conductors;
+this affects only display geometry, never the NEC model. Instantaneous-current
+colors use blue and red for opposite canonical current directions with black
+at zero. Collinear wire pieces remain visually continuous even when their
+authored start/end directions are reversed.
+
 This is not geometrical coax: the center conductor and shield interior are not
 drawn, do not radiate, and do not couple to nearby objects. Revision 1 is
 lossless and wire-only, and cannot be combined with NEC dielectric volumes or
@@ -1499,7 +1507,10 @@ density, and normalized current; click to pin the box. Port and lumped-load
 markers expose their identities, and a load also reports its calculated
 impedance, voltage drop, and complex power. Coax shield segments offer a plot
 of current magnitude and phase along the feed line, with choke/load positions
-marked. Turn off `MARKERS / INSPECTOR` to hide the markers and disable the
+marked. Current phase and instantaneous-current direction use a canonical
+spatial orientation, so reflected wire geometry does not create a false
+180-degree discontinuity; the cyclic phase legend uses the identical hue
+mapping. Turn off `MARKERS / INSPECTOR` to hide the markers and disable the
 hover and pinned detail boxes together. An ordinary wire segment reports
 current and charge rather than a misleading local power figure.
 Its 2-D pattern hover readout includes complex

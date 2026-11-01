@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { loadImpedance } from "./nec2c-inspector.js";
+import { canonicalCurrentPhase, canonicalWireSign, loadImpedance } from "./nec2c-inspector.js";
 
 const frequencyMhz = 14.2;
 const inductive = loadImpedance({
@@ -19,5 +19,18 @@ const parallel = loadImpedance({
 }, frequencyMhz);
 assert.ok(Number.isFinite(parallel.real));
 assert.ok(Number.isFinite(parallel.imaginary));
+
+assert.equal(canonicalWireSign([0, 0, 0], [2, 0, 0]), 1);
+assert.equal(canonicalWireSign([0, 0, 0], [-2, 0, 0]), -1);
+assert.equal(canonicalWireSign([0, 4, 0], [0, 1, 0]), -1);
+assert.equal(canonicalWireSign([0, 0, 0], [0, 0, 0]), 1);
+
+// Representative raw phases from two reflected folded-dipole halves. Once
+// expressed in the same spatial direction, the apparent 180-degree jump
+// collapses to the physical 1.6-degree difference.
+assert.ok(Math.abs(canonicalCurrentPhase(-69.1, -1) - 110.9) < 1e-9);
+assert.ok(Math.abs(canonicalCurrentPhase(112.5, 1) - 112.5) < 1e-9);
+assert.equal(canonicalCurrentPhase(181, 1), -179);
+assert.equal(canonicalCurrentPhase(-181, 1), 179);
 
 console.log("NEC2C report inspector tests passed");

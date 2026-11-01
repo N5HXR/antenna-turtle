@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createPlotWorkspace, Plotly } from "./plot-workspace.js";
 import { makeCollapsibleSettingsPanel } from "./panel-collapse.js";
-import { loadImpedance } from "./nec2c-inspector.js";
+import { canonicalCurrentPhase, canonicalWireSign, loadImpedance } from "./nec2c-inspector.js";
 import { averagePoynting, instantaneousPoynting } from "./field-math.js";
 import {
   componentGainRange,
@@ -162,8 +162,9 @@ function addGeometry(data, group) {
     authoredBounds.expandByPoint(new THREE.Vector3(...volume.maximum));
   }
   const presentationRadius = Math.max(
-    authoredBounds.getSize(new THREE.Vector3()).length() * 0.0012, 1e-7);
+    authoredBounds.getSize(new THREE.Vector3()).length() * 0.0035, 1e-7);
   const segments = [];
+  const hitSegments = [];
   const markers = [];
   let surfaceMesh = null;
   const surfaceVertexRanges = [];
@@ -245,7 +246,9 @@ function addGeometry(data, group) {
     depthTest: false,
   });
   for (const wire of data.geometry.wires) {
-    const radius = Math.max(wire.diameter / 2, presentationRadius);
+    const actualRadius = Math.max(Number(wire.diameter) / 2, 1e-9);
+    const radius = Math.max(actualRadius, presentationRadius);
+    const currentSign = canonicalWireSign(wire.start, wire.end);
     const count = Math.max(1, Number(wire.segment_count) || 1);
     const start = new THREE.Vector3(...wire.start);
     const end = new THREE.Vector3(...wire.end);
@@ -263,8 +266,18 @@ function addGeometry(data, group) {
       conductor.userData.segmentIndex = index + 1;
       conductor.userData.segmentCount = count;
       conductor.userData.segmentCenter = a.clone().add(b).multiplyScalar(0.5).toArray();
+      conductor.userData.actualRadius = actualRadius;
+      conductor.userData.presentationRadius = radius;
+      conductor.userData.currentSign = currentSign;
       group.add(conductor);
       segments.push(conductor);
+      const hitTarget = conductor.clone();
+      hitTarget.material = new THREE.MeshBasicMaterial({
+        transparent: true, opacity: 0, depthWrite: false, colorWrite: false,
+      });
+      hitTarget.renderOrder = 0;
+      group.add(hitTarget);
+      hitSegments.push(hitTarget);
     }
     if (wire.feed) {
       const point = new THREE.Vector3(...wire.start).lerp(new THREE.Vector3(...wire.end), wire.feed.fraction);
@@ -321,7 +334,7 @@ function addGeometry(data, group) {
     ground.position.z = 0;
     group.add(ground);
   }
-  return { segments, markers, surfaceMesh, surfacePatches, surfaceVertexRanges,
+  return { segments, hitSegments, markers, surfaceMesh, surfacePatches, surfaceVertexRanges,
     surfaceVertexKeys, surfaceCornerPatches, dielectricMeshes, presentationRadius };
 }
 
@@ -641,6 +654,7 @@ export async function startNec2cReport(data) {
   scene.add(geometryGroup, patternGroup, axisGroup);
   const geometryDisplay = addGeometry(data, geometryGroup);
   const geometrySegments = geometryDisplay.segments;
+  const geometryHitSegments = geometryDisplay.hitSegments;
   const geometryMarkers = geometryDisplay.markers;
   const diagnostics = data.diagnostics && data.diagnostics !== "null" ? data.diagnostics : null;
   const segmentSamples = new Map((diagnostics?.segment_samples || []).map(sample =>
@@ -719,6 +733,7 @@ export async function startNec2cReport(data) {
     <span id="pattern-opacity-value" class="opacity-value">100%</span></label>
     <input id="pattern-opacity" type="range" min="0.1" max="1" step="0.05" value="1"></div>
     <div class="row"><label><input id="model-visible" type="checkbox" checked> MODEL</label>
+    <label><input id="actual-wire-diameter" type="checkbox"> ACTUAL DIAMETER</label>
     <label><input id="pattern-visible" type="checkbox" checked> PATTERN</label>
     <label><input id="axes-visible" type="checkbox" checked> AXES</label>
     <label><input id="inspector-enabled" type="checkbox" checked> MARKERS / INSPECTOR</label>
@@ -766,6 +781,7 @@ export async function startNec2cReport(data) {
   const currentFloorRow = controlsPanel.querySelector("#current-floor-row");
   const currentFloorSlider = controlsPanel.querySelector("#current-floor");
   const inspectorEnabled = controlsPanel.querySelector("#inspector-enabled");
+  const actualWireDiameter = controlsPanel.querySelector("#actual-wire-diameter");
   const powerBudget = diagnostics?.power_budget;
   for (const option of segmentDisplay.querySelectorAll('option[value^="volume-current"]')) {
     option.hidden = !hasVolumeCurrents;
@@ -828,13 +844,13 @@ export async function startNec2cReport(data) {
 
   function signedColor(value, maximum) {
     const amount = Math.min(1, Math.abs(value) / Math.max(maximum, Number.EPSILON));
-    const middle = new THREE.Color(0xf7fbff);
+    const middle = new THREE.Color(0x000000);
     const edge = new THREE.Color(value < 0 ? 0x1743ff : 0xff315f);
-    return middle.lerp(edge, Math.sqrt(amount));
+    return middle.lerp(edge, amount);
   }
 
-  function phaseColor(value) {
-    const phase = ((value?.phase_degrees || 0) + 360) % 360;
+  function phaseColor(value, wireSign = 1) {
+    const phase = (canonicalCurrentPhase(value?.phase_degrees || 0, wireSign) + 360) % 360;
     return new THREE.Color().setHSL(phase / 360, 0.9, 0.58);
   }
 
@@ -1046,7 +1062,7 @@ export async function startNec2cReport(data) {
     } else if (mode === "current-phase") {
       labels[0].textContent = "−180°"; labels[1].textContent = "phase"; labels[2].textContent = "+180°";
       segmentLegend.querySelector(".segment-legend-bar").style.background =
-        "linear-gradient(90deg,#00f,#0ff,#0f0,#ff0,#f00,#f0f,#00f)";
+        "linear-gradient(90deg,#00ffff,#0000ff,#ff00ff,#ff0000,#ffff00,#00ff00,#00ffff)";
     } else if (instantaneousMode) {
       const volumeMode = mode.startsWith("volume-current");
       const maximum = volumeMode ? volumeCurrentMaximum
@@ -1058,16 +1074,18 @@ export async function startNec2cReport(data) {
         (mode.startsWith("current") && hasSurfaceCurrents
           ? ` · surface 0…${surfaceCurrentMaximum.toPrecision(3)} A/m` : "");
       segmentLegend.querySelector(".segment-legend-bar").style.background =
-        "linear-gradient(90deg,#1743ff,#f7fbff,#ff315f)";
+        "linear-gradient(90deg,#1743ff,#000000,#ff315f)";
     }
     for (const mesh of geometrySegments) {
       const sample = segmentSamples.get(mesh.userData.segmentKey);
       let color = new THREE.Color(mesh.userData.baseColor);
       if (sample && mode === "current-magnitude")
         color = magnitudeColor(sample.current, currentReference, currentFloor);
-      else if (sample && mode === "current-phase") color = phaseColor(sample.current);
+      else if (sample && mode === "current-phase")
+        color = phaseColor(sample.current, mesh.userData.currentSign);
       else if (sample && mode === "current-instantaneous")
-        color = signedColor(instantaneous(sample.current), currentReference);
+        color = signedColor(instantaneous(sample.current) * mesh.userData.currentSign,
+          currentReference);
       else if (sample && mode === "charge-magnitude")
         color = magnitudeColor(sample.charge_density, chargeMaximum);
       else if (sample && mode === "charge-instantaneous")
@@ -1242,6 +1260,14 @@ export async function startNec2cReport(data) {
     }
   });
   segmentDisplay.addEventListener("change", updateSegmentDisplay);
+  actualWireDiameter.addEventListener("change", () => {
+    for (const mesh of geometrySegments) {
+      const radius = actualWireDiameter.checked
+        ? mesh.userData.actualRadius : mesh.userData.presentationRadius;
+      const scale = radius / mesh.userData.presentationRadius;
+      mesh.scale.set(scale, 1, scale);
+    }
+  });
   surfaceSmoothing.addEventListener("change", updateSegmentDisplay);
   currentReferenceSelect.addEventListener("change", () => {
     currentFixedReference.hidden = currentReferenceSelect.value !== "fixed";
@@ -1273,7 +1299,7 @@ export async function startNec2cReport(data) {
     pointer.x = 2 * (event.clientX - bounds.left) / bounds.width - 1;
     pointer.y = 1 - 2 * (event.clientY - bounds.top) / bounds.height;
     raycaster.setFromCamera(pointer, camera);
-    return raycaster.intersectObjects([...geometryMarkers, ...geometrySegments], false)[0] || null;
+    return raycaster.intersectObjects([...geometryMarkers, ...geometryHitSegments], false)[0] || null;
   }
   function selectInspectorHit(hit, pinned) {
     inspectorHit = hit;

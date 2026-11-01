@@ -3,9 +3,11 @@
 (model
  title "Folded Dipole w/ Transformer"
  frequency 14.1
- ground real)
+ ground real
+ max-length {wavelength / 100}
+ )
 
-(define leg (* 0.93 quarter-wave))
+(define leg (* 0.92 quarter-wave))
 
 (move up 10)
 

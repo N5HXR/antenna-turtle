@@ -2789,7 +2789,19 @@ animate instantaneous signed current, and display charge-density magnitude or
 instantaneous signed charge. A compact legend reports the applicable peak and
 units. Current magnitude may be referenced to all conductors, the selected
 wire, the selected coax shield, or a fixed current, and its logarithmic floor
-is adjustable.
+is adjustable. Wire-current phase and instantaneous signs are projected onto a
+canonical Cartesian direction for each straight segment, so reversing the
+authored direction of a collinear wire does not introduce a false 180-degree
+phase or color discontinuity. The phase legend follows the same cyclic hue
+mapping as the conductors, with -180 and +180 degrees meeting at the same
+color. The bipolar ramp uses black at zero between blue and red current
+directions.
+
+Wire conductors default to a minimum presentation diameter derived from the
+model bounds. This makes thin wires readable and provides a practical hover
+target without changing their simulated diameter. `ACTUAL DIAMETER` restores
+the geometry to scale; invisible presentation-sized hit targets keep segment
+inspection usable in either mode.
 
 When `MARKERS / INSPECTOR` is enabled, hovering over a conductor segment shows
 its complex current, phase, charge density, and normalized current; clicking
