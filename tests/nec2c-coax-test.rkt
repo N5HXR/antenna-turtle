@@ -45,6 +45,25 @@
         feed input
     (move down 1)))
 
+(define (build-catalog-coax-fed-dipole)
+  (reset-model!)
+  (model title "Catalog coax-fed test dipole"
+         frequency 14.2
+         max-length 0.2
+         wire-diameter 0.002
+         ground perfect)
+  (move up 5)
+  (from-here
+    (move forward 0.025)
+    (with-wire (move forward 1)))
+  (from-here
+    (move back 0.025)
+    (with-wire (move back 1)))
+  ;; With exactly one port at the turtle, `coax` can infer its output.
+  (wire-port forward name antenna-feed gap 0.05 diameter 0.002)
+  (coax type RG58
+    (move down 1)))
+
 (test-case "coax creates a visible shield, two one-segment ports, and a TL card"
   (build-coax-fed-dipole)
   (check-equal? (length (model-wire-ports)) 2)
@@ -76,6 +95,15 @@
   (check-equal? (length feeds) 1)
   (check-equal? (wire-edge-feed-name (car feeds)) "feedline")
   (check-equal? (wire-edge-feed-location (car feeds)) 'center))
+
+(test-case "catalog coax supplies RG-58 defaults and finds the local output port"
+  (build-catalog-coax-fed-dipole)
+  (define coax (first (model-wire-coaxes)))
+  (define line (wire-coax-declaration-line coax))
+  (check-equal? (wire-transmission-line-impedance line) 50)
+  (check-equal? (wire-transmission-line-velocity-factor line) .66)
+  (check-equal? (wire-coax-declaration-color coax) "purple")
+  (check-equal? (wire-coax-declaration-diameter coax) (* .195 inch)))
 
 (test-case "network declarations clear with wire geometry"
   (build-coax-fed-dipole)

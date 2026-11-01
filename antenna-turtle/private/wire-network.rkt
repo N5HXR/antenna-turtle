@@ -14,6 +14,7 @@
  add-y-network-declaration
  add-ideal-transformer-declaration
  call-with-coax-declaration
+ resolve-wire-port
  model-wire-ports
  model-wire-transmission-lines
  model-wire-y-networks
@@ -49,6 +50,7 @@
   #:transparent)
 
 (define current-wire-ports (make-parameter '()))
+(define current-wire-port-index (make-parameter (make-hash)))
 (define current-wire-transmission-lines (make-parameter '()))
 (define current-wire-y-networks (make-parameter '()))
 (define current-wire-coaxes (make-parameter '()))
@@ -65,6 +67,7 @@
 
 (define (clear-wire-network-declarations)
   (current-wire-ports '())
+  (current-wire-port-index (make-hash))
   (current-wire-transmission-lines '())
   (current-wire-y-networks '())
   (current-wire-coaxes '())
@@ -115,6 +118,62 @@
 
 (define (wire-port-positive-point port)
   (vertex-point (wire-edge-end (wire-port-declaration-edge port))))
+
+(define (registered-port? port)
+  (and (wire-port-declaration? port)
+       (memq port (model-wire-ports))))
+
+(define (resolve-wire-port reference [who 'wire-port])
+  (cond
+    [(registered-port? reference) reference]
+    [(or (symbol? reference) (string? reference))
+     (hash-ref
+      (current-wire-port-index) reference
+      (lambda ()
+        (raise-arguments-error who "unknown wire port"
+                               "port" reference)))]
+    [else
+     (raise-argument-error who
+                           "(or/c registered-wire-port? symbol? string?)"
+                           reference)]))
+
+(define (point=? a b)
+  (and (= (point3-x a) (point3-x b))
+       (= (point3-y a) (point3-y b))
+       (= (point3-z a) (point3-z b))))
+
+(define (wire-port-anchor-point port)
+  (define negative (wire-port-negative-point port))
+  (define positive (wire-port-positive-point port))
+  (case (wire-port-declaration-anchor port)
+    [(start) negative]
+    [(end) positive]
+    [else
+     (point3 (/ (+ (point3-x negative) (point3-x positive)) 2)
+             (/ (+ (point3-y negative) (point3-y positive)) 2)
+             (/ (+ (point3-z negative) (point3-z positive)) 2))]))
+
+(define (resolve-coax-output-port requested-port)
+  (cond
+    [requested-port
+     (resolve-wire-port requested-port 'coax)]
+    [else
+     ;; A bare coax form connects to the port placed at the turtle's current
+     ;; position.  This makes `(coax type rg58 ...)` pleasant for the common
+     ;; one-feedpoint case without guessing when several ports are nearby.
+     (define matches
+       (filter (lambda (port)
+                 (point=? (wire-port-anchor-point port) (current-position)))
+               (model-wire-ports)))
+     (case (length matches)
+       [(1) (car matches)]
+       [(0) (raise-arguments-error
+             'coax "no output port was supplied or found at the current turtle position"
+             "current position" (current-position))]
+       [else (raise-arguments-error
+              'coax "more than one port is at the current turtle position; specify output"
+              "current position" (current-position)
+              "ports" (map wire-port-declaration-name matches))])]))
 
 (define (wire-port-edge? edge)
   (for/or ([port (in-list (model-wire-ports))])
@@ -177,10 +236,6 @@
        "coax" (wire-coax-declaration-name coax)
        "port" (wire-port-declaration-name input))))
   (void))
-
-(define (registered-port? port)
-  (and (wire-port-declaration? port)
-       (memq port (model-wire-ports))))
 
 (define (fresh-name prefix declarations accessor)
   (let loop ([index (add1 (length declarations))])
@@ -251,20 +306,19 @@
     (wire-port-declaration name edge direction-vector effective-gap
                            effective-diameter anchor generated?))
   (current-wire-ports (append ports (list port)))
+  (hash-set! (current-wire-port-index) name port)
   port)
 
 (define (add-transmission-line-declaration
          #:name [requested-name #f]
-         #:input input-port
-         #:output output-port
+         #:input input-reference
+         #:output output-reference
          #:impedance [impedance 50]
          #:physical-length physical-length
          #:velocity-factor velocity-factor)
   (define who 'transmission-line)
-  (unless (registered-port? input-port)
-    (raise-argument-error who "registered wire port" input-port))
-  (unless (registered-port? output-port)
-    (raise-argument-error who "registered wire port" output-port))
+  (define input-port (resolve-wire-port input-reference who))
+  (define output-port (resolve-wire-port output-reference who))
   (when (eq? input-port output-port)
     (raise-arguments-error who "input and output must be different ports"))
   (positive-real who impedance "impedance")
@@ -298,16 +352,14 @@
 
 (define (add-y-network-declaration
          #:name [requested-name #f]
-         #:input input-port
-         #:output output-port
+         #:input input-reference
+         #:output output-reference
          #:y11 y11
          #:y12 y12
          #:y22 y22)
   (define who 'two-port-y)
-  (unless (registered-port? input-port)
-    (raise-argument-error who "registered wire port" input-port))
-  (unless (registered-port? output-port)
-    (raise-argument-error who "registered wire port" output-port))
+  (define input-port (resolve-wire-port input-reference who))
+  (define output-port (resolve-wire-port output-reference who))
   (when (eq? input-port output-port)
     (raise-arguments-error who "input and output must be different ports"))
   (for ([value (in-list (list y11 y12 y22))]
@@ -353,8 +405,8 @@
    #:y22 (/ 1 (* n n r))))
 
 (define (call-with-coax-declaration thunk
-                                    #:name requested-name
-                                    #:output output-port
+                                    #:name [requested-name #f]
+                                    #:output [requested-output-port #f]
                                     #:impedance [impedance 50]
                                     #:velocity-factor velocity-factor
                                     #:diameter diameter
@@ -364,8 +416,7 @@
   (define who 'coax)
   (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
     (raise-argument-error who "(procedure-arity-includes/c 0)" thunk))
-  (unless (registered-port? output-port)
-    (raise-argument-error who "registered output wire port" output-port))
+  (define output-port (resolve-coax-output-port requested-output-port))
   (when (current-wire-active?)
     (error who "wire must be off while entering coax"))
   (when (current-reflection-context)
