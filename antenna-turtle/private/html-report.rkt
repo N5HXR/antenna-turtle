@@ -175,14 +175,26 @@
                           (hash-ref capture 'excitation_index)))
       (build-path root "simulation")))
 
-(define (report-captures root manifest)
+(define (require-field-capture manifest)
   (define capture (hash-ref manifest 'field_capture (hash 'enabled #f)))
-  (if (not (hash-ref capture 'enabled #f))
-      (raise-user-error
-       'write-html-report
-       "the simulation did not record fields; add record-fields field-capture")
-      (let ([directory (capture-directory root manifest capture)])
-        (for/list ([dump (in-list (hash-ref capture 'dumps '()))])
+  (unless (hash-ref capture 'enabled #f)
+    (raise-user-error
+     'write-html-report
+     (string-append
+      "the simulation did not record fields; add "
+      "record-fields field-capture and rerun the simulation")))
+  (unless (hash-has-key? capture 'frequency_mhz)
+    (raise-user-error
+     'write-html-report
+     (string-append
+      "the simulation's field-capture metadata has no frequency; "
+      "rerun the simulation with a current field-capture request")))
+  capture)
+
+(define (report-captures root manifest)
+  (define capture (require-field-capture manifest))
+  (let ([directory (capture-directory root manifest capture)])
+    (for/list ([dump (in-list (hash-ref capture 'dumps '()))])
           (define name (hash-ref dump 'name))
           (define shape-values
             (read-number-list (build-path directory (hash-ref dump 'shape))))
@@ -212,7 +224,7 @@
                    (build-path directory (hash-ref dump 'real_f32))))
            'imaginary (gzip-base64
                        (file->bytes
-                        (build-path directory (hash-ref dump 'imag_f32)))))))))
+                        (build-path directory (hash-ref dump 'imag_f32))))))))
 
 (define (complex-report value)
   (hash 'real (exact->inexact (real-part value))
@@ -347,6 +359,10 @@ CSS
     (raise-user-error 'write-openems-html-report "the simulation artifacts are closed"))
   (define root (openems-artifacts-directory artifacts))
   (define manifest (openems-run-info-manifest run))
+  ;; Validate this before constructing report metadata.  In particular, do
+  ;; not let the subtitle's frequency lookup obscure the actionable error for
+  ;; a result produced without `record-fields`.
+  (define capture (require-field-capture manifest))
   (define mesh (hash-ref manifest 'mesh (hash)))
   (define mesh-axes
     (for/list ([axis (in-list '(x y z))])
@@ -375,10 +391,10 @@ CSS
      (hash 'title (or title (hash-ref manifest 'model_title "Antenna Turtle"))
            'subtitle
            (format "openEMS · ~a MHz field capture · portable report"
-                   (hash-ref (hash-ref manifest 'field_capture) 'frequency_mhz))
+                   (hash-ref capture 'frequency_mhz))
            'model_frequency_mhz (hash-ref manifest 'model_frequency_mhz)
            'sweep (hash-ref manifest 'sweep)
-           'field_capture (hash-ref manifest 'field_capture)
+           'field_capture capture
            'software_versions (hash-ref manifest 'software_versions (hash))
            'solver
            (hash 'status (hash-ref manifest 'status "unknown")
@@ -421,3 +437,18 @@ CSS
       (display (file->string viewer-bundle) out)
       (display "</script></body></html>" out)))
   complete)
+
+(module+ test
+  (require rackunit)
+
+  (check-exn
+   #rx"simulation did not record fields.*record-fields field-capture"
+   (lambda () (require-field-capture (hash 'field_capture
+                                           (hash 'enabled #f)))))
+  (check-exn
+   #rx"field-capture metadata has no frequency"
+   (lambda () (require-field-capture (hash 'field_capture
+                                           (hash 'enabled #t)))))
+  (define capture
+    (hash 'enabled #t 'frequency_mhz 2400.0 'dumps '()))
+  (check-eq? (require-field-capture (hash 'field_capture capture)) capture))
