@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import {
+  cartesianComponentGain,
+  cartesianFieldComponents,
   componentGainRange,
   dbPowerInterpolate,
   elevationPlaneDirection,
@@ -49,6 +51,26 @@ assert.ok(Math.abs(polarization.phaseDifferenceDegrees) < 1e-12);
 assert.equal(polarization.axialRatio, 2);
 assert.equal(polarization.tiltDegrees, 30);
 assert.equal(polarization.sense, "right");
+
+const thetaAtHorizon = {
+  theta_deg: 90, phi_deg: 0, total_gain_db: 7,
+  e_theta: { real: 3, imaginary: 4 }, e_phi: { real: 0, imaginary: 0 },
+};
+const cartesianAtHorizon = cartesianFieldComponents(thetaAtHorizon);
+assert.ok(Math.abs(cartesianAtHorizon.x.real) < 1e-12);
+assert.ok(Math.abs(cartesianAtHorizon.z.real + 3) < 1e-12);
+assert.ok(Math.abs(cartesianAtHorizon.z.imaginary + 4) < 1e-12);
+assert.ok(Math.abs(cartesianComponentGain(thetaAtHorizon, "z") - 7) < 1e-12);
+assert.equal(cartesianComponentGain(thetaAtHorizon, "x"), null);
+
+const phiAtHorizon = {
+  theta_deg: 90, phi_deg: 90, total_gain_db: 3,
+  e_theta: { real: 0, imaginary: 0 }, e_phi: { real: 2, imaginary: -1 },
+};
+const cartesianPhi = cartesianFieldComponents(phiAtHorizon);
+assert.ok(Math.abs(cartesianPhi.x.real + 2) < 1e-12);
+assert.ok(Math.abs(cartesianPhi.x.imaginary - 1) < 1e-12);
+assert.ok(Math.abs(cartesianComponentGain(phiAtHorizon, "x") - 3) < 1e-12);
 
 assert.deepEqual(polarDisplayScale([-72, -60, -25, 0, 3], [-60, 0]), {
   radius: [0, 0, 35, 60, 60], range: [0, 60],

@@ -3,7 +3,7 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createPlotWorkspace, Plotly } from "./plot-workspace.js";
 import { makeCollapsibleSettingsPanel } from "./panel-collapse.js";
 import { canonicalCurrentPhase, canonicalWireSign, loadImpedance } from "./nec2c-inspector.js";
-import { averagePoynting, instantaneousPoynting } from "./field-math.js";
+import { averagePoynting, instantaneousComponent, instantaneousPoynting } from "./field-math.js";
 import {
   componentGainRange,
   elevationPlaneDirection,
@@ -31,6 +31,19 @@ const palettes = {
     [-15,[85,0,175]],[-11.25,[145,0,205]],[-7.5,[215,0,235]],[-3.75,[255,45,245]],[0,[255,190,255]]],
 };
 palettes.sdr = palettes.magma;
+
+const patternComponentLabels = {
+  total: "total",
+  vertical: "theta (Eθ, local basis)",
+  horizontal: "phi (Eφ, local basis)",
+  x: "X (fixed axis)",
+  y: "Y (fixed axis)",
+  z: "Z (fixed axis)",
+};
+
+function patternComponentLabel(component) {
+  return patternComponentLabels[component] || component;
+}
 
 function stopColor(rgb) {
   return new THREE.Color(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
@@ -693,8 +706,11 @@ export async function startNec2cReport(data) {
   controlsPanel.id = "nec-controls";
   controlsPanel.className = "panel";
   controlsPanel.innerHTML = `<div class="row"><label for="pattern-component">COMPONENT</label>
-    <select id="pattern-component"><option value="total">total</option><option value="vertical">vertical (Eθ)</option>
-    <option value="horizontal">horizontal (Eφ)</option></select></div>
+    <select id="pattern-component"><option value="total">total</option>
+    <option value="vertical">theta (Eθ, local basis)</option>
+    <option value="horizontal">phi (Eφ, local basis)</option>
+    <option value="x">X (fixed axis)</option><option value="y">Y (fixed axis)</option>
+    <option value="z">Z (fixed axis)</option></select></div>
     <div class="row"><label for="pattern-scale">RADIAL SCALE</label><select id="pattern-scale">
     <option value="arrl">ARRL modified log</option><option value="db">dB</option>
     <option value="linear">linear</option></select></div>
@@ -1231,7 +1247,7 @@ export async function startNec2cReport(data) {
     });
     patternGroup.add(new THREE.Mesh(geometry, patternMaterial));
     controlsPanel.querySelector("#pattern-detail").textContent =
-      `${data.pattern.frequency_mhz.toPrecision(7)} MHz · ${component} peak ${componentPeak.toFixed(2)} dBi · ` +
+      `${data.pattern.frequency_mhz.toPrecision(7)} MHz · ${patternComponentLabel(component)} peak ${componentPeak.toFixed(2)} dBi · ` +
       `total reference ${referencePeak.toFixed(2)} dBi`;
     updateLegend();
   }
@@ -1352,8 +1368,11 @@ export async function startNec2cReport(data) {
     <label id="cut-angle-label" for="cut-angle">ELEVATION</label>
     <input id="cut-angle" type="range" min="${minimumElevation}" max="${maximumElevation}" step="1" value="0">
     <span id="cut-angle-value">0°</span><label for="cut-component">COMPONENT</label>
-    <select id="cut-component"><option value="total">total</option><option value="vertical">vertical (Eθ)</option>
-    <option value="horizontal">horizontal (Eφ)</option></select><label for="cut-reference">DISPLAY</label>
+    <select id="cut-component"><option value="total">total</option>
+    <option value="vertical">theta (Eθ, local basis)</option>
+    <option value="horizontal">phi (Eφ, local basis)</option>
+    <option value="x">X (fixed axis)</option><option value="y">Y (fixed axis)</option>
+    <option value="z">Z (fixed axis)</option></select><label for="cut-reference">DISPLAY</label>
     <select id="cut-reference"><option value="relative">relative</option><option value="absolute">absolute dBi</option></select>
     <label for="cut-depth">DEPTH</label><select id="cut-depth"><option value="30" selected>30 dB</option>
     <option value="40">40 dB</option><option value="60">60 dB</option><option value="80">80 dB</option></select>
@@ -1419,7 +1438,7 @@ export async function startNec2cReport(data) {
         `<br>tilt %{customdata[8]:.1f}° · %{customdata[9]}` +
         `<extra>${cutAngle}° ${fixedName}</extra>`,
     }], {
-      title: { text: `${cutName} pattern · ${cutAngle}° ${fixedName} · ${component}`,
+      title: { text: `${cutName} pattern · ${cutAngle}° ${fixedName} · ${patternComponentLabel(component)}`,
         font: { color: "#7df9ff", size: 19 }, x: 0.02 },
       paper_bgcolor: "rgba(3,6,17,0)", plot_bgcolor: "rgba(5,14,29,.78)",
       font: { family: '"DejaVu Sans Mono", monospace', color: "#d8fbff" },
@@ -1450,6 +1469,9 @@ export async function startNec2cReport(data) {
       <option value="electric">E</option><option value="magnetic">H</option>
       <option value="power">POWER</option></select>
     <label for="near-field-mode">VIEW</label><select id="near-field-mode"></select>
+    <span id="near-field-component-control" hidden><label for="near-field-component">COMPONENT</label>
+    <select id="near-field-component"><option value="x">X</option><option value="y">Y</option>
+      <option value="z">Z</option></select></span>
     <label for="near-field-scale">SCALE</label><select id="near-field-scale">
       <option value="log">log</option><option value="linear">linear</option></select>
     <button id="near-field-play" type="button">PAUSE</button>
@@ -1469,6 +1491,8 @@ export async function startNec2cReport(data) {
   }
   const fieldQuantitySelect = fieldWorkspace.querySelector("#near-field-quantity");
   const fieldModeSelect = fieldWorkspace.querySelector("#near-field-mode");
+  const fieldComponentControl = fieldWorkspace.querySelector("#near-field-component-control");
+  const fieldComponentSelect = fieldWorkspace.querySelector("#near-field-component");
   const fieldScaleSelect = fieldWorkspace.querySelector("#near-field-scale");
   const fieldPhaseSlider = fieldWorkspace.querySelector("#near-field-phase");
   const fieldFloorSlider = fieldWorkspace.querySelector("#near-field-floor");
@@ -1477,7 +1501,9 @@ export async function startNec2cReport(data) {
   const electromagneticFieldModes = [
     ["envelope", "total envelope"],
     ["instantaneous", "instantaneous magnitude"],
-    ["x", "X component"], ["y", "Y component"], ["z", "Z component"],
+    ["instantaneous-signed", "signed magnitude"],
+    ["x", "X component envelope"], ["y", "Y component envelope"],
+    ["z", "Z component envelope"],
   ];
   const powerFieldModes = [
     ["power-average-magnitude", "average power intensity"],
@@ -1509,12 +1535,32 @@ export async function startNec2cReport(data) {
   function instantaneousFieldMode(quantity = fieldQuantitySelect.value,
                                   mode = fieldModeSelect.value) {
     return quantity === "power"
-      ? mode.startsWith("power-instantaneous-") : mode === "instantaneous";
+      ? mode.startsWith("power-instantaneous-")
+      : mode === "instantaneous" || mode === "instantaneous-signed";
   }
 
   function vectorFieldMode(quantity = fieldQuantitySelect.value,
                            mode = fieldModeSelect.value) {
     return quantity === "power" && mode.endsWith("-vectors");
+  }
+
+  // A vector has no signed magnitude.  This view therefore displays the
+  // instantaneous signed projection onto the user's selected global axis.
+  // Keeping that axis explicit makes polarity comparable from sample to
+  // sample, unlike selecting a locally dominant vector component.
+  function signedFieldMode(quantity = fieldQuantitySelect.value,
+                           mode = fieldModeSelect.value) {
+    return quantity !== "power" && mode === "instantaneous-signed";
+  }
+
+  function selectedFieldComponent() {
+    return { x: 0, y: 1, z: 2 }[fieldComponentSelect.value] ?? 0;
+  }
+
+  function signedInstantaneousComponent(vector, phaseDegrees) {
+    if (!vector) return 0;
+    return instantaneousComponent(complexVectorPhasor(vector), selectedFieldComponent(),
+      phaseDegrees * Math.PI / 180);
   }
 
   setFieldModeOptions();
@@ -1533,6 +1579,7 @@ export async function startNec2cReport(data) {
     const phaseRelevant = instantaneousFieldMode();
     fieldPhaseSlider.disabled = !phaseRelevant;
     fieldWorkspace.querySelector("#near-field-play").disabled = !phaseRelevant;
+    fieldComponentControl.hidden = !signedFieldMode();
   }
 
   function fieldValue(sample, quantity, mode, phaseDegrees) {
@@ -1544,14 +1591,30 @@ export async function startNec2cReport(data) {
     }
     const vector = fieldVector(sample, quantity);
     if (!vector) return 0;
+    if (signedFieldMode(quantity, mode))
+      return signedInstantaneousComponent(vector, phaseDegrees);
     if (mode === "instantaneous") return Math.hypot(...instantaneousVector(vector, phaseDegrees));
     const component = { x: 0, y: 1, z: 2 }[mode];
     return component === undefined ? vectorEnvelope(vector) : complexMagnitude(vector[component]);
   }
 
   function fieldReferenceMaximum(quantity, mode) {
-    const cacheKey = `${quantity}:${mode}`;
+    const cacheKey = `${quantity}:${mode}:${signedFieldMode(quantity, mode)
+      ? fieldComponentSelect.value : ""}`;
     if (fieldReferenceCache.has(cacheKey)) return fieldReferenceCache.get(cacheKey);
+    if (signedFieldMode(quantity, mode)) {
+      let maximum = Number.EPSILON;
+      const component = selectedFieldComponent();
+      for (const [sectionIndex, section] of nearFieldSections.entries()) {
+        for (const [sampleIndex, sample] of section.samples.entries()) {
+          if (nearFieldMasks[sectionIndex]?.[sampleIndex]) continue;
+          const phasor = fieldVector(sample, quantity)?.[component] || [0, 0];
+          maximum = Math.max(maximum, Math.hypot(phasor[0], phasor[1]));
+        }
+      }
+      fieldReferenceCache.set(cacheKey, maximum);
+      return maximum;
+    }
     const phases = quantity === "power" && instantaneousFieldMode(quantity, mode)
       ? Array.from({ length: 18 }, (_, index) => index * 10) : [0];
     const referenceMode = quantity !== "power" && mode === "instantaneous" ? "envelope" : mode;
@@ -1560,7 +1623,7 @@ export async function startNec2cReport(data) {
       for (const [sampleIndex, sample] of section.samples.entries()) {
         if (nearFieldMasks[sectionIndex]?.[sampleIndex]) continue;
         for (const phase of phases)
-          maximum = Math.max(maximum, fieldValue(sample, quantity, referenceMode, phase));
+          maximum = Math.max(maximum, Math.abs(fieldValue(sample, quantity, referenceMode, phase)));
       }
     }
     fieldReferenceCache.set(cacheKey, maximum);
@@ -1582,7 +1645,25 @@ export async function startNec2cReport(data) {
         const phase = Math.atan2(component[1], component[0]) * 180 / Math.PI;
         return `${axis} ${magnitude.toPrecision(4)} ∠ ${phase.toFixed(1)}°`;
       }).join("<br>");
-    return `${value.toPrecision(5)} ${units}<br>${relativeDb.toFixed(2)} dB relative<br>${detail}`;
+    const selected = signedFieldMode(quantity, mode)
+      ? `${quantity.toUpperCase()}${fieldComponentSelect.value.toUpperCase()}(t) = ` : "";
+    return `${selected}${value.toPrecision(5)} ${units}<br>${relativeDb.toFixed(2)} dB relative<br>${detail}`;
+  }
+
+  function signedDisplayValue(value, maximum, floor) {
+    const normalized = Math.abs(value) / Math.max(maximum, Number.EPSILON);
+    if (!(normalized > 0)) return 0;
+    const decibels = 20 * Math.log10(Math.max(normalized, Number.EPSILON));
+    const scaled = Math.max(0, Math.min(1, (decibels - floor) / -floor));
+    return Math.sign(value) * scaled;
+  }
+
+  function signedColorscale(quantity) {
+    // E uses blue/black/red; H deliberately uses cyan/black/lime so the
+    // field identity remains visible even when the plot title is cropped.
+    return quantity === "electric"
+      ? [[0, "#2864dc"], [.5, "#030611"], [1, "#e43a3a"]]
+      : [[0, "#00a7c4"], [.5, "#030611"], [1, "#a6df45"]];
   }
 
   function powerVector(sample, mode, phaseDegrees) {
@@ -1644,6 +1725,7 @@ export async function startNec2cReport(data) {
     const mode = fieldModeSelect.value;
     const logarithmic = fieldScaleSelect.value === "log";
     const floor = Number(fieldFloorSlider.value);
+    const signed = signedFieldMode(quantity, mode);
     const maximum = fieldReferenceMaximum(quantity, mode);
     const dbFactor = quantity === "power" ? 10 : 20;
     const width = section.u_values.length;
@@ -1660,8 +1742,11 @@ export async function startNec2cReport(data) {
           continue;
         }
         const value = fieldValue(sample, quantity, mode, fieldPhaseDegrees);
-        const relativeDb = dbFactor * Math.log10(Math.max(value, maximum * 1e-12) / maximum);
-        row.push(logarithmic ? Math.max(floor, relativeDb) : value);
+        const relativeDb = dbFactor * Math.log10(
+          Math.max(Math.abs(value), maximum * 1e-12) / maximum);
+        row.push(signed
+          ? (logarithmic ? signedDisplayValue(value, maximum, floor) : value)
+          : (logarithmic ? Math.max(floor, relativeDb) : value));
         hoverRow.push(fieldHover(sample, quantity, mode, fieldPhaseDegrees, value, relativeDb));
       }
       rows.push(row); hover.push(hoverRow);
@@ -1669,11 +1754,18 @@ export async function startNec2cReport(data) {
     const units = quantity === "electric" ? "V/m" : quantity === "magnetic" ? "A/m" : "W/m²";
     const colorscale = [[0, "#030611"], [.2, "#35116e"], [.45, "#007fb0"],
       [.7, "#20dfb3"], [.88, "#fff04b"], [1, "#ff3b52"]];
+    const component = fieldComponentSelect.value.toUpperCase();
+    const signedTicks = logarithmic
+      ? { tickvals: [-1, 0, 1], ticktext: ["− polarity", "0", "+ polarity"] }
+      : {};
     const traces = [{
       type: "heatmap", x: section.u_values, y: section.v_values, z: rows,
       customdata: hover, hovertemplate: `%{customdata}<extra></extra>`,
-      colorscale, zmin: logarithmic ? floor : 0, zmax: logarithmic ? 0 : maximum,
-      colorbar: { title: logarithmic ? "relative dB" : units, tickfont: { color: "#9ceeff" } },
+      colorscale: signed ? signedColorscale(quantity) : colorscale,
+      zmin: signed ? (logarithmic ? -1 : -maximum) : (logarithmic ? floor : 0),
+      zmax: signed ? (logarithmic ? 1 : maximum) : (logarithmic ? 0 : maximum),
+      colorbar: { title: signed ? `${quantity.toUpperCase()}${component}(t) ${logarithmic ? "signed level" : units}`
+        : (logarithmic ? "relative dB" : units), tickfont: { color: "#9ceeff" }, ...signedTicks },
       zsmooth: "best", connectgaps: false,
     }];
     if (vectorFieldMode(quantity, mode))
@@ -1699,6 +1791,7 @@ export async function startNec2cReport(data) {
   });
   [fieldPlaneSelect, fieldModeSelect, fieldScaleSelect]
     .forEach(element => element.addEventListener("change", drawNearField));
+  fieldComponentSelect.addEventListener("change", drawNearField);
   fieldFloorSlider.addEventListener("input", () => {
     fieldWorkspace.querySelector("#near-field-floor-value").textContent = `−${Math.abs(Number(fieldFloorSlider.value))} dB`;
     drawNearField();
