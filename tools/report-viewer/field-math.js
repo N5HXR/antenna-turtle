@@ -12,6 +12,14 @@ export function instantaneousVector(phasor, phaseRadians) {
     value * cosine - phasor.imaginary[index] * sine);
 }
 
+// The signed instantaneous projection of a field phasor on one Cartesian
+// component.  Unlike vector magnitude, this preserves polarity for a
+// diverging color scale.
+export function instantaneousComponent(phasor, component, phaseRadians) {
+  return phasor.real[component] * Math.cos(phaseRadians)
+    - phasor.imaginary[component] * Math.sin(phaseRadians);
+}
+
 export function averagePoynting(electric, magnetic) {
   const realCross = crossVector(electric.real, magnetic.real);
   const imaginaryCross = crossVector(electric.imaginary, magnetic.imaginary);

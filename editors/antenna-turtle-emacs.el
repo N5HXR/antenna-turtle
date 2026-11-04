@@ -290,7 +290,7 @@
                          (forward-sexp 1)
                          (string= (buffer-substring-no-properties start (point))
                                   "port")))
-                (scan-error nil))))))))
+                (scan-error nil)))))))))
 
 (defun antenna-turtle--spread-port-contextual-keyword-matcher (limit)
   "Find settings nested in a spread port clause before LIMIT."

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { averagePoynting, instantaneousPoynting } from "./field-math.js";
+import { averagePoynting, instantaneousComponent, instantaneousPoynting } from "./field-math.js";
 
 const eta0 = 376.730313668;
 const electric = { real: [1, 0, 0], imaginary: [0, 0, 0] };
@@ -19,6 +19,13 @@ close(average[2], 0.5 / eta0);
 close(instantaneousPoynting(electric, magnetic, 0)[2], 1 / eta0);
 close(instantaneousPoynting(electric, magnetic, Math.PI / 2)[2], 0);
 close(instantaneousPoynting(electric, magnetic, Math.PI)[2], 1 / eta0);
+
+// Signed component reconstruction changes polarity after half a cycle and
+// uses the phasor imaginary part at quadrature.
+close(instantaneousComponent(electric, 0, 0), 1);
+close(instantaneousComponent(electric, 0, Math.PI), -1);
+close(instantaneousComponent({ real: [0, 0, 0], imaginary: [2, 0, 0] }, 0,
+  Math.PI / 2), -2);
 
 // The reconstructed animation is seamless at its 0/360-degree boundary.
 const first = instantaneousPoynting(electric, magnetic, 0);

@@ -1,6 +1,50 @@
 export function gainOf(sample, component) {
+  if (["x", "y", "z"].includes(component))
+    return cartesianComponentGain(sample, component);
   const value = sample?.[`${component}_gain_db`];
   return Number.isFinite(value) ? value : null;
+}
+
+function complexLinearCombination(...terms) {
+  return terms.reduce((sum, [value, factor]) => ({
+    real: sum.real + (value?.real || 0) * factor,
+    imaginary: sum.imaginary + (value?.imaginary || 0) * factor,
+  }), { real: 0, imaginary: 0 });
+}
+
+// NEC supplies transverse spherical-basis far fields.  Reconstruct their
+// fixed model-axis projections so a report can answer the practical question
+// "what does an X-, Y-, or Z-oriented receiving element couple to?"
+export function cartesianFieldComponents(sample) {
+  if (!sample || !Number.isFinite(sample.theta_deg) || !Number.isFinite(sample.phi_deg))
+    return null;
+  const theta = sample.theta_deg * Math.PI / 180;
+  const phi = sample.phi_deg * Math.PI / 180;
+  const eTheta = sample.e_theta;
+  const ePhi = sample.e_phi;
+  if (!eTheta || !ePhi) return null;
+  return {
+    x: complexLinearCombination(
+      [eTheta, Math.cos(theta) * Math.cos(phi)], [ePhi, -Math.sin(phi)]),
+    y: complexLinearCombination(
+      [eTheta, Math.cos(theta) * Math.sin(phi)], [ePhi, Math.cos(phi)]),
+    z: complexLinearCombination([eTheta, -Math.sin(theta)]),
+  };
+}
+
+export function cartesianComponentGain(sample, component) {
+  const totalGain = sample?.total_gain_db;
+  const fields = cartesianFieldComponents(sample);
+  const selected = fields?.[component];
+  if (!Number.isFinite(totalGain) || !selected) return null;
+  const eTheta = sample.e_theta, ePhi = sample.e_phi;
+  const totalPower = eTheta.real ** 2 + eTheta.imaginary ** 2
+    + ePhi.real ** 2 + ePhi.imaginary ** 2;
+  const componentPower = selected.real ** 2 + selected.imaginary ** 2;
+  // Trigonometric round-off at a coordinate-basis null should remain a null,
+  // not become an implausible −300 dBi lobe in a pattern renderer.
+  if (!(totalPower > 0) || !(componentPower > totalPower * 1e-24)) return null;
+  return totalGain + 10 * Math.log10(componentPower / totalPower);
 }
 
 export function dbPowerInterpolate(a, b, fraction) {
