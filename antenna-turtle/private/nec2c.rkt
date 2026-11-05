@@ -42,6 +42,7 @@
 
 (provide
  nec2c-executable
+ nec2c-use-ssh-alias
  probe-nec2c-capabilities
  (all-from-out "nec2c-capabilities.rkt")
  (struct-out nec2c-artifacts)
@@ -299,6 +300,19 @@
    (lambda (value)
      (unless (or (not value) (path-string? value))
        (raise-argument-error 'nec2c-executable "(or/c #f path-string?)" value))
+     value)))
+
+;; When non-#f, run NEC2C in a temporary directory on this SSH destination.
+;; The value intentionally follows OpenSSH's destination grammar: it may be a
+;; hostname, user@hostname, address, or an alias from ~/.ssh/config.
+(define nec2c-use-ssh-alias
+  (make-parameter
+   #f
+   (lambda (value)
+     (unless (or (not value)
+                 (and (string? value) (not (string=? value ""))))
+       (raise-argument-error
+        'nec2c-use-ssh-alias "(or/c #f non-empty-string?)" value))
      value)))
 
 (define numeric-token-rx
@@ -648,11 +662,112 @@
           timed-out?
           (- (current-inexact-milliseconds) started)))
 
+(define (require-path-command who name)
+  (or (find-executable-path name)
+      (raise-user-error who "could not find ~a on PATH" name)))
+
+(define (posix-shell-quote value)
+  ;; SSH gives its command to the remote shell. Quote each generated argument
+  ;; independently, even though the current NEC2C arguments are simple.
+  (string-append "'"
+                 (regexp-replace* #rx"'" (format "~a" value) "'\"'\"'")
+                 "'"))
+
+(define (remote-nec2c-command arguments)
+  (string-join
+   (cons "env" (cons "LC_ALL=C" (cons "nec2c" (map posix-shell-quote arguments))))
+   " "))
+
+(define (run-remote-nec2c-command destination arguments stdout-path stderr-path
+                                  timeout directory)
+  ;; A solver job is already fully materialized in DIRECTORY. Stage that one
+  ;; directory, execute in it remotely, and merge all resulting artifacts
+  ;; back into the local directory for the ordinary local parsers.
+  (define ssh (require-path-command 'nec2c "ssh"))
+  (define scp (require-path-command 'nec2c "scp"))
+  (define leaf (path->string (file-name-from-path directory)))
+  ;; SCP copies a source directory *into* an existing destination directory.
+  ;; Use a generated parent so the remote work directory has the same leaf as
+  ;; the local one without nesting it accidentally.
+  (define remote-parent (string-append "/tmp/.antenna-turtle-nec2c-" leaf))
+  (define remote-directory (string-append remote-parent "/" leaf))
+  (define setup-stdout (build-path directory "ssh-setup.stdout"))
+  (define setup-stderr (build-path directory "ssh-setup.stderr"))
+  (define copy-stdout (build-path directory "ssh-copy.stdout"))
+  (define copy-stderr (build-path directory "ssh-copy.stderr"))
+  (define (remote-command command stdout stderr)
+    (run-command ssh (list destination command) stdout stderr timeout directory))
+  (define (cleanup-remote!)
+    (with-handlers ([exn:fail? void])
+      (remote-command
+       (string-append "rm -rf -- " (posix-shell-quote remote-parent))
+       setup-stdout setup-stderr)))
+  (define-values (setup-status setup-timeout? _setup-elapsed)
+    (remote-command
+     (string-append "mkdir -- " (posix-shell-quote remote-parent))
+     setup-stdout setup-stderr))
+  (unless (and (zero? setup-status) (not setup-timeout?))
+    (raise-user-error
+     'nec2c
+     "could not create remote NEC2C directory on ~a: ~a"
+     destination
+     (string-trim (string-append (file->string setup-stdout)
+                                 (file->string setup-stderr)))))
+  (define-values (copy-status copy-timeout? _copy-elapsed)
+    (run-command scp
+                 (list "-r" (path->string directory)
+                       (string-append destination ":" remote-parent))
+                 copy-stdout copy-stderr timeout directory))
+  (unless (and (zero? copy-status) (not copy-timeout?))
+    (cleanup-remote!)
+    (raise-user-error
+     'nec2c
+     "could not copy NEC2C inputs to ~a: ~a"
+     destination
+     (string-trim (string-append (file->string copy-stdout)
+                                 (file->string copy-stderr)))))
+  (define started (current-inexact-milliseconds))
+  (define-values (status timed-out? _solver-elapsed)
+    (remote-command
+     (string-append "cd " (posix-shell-quote remote-directory)
+                    " && exec " (remote-nec2c-command arguments))
+     stdout-path stderr-path))
+  ;; Retrieve every solver-created file, including partial diagnostics after a
+  ;; solver failure. A timed-out run deliberately leaves the remote directory
+  ;; in place: terminating SSH does not reliably terminate every remote
+  ;; process on every SSH server, and the path remains useful for recovery.
+  (unless timed-out?
+    (define-values (fetch-status fetch-timeout? _fetch-elapsed)
+      (run-command scp
+                   (list "-r"
+                         (string-append destination ":" remote-directory "/.")
+                         (path->string directory))
+                   copy-stdout copy-stderr timeout directory))
+    (unless (and (zero? fetch-status) (not fetch-timeout?))
+      (raise-user-error
+       'nec2c
+       "NEC2C completed remotely, but its artifacts could not be retrieved from ~a: ~a"
+       destination
+       (string-trim (string-append (file->string copy-stdout)
+                                   (file->string copy-stderr)))))
+    (cleanup-remote!))
+  (values status timed-out?
+          (- (current-inexact-milliseconds) started)))
+
+(define (run-remote-nec2c-probe destination arguments stdout-path stderr-path timeout)
+  (define ssh (require-path-command 'nec2c "ssh"))
+  (run-command ssh
+               (list destination (remote-nec2c-command arguments))
+               stdout-path stderr-path timeout))
+
 (define (read-version executable directory timeout)
   (define stdout-path (build-path directory "version.stdout"))
   (define stderr-path (build-path directory "version.stderr"))
   (define-values (status timed-out? _elapsed)
-    (run-command executable '("-v") stdout-path stderr-path timeout))
+    (if (nec2c-use-ssh-alias)
+        (run-remote-nec2c-probe (nec2c-use-ssh-alias) '("-v")
+                                stdout-path stderr-path timeout)
+        (run-command executable '("-v") stdout-path stderr-path timeout)))
   (define combined
     (string-trim
      (string-append (file->string stdout-path) (file->string stderr-path))))
@@ -675,8 +790,18 @@
     (raise-argument-error 'probe-nec2c-capabilities "positive-real?" timeout))
   (unless (boolean? refresh?)
     (raise-argument-error 'probe-nec2c-capabilities "boolean?" refresh?))
-  (define executable (resolve-executable requested-executable))
-  (define key (executable-cache-key executable))
+  (define destination (nec2c-use-ssh-alias))
+  (when (and destination requested-executable)
+    (raise-arguments-error
+     'probe-nec2c-capabilities
+     "#:executable is local-only while nec2c-use-ssh-alias is configured"
+     "SSH destination" destination
+     "executable" requested-executable))
+  (define executable (and (not destination) (resolve-executable requested-executable)))
+  (define key
+    (if destination
+        (list 'ssh-nec2c destination)
+        (executable-cache-key executable)))
   (cond
     [(and (not refresh?) (hash-has-key? capability-cache key))
      (hash-ref capability-cache key)]
@@ -690,8 +815,11 @@
          void
          (lambda ()
            (define-values (status timed-out? _elapsed)
-             (run-command executable '("--capabilities-json")
-                          stdout-path stderr-path timeout directory))
+             (if destination
+                 (run-remote-nec2c-probe destination '("--capabilities-json")
+                                         stdout-path stderr-path timeout)
+                 (run-command executable '("--capabilities-json")
+                              stdout-path stderr-path timeout directory)))
            (and (not timed-out?)
                 (zero? status)
                 (with-handlers ([exn:fail? (lambda (_) #f)])
@@ -1038,7 +1166,19 @@
                    (<= 1 solver-iterations 10000)))
     (raise-argument-error
      'nec2c "(or/c #f (integer-in 1 10000))" solver-iterations))
-  (define executable (resolve-executable requested-executable))
+  (define destination (nec2c-use-ssh-alias))
+  (when (and destination requested-executable)
+    (raise-arguments-error
+     'nec2c
+     "#:executable is local-only while nec2c-use-ssh-alias is configured"
+     "SSH destination" destination
+     "executable" requested-executable))
+  ;; The remote host resolves `nec2c` using its own PATH. Keep the displayed
+  ;; executable meaningful without requiring a local NEC2C installation.
+  (define executable
+    (if destination
+        (format "ssh ~a:nec2c" destination)
+        (resolve-executable requested-executable)))
   (define directory
     (make-temporary-file "antenna-turtle-nec2c~a" 'directory))
   (define input-path (build-path directory "analysis.nec"))
@@ -1091,7 +1231,9 @@
            (list (build-path directory "analysis.diel"))
            '())]))
     (define capabilities
-      (probe-nec2c-capabilities #:executable executable))
+      (if destination
+          (probe-nec2c-capabilities)
+          (probe-nec2c-capabilities #:executable executable)))
     (when (and (pair? staged-resources)
                (not (and capabilities
                          (nec2c-capability-supports?
@@ -1131,8 +1273,11 @@
       ;; exceed that legacy limit, so run inside the artifact directory and
       ;; give NEC2C only short leaf names. The public artifact paths remain
       ;; absolute.
-      (run-command executable arguments
-                   stdout-path stderr-path timeout directory))
+      (if destination
+          (run-remote-nec2c-command destination arguments
+                                    stdout-path stderr-path timeout directory)
+          (run-command executable arguments
+                       stdout-path stderr-path timeout directory)))
     (define stdout (file->string stdout-path))
     (define stderr (file->string stderr-path))
     (define artifacts

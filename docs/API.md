@@ -2597,6 +2597,30 @@ above-ground arc from 0 through 180 degrees, and radiation grids contain theta
 runs. With the default `#f`, each operation tries the `NEC2C` environment
 variable and then searches `PATH` for `nec2c`.
 
+### Remote NEC2C over SSH
+
+`(nec2c-use-ssh-alias [destination-or-#f])` selects a remote NEC2C host for
+subsequent NEC2C measurements. The destination is passed directly to OpenSSH,
+so it may be a hostname, `user@hostname`, `user@192.168.1.1`, or an alias
+defined in `~/.ssh/config`:
+
+```racket
+(nec2c-use-ssh-alias "atlantis")
+```
+
+When set, Antenna Turtle expects `ssh` and `scp` on the local `PATH` and a
+`nec2c` command on the remote host's `PATH`. It writes the normal temporary
+analysis directory locally, copies it to a unique directory below remote
+`/tmp`, runs NEC2C there, retrieves the generated artifacts, and performs all
+result parsing and plotting locally. Version and capability probes run on the
+remote host as well; no local NEC2C installation is required.
+
+`#:executable` remains a local-execution option and cannot be combined with an
+SSH destination. Set `(nec2c-use-ssh-alias #f)` to restore local execution.
+Completed remote directories are removed after their artifacts are retrieved.
+On a timeout the remote directory is retained, because an interrupted SSH
+connection cannot guarantee that every remote solver process has exited.
+
 Every measurement function accepts these common keyword arguments:
 
 ```racket
