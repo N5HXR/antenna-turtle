@@ -1,4 +1,6 @@
 compiled/
+local/
+*.mp4
 *.zo
 *.dep
 *.nec
