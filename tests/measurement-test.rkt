@@ -30,6 +30,9 @@
   (check-exn #rx"cannot extrapolate"
              (lambda () (impedance-at network 50))))
 
+(test-case "S11 minimum query returns the deepest sampled null"
+  (check-equal? (find-s11-minimum network) '(100 -16.9897)))
+
 (test-case "matching conversions use the model or an explicit system impedance"
   (define impedance 75+0i)
   (define reflection 0.2+0.0i)
@@ -64,6 +67,8 @@
              (lambda () (impedance-at two-port 100)))
   ;; Symbol/string spelling is intentionally interchangeable at the API edge.
   (check-equal? (impedance-at two-port 100 #:port "feed") 40+10i)
+  (check-equal? (find-s11-minimum two-port #:port 'other)
+                '(100 -inf.0))
   (check-equal? (measurement-ports two-port) '(feed "other")))
 
 (define run (openems-run-info #f 0 0 "" "" #f (hash)))
@@ -84,6 +89,8 @@
                   (openems-port-sample 200 0.2 65 -13.9794)))))
 
 (test-case "S-parameter measurements use named source and destination ports"
+  (check-equal? (find-s11-minimum multiport #:port 'input)
+                '(100 -20))
   (check-= (magnitude
             (- (s-parameter-at multiport 150
                                #:from "input" #:to 'output)

@@ -317,6 +317,7 @@ export function createPlotWorkspace(data, options = {}) {
     const rendered = Plotly.react(plot, traces, layout, {
       responsive: true,
       displaylogo: false,
+      displayModeBar: false,
       scrollZoom: true,
       modeBarButtonsToRemove: ["lasso2d", "select2d"],
       toImageButtonOptions: { format: "svg", filename: "antenna-turtle-plot" },

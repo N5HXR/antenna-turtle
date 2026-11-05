@@ -1,9 +1,11 @@
 #lang racket
 
 (require rackunit
+         plot/no-gui
          (prefix-in m: manifold)
          "../antenna-turtle/main.rkt"
          "../antenna-turtle/private/solid-view.rkt"
+         "../antenna-turtle/private/view.rkt"
          "../antenna-turtle/private/wire-solid.rkt")
 
 (define (m-point->list point)
@@ -321,6 +323,18 @@
   (m:solid-close! source)
   (clear-bodies))
 
+(test-case "wire model preview includes registered solid geometry"
+  (reset-model!)
+  (with-wire (move up 1))
+  (define source (m:cube 2 #:center? #t))
+  (body name reflector geometry source)
+  (define renderers (model->plot-renderers))
+  ;; One wire centerline and one registered body surface.
+  (check-equal? (length renderers) 2)
+  (check-not-false (plot3d-bitmap renderers #:width 200 #:height 160))
+  (m:solid-close! source)
+  (clear-bodies))
+
 (test-case "solid model preview renders a sheet-only scene"
   (reset-model!)
   (sheet name patch points '((-1 -1) (1 -1) (1 1) (-1 1)))
@@ -355,3 +369,19 @@
   (check-equal? (model-bodies) '())
   (check-equal? (model-ports) '())
   (check-true (m:solid-closed? (solid-body-solid derived-body))))
+
+(test-case "wire solid preview accepts multiple feeds without deriving a port"
+  (reset-model!)
+  (with-wire
+    (move up 1 feed (center "first" 1 0)))
+  (move right 1)
+  (with-wire
+    (move up 1 feed (center "second" 1 0)))
+  (call-with-derived-wire-scene
+   (lambda (derivation)
+     (check-equal? (length (model-bodies)) 1)
+     (check-equal? (model-ports) '())
+     (check-false (wire-solid-derivation-port derivation)))
+   #:derive-port? #f)
+  (check-equal? (model-bodies) '())
+  (check-equal? (model-ports) '()))

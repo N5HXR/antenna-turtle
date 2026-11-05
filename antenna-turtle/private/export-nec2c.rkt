@@ -1,6 +1,7 @@
 #lang racket/base
 
 (require racket/file
+         racket/format
          racket/list
          racket/math
          racket/path
@@ -19,6 +20,9 @@
          last-nec2c-export-path
          nec2c-feed-segment
          nec2c-edge-segment-count
+         (struct-out segmentation-report)
+         nec2c-segmentation-report
+         show-segmentation-report
          (struct-out resolved-wire-load)
          resolve-wire-loads
          wire-load-endpoint-overrides)
@@ -330,6 +334,197 @@
       (surface-call 'nec2c-adjusted-edge-point surface-geometry edge end)
       (vertex-point
        ((if (eq? end 'start) wire-edge-start wire-edge-end) edge))))
+
+(struct segmentation-report
+  (frequency-mhz target-segment-length-m
+   wire-edge-count surface-patch-count segment-count
+   total-length-m total-length-wavelengths average-segment-length-m
+   minimum-segment-length-m maximum-segment-length-m
+   contiguous-path-count
+   bounds-minimum bounds-maximum
+   x-span-m y-span-m z-span-m bounding-volume-m3)
+  #:transparent)
+
+(define (wire-component-count edges)
+  (define adjacency (make-hasheq))
+  (define (connect! first second)
+    (hash-set! adjacency first (cons second (hash-ref adjacency first '()))))
+  (for ([edge (in-list edges)])
+    (define start (wire-edge-start edge))
+    (define end (wire-edge-end edge))
+    (connect! start end)
+    (connect! end start))
+  (define visited (make-hasheq))
+  (define (visit! start)
+    (let loop ([pending (list start)])
+      (unless (null? pending)
+        (define vertex (car pending))
+        (cond
+          [(hash-has-key? visited vertex)
+           (loop (cdr pending))]
+          [else
+           (hash-set! visited vertex #t)
+           (loop (append (hash-ref adjacency vertex '()) (cdr pending)))]))))
+  (for/sum ([vertex (in-hash-keys adjacency)]
+            #:unless (hash-has-key? visited vertex))
+    (visit! vertex)
+    1))
+
+(define (solver-point point)
+  (point3 (point3-x point) (point3-y point) (export-z (point3-z point))))
+
+(define (points-bounds points)
+  (if (null? points)
+      (values #f #f 0 0 0 0)
+      (let* ([xs (map point3-x points)]
+             [ys (map point3-y points)]
+             [zs (map point3-z points)]
+             [minimum (point3 (apply min xs) (apply min ys) (apply min zs))]
+             [maximum (point3 (apply max xs) (apply max ys) (apply max zs))]
+             [x-span (- (point3-x maximum) (point3-x minimum))]
+             [y-span (- (point3-y maximum) (point3-y minimum))]
+             [z-span (- (point3-z maximum) (point3-z minimum))])
+        (values minimum maximum x-span y-span z-span
+                (* x-span y-span z-span)))))
+
+;; Describe the wire subdivision that export-nec2c will emit for the current
+;; completed model. Port fixtures remain one segment, and generated wire-load
+;; gaps participate in segment length statistics just as they do in the deck.
+(define (nec2c-segmentation-report)
+  (define who 'nec2c-segmentation-report)
+  (validate-model!)
+  (validate-wire-network-declarations! who)
+  (define max-length (require-segmentation! who))
+  (define surface-candidate
+    (surface-call 'model-nec2c-surface-geometry))
+  (define surface-geometry
+    (and surface-candidate
+         (pair? (surface-call 'nec2c-surface-geometry-patches
+                              surface-candidate))
+         surface-candidate))
+  (define patches
+    (if surface-geometry
+        (surface-call 'nec2c-surface-geometry-patches surface-geometry)
+        '()))
+  (define loads (resolve-wire-loads who))
+  (when (and surface-geometry (pair? loads))
+    (raise-arguments-error
+     who "wire lumped elements are not yet supported with NEC surface bodies"))
+  (when (and surface-geometry (pair? (model-wire-transmission-lines)))
+    (raise-arguments-error
+     who "transmission lines are not yet supported with NEC surface bodies"))
+  (when (and surface-geometry (pair? (model-wire-y-networks)))
+    (raise-arguments-error
+     who "two-port Y networks are not yet supported with NEC surface bodies"))
+  (validate-ground-geometry! who surface-geometry)
+  (define endpoint-overrides (wire-load-endpoint-overrides loads))
+  (define edges (model-edges))
+  (define segment-lengths
+    (append
+     (append*
+      (for/list ([edge (in-list edges)])
+        (define ends (hash-ref endpoint-overrides edge #f))
+        (define start
+          (solver-point
+           (if (and ends (hash-has-key? ends 'start))
+               (hash-ref ends 'start)
+               (edge-export-point surface-geometry edge 'start))))
+        (define end
+          (solver-point
+           (if (and ends (hash-has-key? ends 'end))
+               (hash-ref ends 'end)
+               (edge-export-point surface-geometry edge 'end))))
+        (define count (nec2c-edge-segment-count edge max-length))
+        (make-list count (/ (point-distance start end) count))))
+     (for/list ([load (in-list loads)])
+       (point-distance
+        (solver-point (resolved-wire-load-negative-point load))
+        (solver-point (resolved-wire-load-positive-point load))))))
+  (define geometry-points
+    (append
+     (append*
+      (for/list ([edge (in-list edges)])
+        (list (solver-point (edge-export-point surface-geometry edge 'start))
+              (solver-point (edge-export-point surface-geometry edge 'end)))))
+     (append*
+      (for/list ([patch (in-list patches)])
+        (map solver-point
+             (surface-call 'nec2c-surface-patch-corners patch))))))
+  (define segment-count (length segment-lengths))
+  (define total-length (apply + segment-lengths))
+  (define-values (bounds-minimum bounds-maximum x-span y-span z-span volume)
+    (points-bounds geometry-points))
+  (segmentation-report
+   (model-frequency) max-length
+   (length edges) (length patches) segment-count
+   total-length (/ total-length (model-wavelength))
+   (and (positive? segment-count) (/ total-length segment-count))
+   (and (positive? segment-count) (apply min segment-lengths))
+   (and (positive? segment-count) (apply max segment-lengths))
+   (wire-component-count edges)
+   bounds-minimum bounds-maximum x-span y-span z-span volume))
+
+(define (report-number value [digits 6])
+  (define number (exact->inexact value))
+  (if (and (not (zero? number))
+           (or (< (abs number) 1e-5) (>= (abs number) 1e7)))
+      (~r number #:precision `(= ,digits) #:notation 'exponential)
+      (~r number #:precision `(= ,digits))))
+
+(define (report-point point)
+  (if point
+      (format "(~a, ~a, ~a)"
+              (report-number (point3-x point))
+              (report-number (point3-y point))
+              (report-number (point3-z point)))
+      "n/a"))
+
+(define (show-segmentation-report
+         [report (nec2c-segmentation-report)]
+         [out (current-output-port)])
+  (unless (segmentation-report? report)
+    (raise-argument-error 'show-segmentation-report
+                          "segmentation-report?" report))
+  (unless (output-port? out)
+    (raise-argument-error 'show-segmentation-report "output-port?" out))
+  (fprintf out "NEC2C segmentation report — ~a\n" (model-title))
+  (fprintf out "  Frequency:                 ~a MHz\n"
+           (report-number (segmentation-report-frequency-mhz report)))
+  (fprintf out "  Maximum target length:     ~a m\n"
+           (report-number
+            (segmentation-report-target-segment-length-m report)))
+  (fprintf out "  Authored wire edges:       ~a\n"
+           (segmentation-report-wire-edge-count report))
+  (fprintf out "  NEC surface patches:       ~a\n"
+           (segmentation-report-surface-patch-count report))
+  (fprintf out "  NEC wire segments:         ~a\n"
+           (segmentation-report-segment-count report))
+  (fprintf out "  Contiguous wire paths:     ~a\n"
+           (segmentation-report-contiguous-path-count report))
+  (fprintf out "  Total wire length:         ~a m  (~a wavelengths)\n"
+           (report-number (segmentation-report-total-length-m report))
+           (report-number
+            (segmentation-report-total-length-wavelengths report)))
+  (if (zero? (segmentation-report-segment-count report))
+      (fprintf out "  Segment lengths:           n/a\n")
+      (fprintf out "  Segment lengths min/avg/max: ~a / ~a / ~a m\n"
+               (report-number
+                (segmentation-report-minimum-segment-length-m report))
+               (report-number
+                (segmentation-report-average-segment-length-m report))
+               (report-number
+                (segmentation-report-maximum-segment-length-m report))))
+  (fprintf out "  Bounds minimum:            ~a m\n"
+           (report-point (segmentation-report-bounds-minimum report)))
+  (fprintf out "  Bounds maximum:            ~a m\n"
+           (report-point (segmentation-report-bounds-maximum report)))
+  (fprintf out "  Bounds X/Y/Z spans:        ~a / ~a / ~a m\n"
+           (report-number (segmentation-report-x-span-m report))
+           (report-number (segmentation-report-y-span-m report))
+           (report-number (segmentation-report-z-span-m report)))
+  (fprintf out "  Bounding-box volume:       ~a m^3\n"
+           (report-number (segmentation-report-bounding-volume-m3 report)))
+  report)
 
 (define (write-nec2c-deck out [analysis-cards '()]
                            #:dielectric-resource [dielectric-resource #f])

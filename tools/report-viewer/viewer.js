@@ -13,7 +13,7 @@ import {
 import { marchingTetrahedra } from "./isosurface.js";
 import { createPlotWorkspace } from "./plot-workspace.js";
 import { startNec2cReport } from "./nec2c-report.js";
-import { makeCollapsibleSettingsPanel } from "./panel-collapse.js";
+import { installReportSideRail } from "./side-rail.js";
 
 async function main() {
 const data = JSON.parse(document.getElementById("antenna-turtle-report-data").textContent);
@@ -22,7 +22,6 @@ if (String(data.schema || "").startsWith("antenna-turtle-report/nec2c")) {
   return;
 }
 const plotWorkspace = createPlotWorkspace(data);
-makeCollapsibleSettingsPanel(document.getElementById("controls"));
 const canvas = document.getElementById("viewport");
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -224,8 +223,72 @@ reportStyle.textContent = `
   .legend-bar { height:10px; border:1px solid #29e9ff88; border-radius:2px }
   .legend-labels { display:flex; justify-content:space-between; grid-column:1 }
   .legend-units { color:#fff45c; grid-column:2; grid-row:1 / span 2 }
+  :root { --report-side-rail:clamp(156px,34vw,360px) }
+  body.report-side-rail header { z-index:12;top:10px;left:auto;right:12px;
+    width:calc(var(--report-side-rail) - 24px);max-width:none }
+  body.report-side-rail #workspace-switch { z-index:12;top:72px;right:12px;
+    width:calc(var(--report-side-rail) - 24px);display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr)) }
+  body.report-side-rail #workspace-switch button { min-width:0 }
+  body.report-side-rail #viewport { width:calc(100vw - var(--report-side-rail) - 8px)!important }
+  body.report-side-rail #plots-workspace {
+    inset:8px calc(var(--report-side-rail) + 8px) 8px 8px!important }
+  body.report-side-rail #controls,body.report-side-rail #plots-workspace .plot-toolbar {
+    position:fixed!important;z-index:11;top:120px!important;right:12px!important;bottom:54px;
+    left:auto!important;width:calc(var(--report-side-rail) - 24px);overflow:auto;
+    display:flex;flex-flow:column nowrap;align-items:stretch;gap:5px;padding:9px }
+  body.report-side-rail-no-nav #controls { top:72px!important }
+  body.report-side-rail #controls { display:block }
+  body.report-side-rail #controls[hidden] { display:none!important }
+  body.report-side-rail #controls .row { flex-wrap:wrap }
+  body.report-side-rail #controls #field-mode-row { display:flex;flex-flow:row wrap }
+  body.report-side-rail #controls select,body.report-side-rail #controls button,
+  body.report-side-rail #controls input[type=range] { max-width:100%;min-width:0 }
+  body.report-side-rail #controls .checks { margin-left:0;flex-wrap:wrap }
+  body.report-side-rail #controls #metadata-panel { position:static;width:100%;max-height:none;
+    margin-top:10px;padding:8px;overflow:visible }
+  body.report-side-rail #plots-workspace .plot-toolbar label { margin-top:3px }
+  body.report-side-rail #plots-workspace .plot-toolbar select,
+  body.report-side-rail #plots-workspace .plot-toolbar button { width:100%;min-width:0 }
+  body.report-side-rail #plots-workspace .plot-toolbar #plot-frequency-note {
+    margin:4px 0 0;overflow-wrap:anywhere }
+  body.report-side-rail #plot-hover-readout { position:static!important;flex:0 0 auto;width:100%;
+    height:auto;min-height:48px;padding:7px;white-space:normal;overflow:visible }
+  body.report-side-rail #network-plot { inset:0!important }
+  body.report-side-rail #plots-workspace .modebar-container { display:none!important }
+  #report-controls-toggle { position:fixed;display:block;z-index:20;right:12px;bottom:10px;
+    width:calc(var(--report-side-rail) - 24px);min-width:0;padding:7px 5px }
+  body.report-controls-hidden header,body.report-controls-hidden #workspace-switch,
+  body.report-controls-hidden #controls,body.report-controls-hidden #plots-workspace .plot-toolbar,
+  body.report-controls-hidden .report-side-rail-overlay { display:none!important }
+  body.report-controls-hidden #viewport { width:100vw!important }
+  body.report-controls-hidden #plots-workspace { inset:8px!important }
+  body.report-controls-hidden #report-controls-toggle { right:10px;width:auto;padding-inline:12px }
+  @media(max-width:700px) {
+    body.report-side-rail #viewport { width:calc(100vw - var(--report-side-rail) - 2px)!important }
+    body.report-side-rail #plots-workspace {
+      inset:2px calc(var(--report-side-rail) + 2px) 2px 2px!important }
+    body.report-controls-hidden #viewport { width:100vw!important }
+    body.report-controls-hidden #plots-workspace { inset:2px!important }
+    body.report-side-rail header h1 { font-size:14px }
+    body.report-side-rail #subtitle { font-size:8px;line-height:1.25 }
+    body.report-side-rail #workspace-switch { top:64px }
+    body.report-side-rail #workspace-switch button { font-size:9px;padding:4px 2px }
+    body.report-side-rail #controls,body.report-side-rail #plots-workspace .plot-toolbar {
+      top:106px!important;padding:7px }
+    body.report-side-rail-no-nav #controls { top:64px!important }
+    body.report-side-rail #controls,body.report-side-rail #controls label,
+    body.report-side-rail #plots-workspace .plot-toolbar label { font-size:9px }
+    body.report-side-rail #controls select,body.report-side-rail #controls button,
+    body.report-side-rail #plots-workspace .plot-toolbar select,
+    body.report-side-rail #plots-workspace .plot-toolbar button { font-size:10px;padding:4px 2px }
+  }
 `;
 document.head.append(reportStyle);
+installReportSideRail({
+  controls: document.getElementById("controls"),
+  navigation: document.getElementById("workspace-switch"),
+});
 const fieldLegend = document.createElement("div");
 fieldLegend.id = "field-legend";
 fieldLegend.className = "color-legend";

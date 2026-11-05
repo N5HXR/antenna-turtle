@@ -91,10 +91,10 @@
   (m:capsule start stop (/ (wire-edge-diameter edge) 2)
              #:segments segments))
 
-(define (derive-wire-solid segments)
+(define (derive-wire-solid segments derive-port?)
   (define edges (model-edges))
   (define feeds (filter wire-edge-feed? edges))
-  (when (> (length feeds) 1)
+  (when (and derive-port? (> (length feeds) 1))
     (raise-user-error
      'openems-sweep
      "the one-port OpenEMS backend accepts only one wire feed; found ~a"
@@ -105,7 +105,7 @@
       void
       (lambda () (apply m:union capsules))
       (lambda () (for-each m:solid-close! capsules))))
-  (if (null? feeds)
+  (if (or (not derive-port?) (null? feeds))
       (values joined #f #f)
       (let* ([feed-edge (first feeds)]
              [radius (/ (wire-edge-diameter feed-edge) 2)]
@@ -151,18 +151,22 @@
         (values cut-solid port
                 (list feed-edge gap radius)))))
 
-(define (call-with-derived-wire-scene procedure #:segments [segments 24])
+(define (call-with-derived-wire-scene procedure
+                                      #:segments [segments 24]
+                                      #:derive-port? [derive-port? #t])
   (unless (procedure? procedure)
     (raise-argument-error 'call-with-derived-wire-scene "procedure?" procedure))
   (unless (and (exact-integer? segments) (>= segments 3))
     (raise-argument-error 'call-with-derived-wire-scene "exact integer >= 3" segments))
+  (unless (boolean? derive-port?)
+    (raise-argument-error 'call-with-derived-wire-scene "boolean?" derive-port?))
   (define edges (model-edges))
   (if (null? edges)
       (procedure #f)
       (let ()
         (define original (current-solid-scene))
         (define-values (solid derived-port feed-data)
-          (derive-wire-solid segments))
+          (derive-wire-solid segments derive-port?))
         (define body
           (solid-body
            (fresh-wire-name (solid-scene-bodies original)

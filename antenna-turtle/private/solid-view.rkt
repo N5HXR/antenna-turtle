@@ -11,7 +11,10 @@
 
 (provide show-solid-model
          solid-model->plot-renderers
-         solid-model-cubic-bounds)
+         solid-model-cubic-bounds
+         solid-scene-geometry-renderers
+         solid-scene-geometry-bound-points
+         solid-scene-geometry-legend-items)
 
 (define-runtime-path proportional-plot3d-path "proportional-plot3d.rkt")
 
@@ -67,6 +70,38 @@
    #:line-style 'transparent
    #:alpha 0.9
    #:label (format "~a" (planar-sheet-name sheet))))
+
+;; These geometry-only helpers also let the ordinary wire-model viewer include
+;; registered bodies and sheets without deriving physical wire solids or
+;; inheriting any OpenEMS port restrictions.
+(define (solid-scene-geometry-renderers)
+  (append (map body-renderer (model-bodies))
+          (map sheet-renderer (model-sheets))))
+
+(define (m-point->point3 point)
+  (point3 (m:point3-x point) (m:point3-y point) (m:point3-z point)))
+
+(define (solid-scene-geometry-bound-points)
+  (append
+   (append*
+    (for/list ([body (in-list (model-bodies))])
+      (define-values (minimum maximum)
+        (m:solid-bounds (solid-body-solid body)))
+      (list (m-point->point3 minimum) (m-point->point3 maximum))))
+   (append*
+    (for/list ([sheet (in-list (model-sheets))])
+      (append* (planar-sheet-polygons sheet))))))
+
+(define (solid-scene-geometry-legend-items)
+  (append
+   (for/list ([body (in-list (model-bodies))])
+     (plot-legend-item (format "~a" (solid-body-name body))
+                       (material-color (solid-body-material body))
+                       'solid 'box))
+   (for/list ([sheet (in-list (model-sheets))])
+     (plot-legend-item (format "~a" (planar-sheet-name sheet))
+                       (material-color (planar-sheet-material sheet))
+                       'solid 'box))))
 
 (define (point+ point . terms)
   (for/fold ([result point]) ([term (in-list terms)])
@@ -153,8 +188,7 @@
   (when (and (null? (model-bodies)) (null? (model-sheets)))
     (error 'show-solid-model "cannot display a scene without bodies or sheets"))
   (append
-   (map body-renderer (model-bodies))
-   (map sheet-renderer (model-sheets))
+   (solid-scene-geometry-renderers)
    (append* (map port-renderers (model-ports)))
    (append* (map component-renderers (model-components)))))
 
@@ -162,14 +196,7 @@
   (define extrema
     (append*
      (append
-      (for/list ([body (in-list (model-bodies))])
-        (define-values (minimum maximum)
-          (m:solid-bounds (solid-body-solid body)))
-        (list (m-point->vector minimum) (m-point->vector maximum)))
-      (for/list ([sheet (in-list (model-sheets))])
-        (append*
-         (for/list ([polygon (in-list (planar-sheet-polygons sheet))])
-           (map point->vector polygon))))
+      (list (map point->vector (solid-scene-geometry-bound-points)))
       (for/list ([port (in-list (model-ports))])
         (map point->vector (port-corners port)))
       (for/list ([component (in-list (model-components))])
@@ -188,14 +215,7 @@
 
 (define (solid-model-legend-items)
   (append
-   (for/list ([body (in-list (model-bodies))])
-     (plot-legend-item (format "~a" (solid-body-name body))
-                       (material-color (solid-body-material body))
-                       'solid 'box))
-   (for/list ([sheet (in-list (model-sheets))])
-     (plot-legend-item (format "~a" (planar-sheet-name sheet))
-                       (material-color (planar-sheet-material sheet))
-                       'solid 'box))
+   (solid-scene-geometry-legend-items)
    (for/list ([port (in-list (model-ports))])
      (plot-legend-item (format "port: ~a" (lumped-port-name port))
                        "firebrick" 'solid 'line))
@@ -246,4 +266,7 @@
   (call-with-derived-wire-scene
    (lambda (_derivation)
      (show-solid-model/current width height aspect-ratio legend?))
-   #:segments wire-segments))
+   #:segments wire-segments
+   ;; Previewing geometry does not require an OpenEMS lumped port. In
+   ;; particular, a NEC2C phased array may legitimately contain many feeds.
+   #:derive-port? #f))

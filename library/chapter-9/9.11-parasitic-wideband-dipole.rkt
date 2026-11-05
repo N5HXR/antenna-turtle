@@ -6,7 +6,7 @@
          frequency 3.75
          max-length {wavelength / 200}
          ground real)
-  
+
   (define vf 0.82)
   (define match-length {68 * feet})
   (define feed-length (- half-wave match-length foot))

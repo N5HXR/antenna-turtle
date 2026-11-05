@@ -24,6 +24,22 @@
 (define port-positive-color "dark turquoise")
 
 (define-runtime-path proportional-plot3d-path "proportional-plot3d.rkt")
+(define-runtime-path solid-view-path "solid-view.rkt")
+
+;; Keep the wire-only language loadable when the optional Manifold backend is
+;; absent. A full installation supplies these geometry-only preview helpers.
+(define optional-solid-preview-bindings (make-hasheq))
+
+(define (optional-solid-preview-binding name)
+  (hash-ref!
+   optional-solid-preview-bindings name
+   (lambda ()
+     (with-handlers ([exn:fail? (lambda (_) #f)])
+       (dynamic-require solid-view-path name)))))
+
+(define (solid-preview-items name)
+  (define procedure (optional-solid-preview-binding name))
+  (if procedure (procedure) '()))
 
 (define (point3->vector point)
   (vector (point3-x point) (point3-y point) (point3-z point)))
@@ -77,7 +93,11 @@
   (unless (boolean? vertices?)
     (raise-argument-error 'model->plot-renderers "boolean?" vertices?))
   (define edges (model-edges model))
-  (when (null? edges)
+  (define solid-renderers
+    (solid-preview-items 'solid-scene-geometry-renderers))
+  (when (and (null? edges)
+             (null? (dielectric-cuboids))
+             (null? solid-renderers))
     (error 'show-model "cannot display an empty model"))
   (define coax-edge-colors (make-hasheq))
   (for ([coax (in-list (model-wire-coaxes))]
@@ -96,6 +116,7 @@
   (append
    conductors
    (append-map cuboid-renderers (dielectric-cuboids))
+   solid-renderers
    (if vertices?
        (list
         (points3d
@@ -165,11 +186,14 @@
                                  (wire-edge-end edge)))])
        (vertex-point model-vertex))
      (append-map cuboid-corners (dielectric-cuboids))))
-  (when (null? points)
+  (define all-points
+    (append points
+            (solid-preview-items 'solid-scene-geometry-bound-points)))
+  (when (null? all-points)
     (error 'show-model "cannot display an empty model"))
-  (define xs (map point3-x points))
-  (define ys (map point3-y points))
-  (define zs (map point3-z points))
+  (define xs (map point3-x all-points))
+  (define ys (map point3-y all-points))
+  (define zs (map point3-z all-points))
   (define x-center (/ (+ (apply min xs) (apply max xs)) 2))
   (define y-center (/ (+ (apply min ys) (apply max ys)) 2))
   (define z-center (/ (+ (apply min zs) (apply max zs)) 2))
@@ -232,6 +256,7 @@
     (if (null? (dielectric-cuboids))
         '()
         (list (plot-legend-item "dielectric volume" dielectric-color 'solid 'line)))
+    (solid-preview-items 'solid-scene-geometry-legend-items)
     (if (null? (model-wire-lumped-elements))
         '()
         (list (plot-legend-item "lumped element" lumped-element-color 'solid 'box)))

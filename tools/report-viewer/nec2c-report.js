@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createPlotWorkspace, Plotly } from "./plot-workspace.js";
-import { makeCollapsibleSettingsPanel } from "./panel-collapse.js";
+import { installReportSideRail } from "./side-rail.js";
 import { canonicalCurrentPhase, canonicalWireSign, loadImpedance } from "./nec2c-inspector.js";
 import { averagePoynting, instantaneousComponent, instantaneousPoynting } from "./field-math.js";
 import {
@@ -17,18 +17,22 @@ import {
   sampleAt,
 } from "./pattern-data.js";
 
+const shapedRampLevels = [-30, -25, -19, -15, -11, -7, -3, -1, 0];
+const shapeRamp = colors => shapedRampLevels.map((level, index) => [level, colors[index]]);
+
 const palettes = {
   mmana: [[-30,[12,20,180]],[-20,[0,100,255]],[-10,[0,230,255]],[-6,[0,238,95]],
     [-3,[235,255,18]],[-1.5,[255,192,18]],[-0.5,[255,58,18]],[0,[255,20,205]]],
-  magma: [[-30,[0,0,4]],[-26.25,[28,16,68]],[-22.5,[79,18,123]],[-18.75,[129,37,129]],
-    [-15,[181,54,122]],[-11.25,[229,80,100]],[-7.5,[251,135,97]],[-3.75,[254,194,135]],[0,[252,253,191]]],
-  inferno: [[-30,[0,0,4]],[-26.25,[31,12,72]],[-22.5,[85,15,109]],[-18.75,[136,34,106]],
-    [-15,[186,54,85]],[-11.25,[227,89,51]],[-7.5,[249,140,10]],[-3.75,[249,201,50]],[0,[252,255,164]]],
-  viridis: [[-30,[68,1,84]],[-26.25,[72,40,120]],[-22.5,[62,74,137]],[-18.75,[49,104,142]],
-    [-15,[38,130,142]],[-11.25,[31,158,137]],[-7.5,[53,183,121]],[-3.75,[109,205,89]],[0,[253,231,37]]],
-  grayscale: [[-30,[24,24,24]],[-20,[92,92,92]],[-10,[174,174,174]],[0,[255,255,255]]],
-  electric: [[-30,[0,0,4]],[-26.25,[0,0,48]],[-22.5,[0,0,105]],[-18.75,[35,0,145]],
-    [-15,[85,0,175]],[-11.25,[145,0,205]],[-7.5,[215,0,235]],[-3.75,[255,45,245]],[0,[255,190,255]]],
+  magma: shapeRamp([[0,0,4],[28,16,68],[79,18,123],[129,37,129],[181,54,122],
+    [229,80,100],[251,135,97],[254,194,135],[252,253,191]]),
+  inferno: shapeRamp([[0,0,4],[31,12,72],[85,15,109],[136,34,106],[186,54,85],
+    [227,89,51],[249,140,10],[249,201,50],[252,255,164]]),
+  viridis: shapeRamp([[68,1,84],[72,40,120],[62,74,137],[49,104,142],[38,130,142],
+    [31,158,137],[53,183,121],[109,205,89],[253,231,37]]),
+  grayscale: shapeRamp([[24,24,24],[50,50,50],[75,75,75],[123,123,123],[133,133,133],
+    [164,164,164],[194,194,194],[225,225,225],[255,255,255]]),
+  electric: shapeRamp([[0,0,4],[0,0,48],[0,0,105],[35,0,145],[85,0,175],
+    [145,0,205],[215,0,235],[255,45,245],[255,190,255]]),
 };
 palettes.sdr = palettes.magma;
 
@@ -46,7 +50,12 @@ function patternComponentLabel(component) {
 }
 
 function stopColor(rgb) {
-  return new THREE.Color(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
+  // Palette definitions are ordinary 8-bit sRGB values. Three.js stores
+  // vertex colors in its linear working space, so convert explicitly here;
+  // treating these components as linear makes the rendered ramp too bright
+  // and noticeably washes out its midtones.
+  return new THREE.Color().setRGB(
+    rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, THREE.SRGBColorSpace);
 }
 
 function colorAt(paletteName, relativeDb) {
@@ -67,7 +76,7 @@ function cssColor(rgb) {
 }
 
 function threeColorCss(color) {
-  return `rgb(${Math.round(color.r * 255)},${Math.round(color.g * 255)},${Math.round(color.b * 255)})`;
+  return color.getStyle(THREE.SRGBColorSpace);
 }
 
 function escapeHtml(value) {
@@ -636,6 +645,95 @@ function injectStyles() {
       #nec-tabs button{min-width:auto}#pattern-2d,#plots-workspace,#near-field-workspace{inset:92px 8px 8px}
       #near-field-plot{inset:104px 0 0}#conductor-inspector{right:8px;bottom:8px;width:calc(100vw - 16px)}
       #current-profile{right:8px;top:92px;width:calc(100vw - 16px)}}
+    :root{--report-side-rail:clamp(156px,34vw,360px)}
+    body.report-side-rail header{z-index:12;top:10px;left:auto;right:12px;
+      width:calc(var(--report-side-rail) - 24px);max-width:none}
+    body.report-side-rail #nec-tabs{z-index:12;top:72px;right:12px;
+      width:calc(var(--report-side-rail) - 24px);display:grid;
+      grid-template-columns:repeat(2,minmax(0,1fr))}
+    body.report-side-rail #nec-tabs button{min-width:0}
+    body.report-side-rail #viewport{width:calc(100vw - var(--report-side-rail) - 8px)!important}
+    body.report-side-rail #pattern-2d,body.report-side-rail #plots-workspace,
+    body.report-side-rail #near-field-workspace{
+      inset:8px calc(var(--report-side-rail) + 8px) 8px 8px!important}
+    body.report-side-rail #nec-controls,body.report-side-rail #pattern-2d .pattern-toolbar,
+    body.report-side-rail #plots-workspace .plot-toolbar,
+    body.report-side-rail #near-field-workspace .field-toolbar{
+      position:fixed!important;z-index:11;top:148px!important;right:12px!important;bottom:54px;
+      left:auto!important;width:calc(var(--report-side-rail) - 24px);overflow:auto;
+      display:flex;flex-flow:column nowrap;align-items:stretch;gap:5px;padding:9px}
+    body.report-side-rail #nec-controls{display:block}
+    body.report-side-rail #nec-controls[hidden]{display:none!important}
+    body.report-side-rail #nec-controls .row{flex-wrap:wrap}
+    body.report-side-rail #nec-controls select,body.report-side-rail #nec-controls button,
+    body.report-side-rail #nec-controls input[type=range]{max-width:100%;min-width:0}
+    body.report-side-rail #nec-controls #metadata-panel{position:static;width:100%;max-height:none;
+      margin-top:10px;padding:8px;overflow:visible}
+    body.report-side-rail #pattern-2d .pattern-toolbar label,
+    body.report-side-rail #plots-workspace .plot-toolbar label,
+    body.report-side-rail #near-field-workspace .field-toolbar label{margin-top:3px}
+    body.report-side-rail #pattern-2d .pattern-toolbar select,
+    body.report-side-rail #pattern-2d .pattern-toolbar button,
+    body.report-side-rail #pattern-2d .pattern-toolbar input[type=range],
+    body.report-side-rail #plots-workspace .plot-toolbar select,
+    body.report-side-rail #plots-workspace .plot-toolbar button,
+    body.report-side-rail #near-field-workspace .field-toolbar select,
+    body.report-side-rail #near-field-workspace .field-toolbar button,
+    body.report-side-rail #near-field-workspace .field-toolbar input[type=range]{width:100%;min-width:0}
+    body.report-side-rail #plots-workspace .plot-toolbar #plot-frequency-note{margin:4px 0 0;
+      overflow-wrap:anywhere}
+    body.report-side-rail #plot-hover-readout{position:static!important;flex:0 0 auto;width:100%;height:auto;
+      min-height:48px;padding:7px;white-space:normal;overflow:visible}
+    body.report-side-rail #near-field-component-control{display:flex;flex-flow:column nowrap;gap:5px}
+    body.report-side-rail #near-field-component-control[hidden]{display:none}
+    body.report-side-rail #pattern-polar,body.report-side-rail #network-plot,
+    body.report-side-rail #near-field-plot{inset:0!important}
+    body.report-side-rail #pattern-2d .modebar-container,
+    body.report-side-rail #plots-workspace .modebar-container{display:none!important}
+    body.report-side-rail #conductor-inspector{right:calc(var(--report-side-rail) + 18px)}
+    body.report-side-rail #current-profile{right:calc(var(--report-side-rail) + 18px)}
+    #near-field-rail-title{margin:0 0 5px;padding:0 0 8px;border-bottom:1px solid #31efff55;
+      color:#7df9ff;font-size:12px;line-height:1.35;overflow-wrap:anywhere}
+    #near-field-rail-title span{display:block;margin-top:3px;color:#ff4bd8;font-size:10px}
+    #report-controls-toggle{position:fixed;display:block;z-index:20;right:12px;bottom:10px;
+      width:calc(var(--report-side-rail) - 24px);min-width:0;padding:7px 5px}
+    body.report-controls-hidden header,body.report-controls-hidden #nec-tabs,
+    body.report-controls-hidden #nec-controls,
+    body.report-controls-hidden #pattern-2d .pattern-toolbar,
+    body.report-controls-hidden #plots-workspace .plot-toolbar,
+    body.report-controls-hidden #near-field-workspace .field-toolbar,
+    body.report-controls-hidden .report-side-rail-overlay{display:none!important}
+    body.report-controls-hidden #viewport{width:100vw!important}
+    body.report-controls-hidden #pattern-2d,body.report-controls-hidden #plots-workspace,
+    body.report-controls-hidden #near-field-workspace{inset:8px!important}
+    body.report-controls-hidden #report-controls-toggle{right:10px;width:auto;padding-inline:12px}
+    @media(max-width:700px){
+      body.report-side-rail #viewport{width:calc(100vw - var(--report-side-rail) - 2px)!important}
+      body.report-side-rail #pattern-2d,body.report-side-rail #plots-workspace,
+      body.report-side-rail #near-field-workspace{
+        inset:2px calc(var(--report-side-rail) + 2px) 2px 2px!important}
+      body.report-controls-hidden #viewport{width:100vw!important}
+      body.report-controls-hidden #pattern-2d,body.report-controls-hidden #plots-workspace,
+      body.report-controls-hidden #near-field-workspace{inset:2px!important}
+      body.report-side-rail header h1{font-size:14px}
+      body.report-side-rail #subtitle{font-size:8px;line-height:1.25}
+      body.report-side-rail #nec-tabs{top:64px}
+      body.report-side-rail #nec-tabs button{font-size:9px;padding:4px 2px}
+      body.report-side-rail #nec-controls,body.report-side-rail #pattern-2d .pattern-toolbar,
+      body.report-side-rail #plots-workspace .plot-toolbar,
+      body.report-side-rail #near-field-workspace .field-toolbar{top:124px!important;padding:7px}
+      body.report-side-rail #nec-controls,body.report-side-rail #nec-controls label,
+      body.report-side-rail #pattern-2d .pattern-toolbar label,
+      body.report-side-rail #plots-workspace .plot-toolbar label,
+      body.report-side-rail #near-field-workspace .field-toolbar label{font-size:9px}
+      body.report-side-rail #nec-controls select,body.report-side-rail #nec-controls button,
+      body.report-side-rail #pattern-2d .pattern-toolbar select,
+      body.report-side-rail #pattern-2d .pattern-toolbar button,
+      body.report-side-rail #plots-workspace .plot-toolbar select,
+      body.report-side-rail #plots-workspace .plot-toolbar button,
+      body.report-side-rail #near-field-workspace .field-toolbar select,
+      body.report-side-rail #near-field-workspace .field-toolbar button{font-size:10px;padding:4px 2px}
+    }
   `;
   document.head.append(style);
 }
@@ -762,7 +860,6 @@ export async function startNec2cReport(data) {
     XYZ: <span style="color:#ff5555">X boom</span> · <span style="color:#55ff55">Y elements</span> ·
     <span style="color:#6688ff">Z vertical</span></div><div id="power-budget"></div>`;
   document.body.append(controlsPanel);
-  makeCollapsibleSettingsPanel(controlsPanel);
   const inspector = document.createElement("section");
   inspector.id = "conductor-inspector";
   inspector.className = "panel";
@@ -1448,7 +1545,7 @@ export async function startNec2cReport(data) {
         radialaxis: { gridcolor: "#245069", color: "#9ceeff",
           range: displayScale.range, tickvals: displayScale.tickvals,
           ticktext: displayScale.ticktext } },
-    }, { responsive: true, displaylogo: false, scrollZoom: true,
+    }, { responsive: true, displaylogo: false, displayModeBar: false, scrollZoom: true,
       toImageButtonOptions: { format: "svg", filename: "antenna-pattern-cut" } });
   }
   planeSelect.addEventListener("change", () => { configureCutAngle(); drawPolar(); });
@@ -1496,6 +1593,10 @@ export async function startNec2cReport(data) {
   const fieldScaleSelect = fieldWorkspace.querySelector("#near-field-scale");
   const fieldPhaseSlider = fieldWorkspace.querySelector("#near-field-phase");
   const fieldFloorSlider = fieldWorkspace.querySelector("#near-field-floor");
+  const fieldRailTitle = document.createElement("div");
+  fieldRailTitle.id = "near-field-rail-title";
+  fieldRailTitle.innerHTML = `<strong></strong><span></span>`;
+  fieldWorkspace.querySelector(".field-toolbar").prepend(fieldRailTitle);
   let fieldPhaseDegrees = 0;
   let fieldPlaying = true;
   const electromagneticFieldModes = [
@@ -1659,10 +1760,13 @@ export async function startNec2cReport(data) {
   }
 
   function signedColorscale(quantity) {
-    // E uses blue/black/red; H deliberately uses cyan/black/lime so the
+    // E uses a light azure/black/amber complementary pair.  Extra shoulder
+    // stops keep most of the visible log range colorful without weakening
+    // the nearly black zero crossing.  H deliberately uses cyan/black/lime so the
     // field identity remains visible even when the plot title is cropped.
     return quantity === "electric"
-      ? [[0, "#2864dc"], [.5, "#030611"], [1, "#e43a3a"]]
+      ? [[0, "#8ac8ff"], [.3, "#3978d4"], [.5, "#030611"],
+        [.7, "#c89428"], [1, "#ffe081"]]
       : [[0, "#00a7c4"], [.5, "#030611"], [1, "#a6df45"]];
   }
 
@@ -1719,6 +1823,7 @@ export async function startNec2cReport(data) {
 
   function drawNearField() {
     if (!nearFieldSections.length) return Promise.resolve();
+    const compactSideLayout = matchMedia("(max-width: 900px)").matches;
     fieldAvailability();
     const section = nearFieldSections[Number(fieldPlaneSelect.value) || 0];
     const quantity = fieldQuantitySelect.value;
@@ -1773,17 +1878,21 @@ export async function startNec2cReport(data) {
         section, exclusionMask, mode, fieldPhaseDegrees, maximum, floor));
     const powerTitle = instantaneousFieldMode(quantity, mode)
       ? "Instantaneous power flow" : "Average power flow";
+    fieldRailTitle.querySelector("strong").textContent =
+      quantity === "power" ? powerTitle : `${quantity.toUpperCase()} field`;
+    fieldRailTitle.querySelector("span").textContent =
+      `${String(section.normal_axis).toUpperCase()}-normal at ` +
+      `${Number(section.position).toPrecision(5)} m`;
     return Plotly.react(fieldWorkspace.querySelector("#near-field-plot"), traces, {
-      title: { text: `${quantity === "power" ? powerTitle : quantity.toUpperCase() + " field"} · ` +
-        `${String(section.normal_axis).toUpperCase()}-normal at ${Number(section.position).toPrecision(5)} m`,
-        font: { color: "#7df9ff", size: 18 }, x: .02 },
       paper_bgcolor: "rgba(3,6,17,0)", plot_bgcolor: "#030611",
       font: { family: '"DejaVu Sans Mono", monospace', color: "#d8fbff" },
-      margin: { l: 75, r: 80, t: 62, b: 62 },
+      margin: { l: compactSideLayout ? 42 : 58, r: compactSideLayout ? 48 : 62,
+        t: compactSideLayout ? 10 : 18, b: compactSideLayout ? 42 : 54 },
       xaxis: { title: `${String(section.u_axis).toUpperCase()} (m)`, gridcolor: "#245069",
         scaleanchor: "y", scaleratio: 1 },
       yaxis: { title: `${String(section.v_axis).toUpperCase()} (m)`, gridcolor: "#245069" },
-    }, { responsive: true, displaylogo: false, scrollZoom: true,
+    }, { responsive: true, displaylogo: false, displayModeBar: false,
+      scrollZoom: true,
       toImageButtonOptions: { format: "png", filename: "nec2c-near-field" } });
   }
   fieldQuantitySelect.addEventListener("change", () => {
@@ -1813,6 +1922,11 @@ export async function startNec2cReport(data) {
     <button data-view="plots">PLOTS</button><button data-view="pattern2d">2D PATTERN</button>` +
     (nearFieldSections.length ? `<button data-view="nearfield">NEAR FIELD</button>` : "");
   document.body.append(tabs);
+  installReportSideRail({
+    controls: controlsPanel,
+    navigation: tabs,
+    extraOverlays: [inspector, currentProfile],
+  });
   let activeView = "viewer3d";
   function show(view) {
     activeView = view;

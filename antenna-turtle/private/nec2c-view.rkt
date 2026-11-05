@@ -31,6 +31,8 @@
  show-radiation-cut
  show-radiation-pattern-3d
  show-radiation-pattern-opengl
+ show-near-field-poynting-particles
+ show-radiation-palette-lab
  show-radiation-comparison
  visualization-handle?
  visualization-update!
@@ -1126,6 +1128,74 @@
                #:antenna? antenna?
                #:width width
                #:height height))
+
+(define (show-near-field-poynting-particles
+         result
+         #:section [section 0]
+         #:mode [mode 'reactive]
+         #:particles [particles 12000]
+         #:spawn-rate [spawn-rate 1800.0]
+         #:trail-length [trail-length 8]
+         #:cycles-per-second [cycles-per-second 0.28]
+         #:jitter [jitter 0.0006]
+         #:particle-size [particle-size 1.0]
+         #:antenna? [antenna? #t]
+         #:width [width 1120]
+         #:height [height 760])
+  (define show-particles
+    (with-handlers ([exn:fail?
+                     (lambda (failure)
+                       (raise-user-error
+                        'show-near-field-poynting-particles
+                        "could not start the OpenGL particle viewer: ~a"
+                        (exn-message failure)))])
+      (dynamic-require opengl-view-path
+                       'show-near-field-poynting-particles)))
+  (show-particles result
+                  #:section section
+                  #:mode mode
+                  #:particles particles
+                  #:spawn-rate spawn-rate
+                  #:trail-length trail-length
+                  #:cycles-per-second cycles-per-second
+                  #:jitter jitter
+                  #:particle-size particle-size
+                  #:antenna? antenna?
+                  #:width width
+                  #:height height))
+
+(define (show-radiation-palette-lab grid
+                                    #:component [component 'total]
+                                    #:floor-db [floor-db -40]
+                                    #:normalize? [normalize? #t]
+                                    #:scale [radial-scale 'arrl]
+                                    #:palette [palette 'magma]
+                                    #:mesh-step [mesh-step 2]
+                                    #:axes? [axes? #t]
+                                    #:antenna? [antenna? #t]
+                                    #:spherical-grid? [spherical-grid? #f]
+                                    #:width [width 1240]
+                                    #:height [height 800])
+  (define show-lab
+    (with-handlers ([exn:fail?
+                     (lambda (failure)
+                       (raise-user-error
+                        'show-radiation-palette-lab
+                        "could not start the OpenGL palette laboratory: ~a"
+                        (exn-message failure)))])
+      (dynamic-require opengl-view-path 'show-radiation-palette-lab)))
+  (show-lab grid
+            #:component component
+            #:floor-db floor-db
+            #:normalize? normalize?
+            #:scale radial-scale
+            #:palette palette
+            #:mesh-step mesh-step
+            #:axes? axes?
+            #:antenna? antenna?
+            #:spherical-grid? spherical-grid?
+            #:width width
+            #:height height))
 
 (define (show-radiation-comparison cases
                                    #:component [component 'total]

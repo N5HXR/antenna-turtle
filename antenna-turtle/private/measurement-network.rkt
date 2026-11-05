@@ -11,6 +11,7 @@
 (provide
  impedance-at admittance-at resistance-at reactance-at
  reflection-at s11-db-at return-loss-at vswr-at
+ find-s11-minimum
  impedance->reflection-coefficient
  reflection-coefficient->return-loss reflection-coefficient->vswr
  impedance->return-loss impedance->vswr
@@ -144,6 +145,15 @@
   (magnitude->db
    (magnitude
     (reflection-at result frequency #:port port #:interpolate? interpolate?))))
+
+(define (find-s11-minimum result #:port [port #f])
+  (define samples (network-samples-for 'find-s11-minimum result port))
+  (when (null? samples)
+    (raise-arguments-error
+     'find-s11-minimum "the selected port has no network samples"))
+  (define sample (argmin network-sample-s11-db samples))
+  (list (network-sample-frequency-mhz sample)
+        (network-sample-s11-db sample)))
 
 (define (return-loss-at result frequency #:port [port #f]
                         #:interpolate? [interpolate? #t])

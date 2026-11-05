@@ -883,6 +883,13 @@ With `#:vertices? #t`, every Antenna Turtle vertex is also marked. `width` and
 `#:aspect-ratio` is an additional width-to-height projection multiplier and
 defaults to `1` for an undistorted view.
 
+When Manifold support is available, the same view also renders registered
+volume bodies, `form surface` bodies, and planar sheets and includes them in
+its automatic bounds and legend. These are the authored solids, including the
+PEC body from which NEC2C reconstructs its surface-patch lattice; wire
+centerlines remain lightweight lines and no OpenEMS simulation port is
+derived. Consequently, a multi-feed NEC2C array can be previewed normally.
+
 The viewer gives every coordinate axis the same metric range and dynamically
 adjusts the Plot3D viewport during rotation so horizontal and vertical screen
 units remain equal. This avoids both independent data-axis stretching and the
@@ -2310,6 +2317,8 @@ The complete one-port/network signatures are:
                 #:interpolate? [boolean #t])
 (vswr-at result frequency #:port [name #f]
          #:interpolate? [boolean #t])
+(find-s11-minimum result #:port [name #f])
+  -> (list frequency s11-db)
 ```
 
 ```racket
@@ -2321,6 +2330,9 @@ The complete one-port/network signatures are:
 (s11-db-at sweep 435 #:port 'input)
 (return-loss-at sweep 435 #:port 'input)
 (vswr-at sweep 435 #:port 'input)
+(define null (find-s11-minimum sweep #:port 'input))
+(define null-frequency (first null))
+(define null-s11-db (second null))
 ```
 
 The `#:port` argument may be omitted when there is exactly one port. Port
@@ -2328,6 +2340,11 @@ symbols and strings with the same spelling match. Complex impedance and
 reflection values use rectangular interpolation, so all derived quantities
 remain mutually consistent. `s11-db-at` is the signed S11 magnitude; return
 loss is its positive inverse.
+
+`find-s11-minimum` finds the deepest S11 null among the frequencies actually
+sampled by the sweep and returns `(list frequency s11-db)`. It
+does not interpolate a possibly deeper point between samples; use a finer
+sweep around the returned frequency when additional precision is needed.
 
 Matching conversions operate on ordinary numbers without requiring a solver
 result. Impedance conversions use the current `model-impedance` by default;
@@ -2454,6 +2471,60 @@ reporting code:
 Each exporter validates pending-feed state and returns its output path. NEC2C
 and MATLAB exports replace the requested file. MMANA has the update behavior
 described below.
+
+### `(nec2c-segmentation-report)` and `(show-segmentation-report [report] [output-port])`
+
+`nec2c-segmentation-report` analyzes the completed current model using the
+same wire-subdivision rules as `export-nec2c`. It returns a transparent
+`segmentation-report` value. `show-segmentation-report` prints a compact human
+readable summary and returns that value, so the common interactive use is:
+
+```racket
+(show-segmentation-report)
+```
+
+The report includes:
+
+- authored wire-edge, NEC wire-segment, and NEC surface-patch counts;
+- total wire length in metres and wavelengths;
+- minimum, average, and maximum emitted segment lengths;
+- the number of disconnected components in the wire graph;
+- exported-coordinate bounding-box minima, maxima, X/Y/Z spans, and volume;
+- the model frequency and configured target segment length.
+
+Wire-port fixture edges are forced to one segment, as they are during export.
+Generated wire segments for inline lumped elements also participate in the
+count and length statistics. A contiguous path is a connected component of
+wire edges sharing model vertices: a closed loop is one path, while isolated
+Yagi elements are separate paths. Merely crossing at an unsegmented interior
+point does not connect two paths. Bounds describe wire centerlines and include
+NEC surface-patch corners when the model has an NEC surface body.
+
+The transparent structure accessors are:
+
+```racket
+segmentation-report-frequency-mhz
+segmentation-report-target-segment-length-m
+segmentation-report-wire-edge-count
+segmentation-report-surface-patch-count
+segmentation-report-segment-count
+segmentation-report-total-length-m
+segmentation-report-total-length-wavelengths
+segmentation-report-average-segment-length-m
+segmentation-report-minimum-segment-length-m
+segmentation-report-maximum-segment-length-m
+segmentation-report-contiguous-path-count
+segmentation-report-bounds-minimum
+segmentation-report-bounds-maximum
+segmentation-report-x-span-m
+segmentation-report-y-span-m
+segmentation-report-z-span-m
+segmentation-report-bounding-volume-m3
+```
+
+Minimum, average, and maximum segment lengths are `#f` for a model without
+wire segments. Bounding minima and maxima are `#f` for a model with no wire or
+surface geometry; its spans and volume are zero.
 
 ### `(export-nec2c path)`
 
@@ -2754,6 +2825,99 @@ and H consumes twice the spatial point count.
                              #:fields '(electric)))))
 ```
 
+### `(show-near-field-poynting-particles ...)` — experimental
+
+```racket
+(show-near-field-poynting-particles
+ fields
+ [#:section section-index 0]
+ [#:mode mode 'reactive]
+ [#:particles maximum-count 12000]
+ [#:spawn-rate particles-per-second 1800.0]
+ [#:trail-length samples 8]
+ [#:cycles-per-second cycles 0.28]
+ [#:jitter field-span-fraction 0.0006]
+ [#:particle-size scale 1.0]
+ [#:antenna? antenna? #t]
+ [#:width pixels 1120]
+ [#:height pixels 760])
+```
+
+Opens a native Racket/OpenGL workbench for experimenting with animated
+near-field energy-flow tracers. It consumes an existing
+`nec2c-near-field-result`, so changing visualization controls does not rerun
+NEC2C or regenerate an HTML report. The default `'reactive` mode advects
+tracers with instantaneous Poynting flow after subtracting the time-average
+flow, making reversible near-field “sloshing” easier to see. The other modes
+are `'instantaneous` and `'average`.
+
+Motion uses normalized energy velocity `S/u`, clamped to the speed of light.
+Tracer advection is locked 1:1 to RF phase time: independently accelerating
+the particles moves them into a different spatial phase before the natural
+field reversal and can create artificial net drift. Particle hue shows
+flow direction on the outer body and trail: amber moves inward toward the
+feed, cyan moves outward, and pale motion is tangential or nearly stationary.
+A smaller inner core retains the stored-energy indication: amber is
+magnetic-dominant, cyan is electric-dominant, and pale marks the handoff.
+Each trail bead retains the direction color it had when created instead of
+being recolored from the particle head's later state. Trails restart when
+local motion reverses so that retracing does not hide the turnaround. These
+are visualization probes, not conserved photons, charges, or solver particles.
+The window provides pause/play, phase scrubbing, mode selection, and continuous
+particle emission. Particles that escape the sampled
+volume are removed rather than replaced immediately; new particles appear at
+the steady `#:spawn-rate`, allowing the active population to settle according
+to residence time. `#:particles` is now a safety ceiling, not a maintained
+population target. The default also includes a self-lit conductor overlay and
+a highlighted feedpoint; pass `#:antenna? #f` to suppress that model context.
+Particles and their trails are packed into one dynamic GPU buffer rather than
+constructed as individual 3D objects. Their translucent additive rendering
+keeps isolated probes delicate while dense streams merge into brighter,
+fluid-looking structures. The 12,000-particle default is therefore practical
+without multiplying the scene graph by every trail bead.
+`#:jitter` adds a tiny random displacement per frame, expressed as a fraction
+of the field view radius, so probes can diffuse away from exact numerical
+stagnation lines. This is a visualization aid rather than physical motion; set
+it to `0` for unperturbed advection. `#:particle-size` scales the screen-space
+point diameter. Both values can also be adjusted interactively with the
+`MICRO-JITTER` and `PARTICLE SIZE` sliders. Particle colors are reused from the
+advection sample and the packed buffer is cached between simulation updates,
+so orbit and zoom repaints do not resample all probes.
+
+Additive particle light is accumulated into a floating-point offscreen buffer
+and passed through a Reinhard `x / (1 + x)` tone-map before compositing over
+the model. This replaces hard framebuffer clipping with a gradual highlight
+shoulder, preserving structure in dense near-conductor regions. The interactive
+`EXPOSURE` slider (default 1.5) controls the input to that curve from 0.1 to
+5.0. Display brightness still combines biased seeding, tracer residence time,
+and overlap; it is not a calibrated map of electromagnetic energy density.
+
+Expensive phase-scrub redraws are coalesced until the slider briefly rests. It
+returns a `visualization-handle`.
+
+The paused workbench can also export its current presentation as a video. Set
+`VIDEO CYCLES` (1–60), choose `DEGREES / FRAME` (0.1–30, default 1), click
+`EXPORT MP4`, and choose a destination. Export preserves the current camera,
+zoom, flow mode, phase, particle size, jitter, and active particle state. It
+captures only the OpenGL scene and advances the field and tracers at their
+normal 1:1 RF time scale. One degree per frame produces 360 frames—or twelve
+seconds at 30 fps—for each requested cycle. Values that do not divide 360 are
+rounded up to an integral frame count and use the corresponding exact phase
+step. Particle emission, lifetime, and jitter diffusion are normalized to RF
+phase elapsed, preventing finer sampling from changing the flow's per-cycle
+behavior. The result is an H.264/yuv420p MP4 suitable for sharing. The field
+phase is cycle-complete, although continuously emitted and diffusing tracer
+positions are not forced into a seamless loop. The system `ffmpeg` executable
+is a runtime requirement for this experimental exporter.
+
+```racket
+(define fields
+  (nec2c-near-field-planes
+   #:planes (list (near-field-section #:plane 'xz
+                                      #:samples '(181 121)))))
+(show-near-field-poynting-particles fields)
+```
+
 ### `(write-nec2c-html-report result destination ...)`
 
 ```racket
@@ -2769,7 +2933,9 @@ For an ordinary first look, the one-step convenience entry point derives its
 simulation parameters from the current model:
 
 ```racket
-(html-auto-report destination)
+(html-auto-report destination
+                  [#:pattern pattern-grid]
+                  [#:pattern-step degrees])
 ```
 
 It makes a 301-point linear sweep from half an octave below through half an
@@ -2779,8 +2945,14 @@ at `model-frequency`, and writes the normal portable report with its automatic
 near-field planes. Network values at the model frequency are interpolated when
 it falls between sweep samples. It uses `model-title`, `model-impedance`, the
 model ground, feeds, geometry, and normal NEC2C solver settings, then returns
-the completed report path. Use the separate sweep, radiation-grid, near-field,
-and report operations below when any of those choices need customization.
+the completed report path. Set `#:pattern-step` to a positive angular step in
+degrees to replace the 5-degree default for both theta and phi; for example,
+`#:pattern-step 1` produces a fine 1-degree model. Alternatively, pass an
+existing `nec2c-pattern-grid` as `#:pattern` to reuse work already performed
+and retain its custom angular resolution. Its frequency and diagnostics are
+preserved. `#:pattern` and `#:pattern-step` are mutually exclusive. Use the
+separate sweep, near-field, and report operations below when those choices
+also need customization.
 
 Writes a single self-contained interactive HTML report for the wire-native
 NEC2C backend and returns its complete path. The report contains four
@@ -3025,6 +3197,18 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
                                [#:antenna? #t]
                                [#:width 1000]
                                [#:height 760])
+(show-radiation-palette-lab grid
+                            [#:component 'total]
+                            [#:floor-db -40]
+                            [#:normalize? #t]
+                            [#:scale 'arrl]
+                            [#:palette 'magma]
+                            [#:mesh-step 2]
+                            [#:axes? #t]
+                            [#:antenna? #t]
+                            [#:spherical-grid? #f]
+                            [#:width 1240]
+                            [#:height 800])
 (show-radiation-comparison
  (list (radiation-case title grid) ...)
  [#:component 'total]
@@ -3109,7 +3293,7 @@ chart at the upper-left, so a sufficiently wide window keeps it entirely in
 the chart's unused side margin. Smith-chart data tips use a compact two-line
 layout so Plot's square overlay boundary is unlikely to clip them.
 
-The two OpenGL operations return an opaque `visualization-handle`. Save it to
+The OpenGL viewers return an opaque `visualization-handle`. Save it to
 replace a live view without closing its window:
 
 ```racket
@@ -3152,8 +3336,10 @@ wheel to zoom. The camera orbits the center of the radiation surface's 3-D
 bounds rather than the RF origin, allowing asymmetric patterns to use the
 viewport efficiently. `#:palette` selects the surface and legend color ramp:
 `'mmana` (the default) follows the conventional antenna-plot progression from
-deep blue through cyan, green, yellow, red, and magenta, with extra color
-resolution in the first 10 dB below peak. `'magma` provides a dark
+deep blue through cyan, green, yellow, red, and magenta, with its own strongly
+curved distribution near the peak. All other ramps use common stops at -30,
+-25, -19, -15, -11, -7, -3, -1, and 0 dB, preserving fine main-lobe detail
+while bringing midtones into ordinary sidelobe ranges. `'magma` provides a dark
 navy/purple/magenta/orange SDR-style ramp; `'sdr` is its alias. `'inferno`,
 `'viridis`, and `'grayscale` are also available. Every palette covers 0
 through -30 dB, independently of the radial geometry selected by `#:scale`.
@@ -3161,6 +3347,25 @@ The legend's right side shows those relative values. Its left side adds each
 relative value to the selected component's measured peak and labels the result
 in dBi, allowing colors to be read either relative to the main lobe or as
 absolute gain.
+
+`show-radiation-palette-lab` is an experimental companion to the normal
+OpenGL viewer. It offers every named color ramp in a drop-down and gives each
+interior ramp color a 0.1 dB position slider. Sliders cannot cross their
+neighbors; the first and last colors remain anchored at -30 and 0 dB so the
+legend always covers the same range. `RESET RAMP` restores the named ramp and
+`COPY STOPS` copies the resulting association list for use in a source-level
+palette definition. The display waits until the sliders have been idle for
+half a second before rebuilding the display mesh. Mesh construction runs in a
+worker thread, and a completed surface is discarded if a newer slider change
+has superseded it, so tuning the controls remains responsive. This workbench
+changes presentation only and deliberately does not modify the production
+ramp definitions.
+
+Enable `#:spherical-grid? #t`, or its checkbox, to draw a sparse
+latitude/longitude net just above the radiation surface. The net follows the
+pattern radius instead of drawing a reference sphere, adding depth and angular
+cues without suggesting that the surface is spherical. The laboratory returns
+the same kind of `visualization-handle` as the ordinary OpenGL viewer.
 
 By default, colors vary smoothly between mesh vertices. Set `#:color-step` to
 a positive number of decibels, such as `3`, to use hard gain bands instead.

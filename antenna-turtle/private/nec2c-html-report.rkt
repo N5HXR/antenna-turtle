@@ -742,11 +742,28 @@ JS
 ;; Produce a useful first report from only the declarative model. Keep these
 ;; choices deliberately broad enough to reveal a displaced resonance or a
 ;; nearby mode while retaining useful first-look resolution. The radiation
-;; grid matches nec2c-radiation-grid's normal preview density, and the report
-;; writer supplies its usual automatic near-field planes.
-(define (html-auto-report destination)
+;; grid matches nec2c-radiation-grid's normal preview density unless the
+;; caller supplies an already-computed grid, and the report writer supplies
+;; its usual automatic near-field planes.
+(define (html-auto-report destination
+                          #:pattern [supplied-pattern #f]
+                          #:pattern-step [requested-pattern-step #f])
   (unless (path-string? destination)
     (raise-argument-error 'html-auto-report "path-string?" destination))
+  (unless (or (not supplied-pattern) (nec2c-pattern-grid? supplied-pattern))
+    (raise-argument-error
+     'html-auto-report "(or/c #f nec2c-pattern-grid?)" supplied-pattern))
+  (unless (or (not requested-pattern-step)
+              (and (real? requested-pattern-step)
+                   (positive? requested-pattern-step)))
+    (raise-argument-error
+     'html-auto-report "(or/c #f positive-real?)" requested-pattern-step))
+  (when (and supplied-pattern requested-pattern-step)
+    (raise-arguments-error
+     'html-auto-report
+     "#:pattern and #:pattern-step are mutually exclusive"
+     "pattern" supplied-pattern
+     "pattern step (degrees)" requested-pattern-step))
   (define center-frequency (model-frequency))
   (unless (and (real? center-frequency) (positive? center-frequency))
     (raise-arguments-error
@@ -760,8 +777,11 @@ JS
      (* center-frequency half-octave)
      #:steps 301))
   (define pattern
-    (nec2c-radiation-grid
-     #:frequency center-frequency #:theta-step 5 #:phi-step 5))
+    (or supplied-pattern
+        (nec2c-radiation-grid
+         #:frequency center-frequency
+         #:theta-step (or requested-pattern-step 5)
+         #:phi-step (or requested-pattern-step 5))))
   (write-nec2c-html-report sweep destination #:pattern pattern))
 
 ;; Keep the common report entry point available in wire-only installations.

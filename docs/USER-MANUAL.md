@@ -619,7 +619,10 @@ Call `show-model` after constructing geometry to open a Plot3D window:
 ```
 
 Drag inside the window to rotate the view. Feedpoints are red and conductors
-default to medium blue. A different Plot3D color can be selected directly:
+default to medium blue. When the optional solid backend is present, registered
+volume and `form surface` bodies and planar sheets are drawn in the same view;
+this includes the authored PEC body from which NEC2C surface patches are
+generated. A different Plot3D wire color can be selected directly:
 
 ```racket
 (show-model #:wire-color "navy")
@@ -1231,6 +1234,21 @@ MATLAB supports center feeds only and reports an error for start/end feeds.
 Multiple feeds are supported by the core language and wire exporters. The loft
 MATLAB exporter currently supports at most one.
 
+After constructing a model, inspect the actual NEC2C subdivision with:
+
+```racket
+(show-segmentation-report)
+```
+
+This prints the emitted wire-segment count; total wire length in metres and
+wavelengths; minimum, average, and maximum segment lengths; disconnected wire
+path count; surface-patch count; and the model bounding box, axis spans, and
+volume. The returned `segmentation-report` value has public accessors for
+optimization code, such as `segmentation-report-segment-count` and
+`segmentation-report-contiguous-path-count`. Port fixtures and inline lumped
+element gaps follow their special NEC2C export rules, so this count can differ
+from simply summing `edge-segment-count` over authored edges.
+
 ### Vertex snapping
 
 Newly drawn endpoints snap to an existing model vertex when they differ only
@@ -1493,6 +1511,29 @@ legend names the active palette and radial scale. Relative attenuation appears
 to the right of its color strip; matching absolute gain in dBi appears to the
 left, calculated from the selected component's peak.
 
+MMANA retains its conventional nonlinear tone positions. The other ramps
+share stops at -30, -25, -19, -15, -11, -7, -3, -1, and 0 dB. This gives the
+first few decibels enough resolution to show main-lobe shape, places midtones
+near common sidelobe levels, and reserves the darkest end for deep nulls.
+
+When developing or revising those ramps, use the separate palette laboratory:
+
+```racket
+(show-radiation-palette-lab pattern
+                            #:palette 'magma
+                            #:spherical-grid? #t)
+```
+
+Its named-ramp menu and neighbor-constrained sliders move each interior color
+stop through the -30 to 0 dB range in 0.1 dB increments. The endpoint colors
+remain fixed at -30 and 0 dB, `RESET RAMP` restores the selected definition,
+and `COPY STOPS` copies the tuned association list. These experiments do not
+alter the ordinary viewer's built-in palettes. The optional spherical grid is
+a sparse latitude/longitude net laid just above the radiation surface, useful
+for judging whether angular guides improve the sense of depth. Redrawing waits
+until a slider has been idle for half a second, and the mesh is built in the
+background so dragging remains responsive.
+
 Add `#:color-step 3` to either OpenGL viewer for hard 3 dB color bands instead
 of a continuous gradient. A triangle is colored from its average gain, so the
 contour precision follows the theta/phi resolution requested from NEC2C. The
@@ -1573,6 +1614,56 @@ linear and logarithmic scales. Instantaneous vectors may reverse locally where
 reactive energy moves back and forth, while the average vectors show net power
 transport.
 
+For a faster experimental loop, the native OpenGL particle workbench reuses an
+already-computed near-field result without generating or navigating an HTML
+report:
+
+```racket
+(define fields
+  (nec2c-near-field-planes
+   #:planes
+   (list (near-field-section #:plane 'xz #:samples '(181 121)))))
+
+(show-near-field-poynting-particles fields)
+```
+
+Its default reactive mode subtracts average power flow from instantaneous
+Poynting flow, emphasizing energy that moves away from and then back toward the
+antenna. Short tracer trails show reversals; amber particles are locally
+magnetic-energy dominant, cyan particles are electric-energy dominant, and
+pale particles are near the quadrature handoff. Switch the GUI to full
+instantaneous or time-average flow for comparison. The particles are moving
+visualization probes, not literal packets of RF energy. The default workbench
+uses 12,000 GPU-batched, partially transparent probes; overlapping particles
+and trails accumulate into a brighter fluid-like stream while isolated probes
+remain visually light. `MICRO-JITTER` supplies a small optional visual
+diffusion that can dislodge probes from exact stagnation lines, while
+`PARTICLE SIZE` changes their screen-space diameter and therefore the apparent
+texture of dense flows. Jitter is not part of the electromagnetic solution and
+can be set to zero for strictly field-driven advection.
+
+Particle light is accumulated in a floating-point buffer before display. A
+Reinhard tone-map shoulder compresses dense overlap instead of clipping it
+directly to white, retaining more structure around high-residence regions near
+the conductors while leaving isolated outer tracers visible. `EXPOSURE`
+controls the amount of accumulated light entering that curve; lower it when a
+dense conductor halo dominates the view and raise it for sparse flows. The
+result remains a qualitative tracer-density presentation rather than a
+calibrated energy-magnitude map.
+
+To make a shareable animation, pause the workbench at the desired camera,
+zoom, phase, flow mode, and particle appearance. Set `VIDEO CYCLES` to the
+number of complete RF cycles to record, choose `DEGREES / FRAME`, and click
+`EXPORT MP4`; the file chooser selects the destination. The default 1° setting
+renders 360 frames per cycle, or twelve seconds of video per cycle at 30 fps.
+The exporter records the OpenGL scene without the native controls and writes
+an H.264 MP4 through the system `ffmpeg` command. Emission, tracer lifetime,
+and random-walk diffusion are scaled to RF phase elapsed, so finer sampling
+changes temporal smoothness without changing their per-cycle behavior. Because
+the capture contains an integral number of cycles, the field phase is
+cycle-complete; continuously emitted and diffusing tracers are not forced to
+repeat their starting positions. FFmpeg is required on `PATH`.
+
 Samples on or immediately adjacent to wires and PEC patches, inside a closed
 PEC body, on the ground plane, or below ground are singular, source-defined,
 or outside the physical solution half-space rather than useful free-space
@@ -1610,6 +1701,28 @@ values at the model frequency are interpolated when it falls between sweep
 samples. The function returns the completed report path. When any of those
 choices need to change, use the sweep, radiation-grid, and report functions
 separately as shown above.
+
+For a finer report without constructing the pattern separately, set the shared
+theta/phi step in degrees:
+
+```racket
+(html-auto-report "antenna-report.html" #:pattern-step 1)
+```
+
+An already-computed pattern can instead be handed to the same convenience
+function. This avoids another radiation-pattern run and preserves its angular
+resolution:
+
+```racket
+(define fine-pattern
+  (nec2c-radiation-grid #:theta-step 1 #:phi-step 1))
+
+(html-auto-report "antenna-report.html" #:pattern fine-pattern)
+```
+
+The automatic sweep and near-field planes are still generated normally. The
+supplied pattern's frequency and diagnostics are used in place of the default
+5-degree pattern. `#:pattern` and `#:pattern-step` cannot be used together.
 
 Portable NEC2C reports round serialized numeric display data to eight
 significant digits, gzip the JSON payload, and embed its base64 representation

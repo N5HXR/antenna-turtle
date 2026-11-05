@@ -134,6 +134,9 @@
  with-scale
  with-push
  export-nec2c
+ (struct-out segmentation-report)
+ nec2c-segmentation-report
+ show-segmentation-report
  export-mmana
  export-matlab
  export-matlab-loft
