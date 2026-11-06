@@ -258,6 +258,10 @@ For example:
 (cylinder radius)
 (dome radius)  (bowl radius)
 (catenary span sag)
+(circular-wire-mesh diameter ribcount ringcount)
+(circular-wire-mesh outer-diameter inner-diameter ribcount ringcount)
+(circular-shielded-reflector diameter height ribcount ringcount
+                             #:wall-ringcount wall-ringcount)
 (radial-repeat count body ...)
 radial-iterations
 (here)
@@ -317,6 +321,20 @@ The catenary hangs along local X between supports separated by `span`, with its
 center lower by `sag`, and is extruded along local Y. `cylinder` constructs a
 full warp where local X is circumferential arc length and local Y is the
 cylinder axis.
+
+`circular-wire-mesh` draws a centered set of radial ribs and evenly spaced
+concentric rings in the local forward/left plane. Rib/ring crossings are shared
+vertices, the first rib points local forward, and the complete turtle state is
+restored afterward. It may be wrapped in `with-surface` to form a wire-frame
+dish or other curved circular structure. The four-argument form spaces the
+rings from `inner-diameter` through `outer-diameter` and terminates the ribs on
+the innermost ring, leaving out the high-degree center junction.
+
+`circular-shielded-reflector` adds a cylindrical wire wall around a filled
+circular mesh. Its vertical wires continue the floor ribs, and its horizontal
+rings include a top rim. Wall-ring density defaults to approximately the
+floor's radial mesh spacing and may be set explicitly with
+`#:wall-ringcount`.
 
 `radial-repeat` runs a body at evenly spaced absolute headings around local up,
 restoring the entry turtle state between copies. Feeds and side effects repeat.

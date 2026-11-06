@@ -31,4 +31,9 @@
       (move forward (* 1.15 quarter-wave))
       (loop-element (* loop-radius 0.95) #f))
 
-(export-mmana "mmana/loop-yagi.maa")
+;(export-mmana "mmana/loop-yagi.maa")
+(export-nec2c "/tmp/loop-yagi.nec")
+
+;(show-model)
+;(define pattern (nec2c-radiation-grid))
+;(show-radiation-pattern-opengl pattern)

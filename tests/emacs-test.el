@@ -19,6 +19,8 @@
     (setq-local indent-tabs-mode nil)
     (insert "#lang antenna-turtle\n"
             "(define ordinary-length (length values))\n"
+            "(circular-wire-mesh 2 12 4)\n"
+            "(circular-shielded-reflector 2 0.2 12 4)\n"
             "(cuboid name substrate\n"
             "  length 150\n"
             "  material pec\n"
@@ -39,6 +41,11 @@
     (font-lock-ensure)
     (should (eq (antenna-turtle-test--face-at "cuboid" 1)
                 'antenna-turtle-macro-face))
+    (should (eq (antenna-turtle-test--face-at "circular-wire-mesh" 1)
+                'antenna-turtle-api-face))
+    (should (eq (antenna-turtle-test--face-at
+                 "circular-shielded-reflector" 1)
+                'antenna-turtle-api-face))
     (should-not (eq (antenna-turtle-test--face-at "length" 1)
                     'antenna-turtle-loop-clause-face))
     (should (eq (antenna-turtle-test--face-at "length" 2)

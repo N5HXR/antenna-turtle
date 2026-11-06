@@ -14,29 +14,10 @@
 
 (define rib-count 42)
 (define ring-count 7)
-(define azimuth-step {360 / rib-count})
-(define ring-step (/ dish-radius ring-count))
-
-;; One radial wire, with vertices at every ring crossing.
-(define (rib)
-  (from-here
-    (with-wire
-      (move forward dish-radius steps ring-count))))
-
-(define (ring radius)
-  ;; Each radial copy emits one complete chord. Adjacent endpoints snap to the
-  ;; same model vertex, including the final chord back to the first.
-  (radial-repeat rib-count
-    (with-points
-      (point forward radius)
-      (turn left azimuth-step)
-      (point forward radius))))
 
 ;; Project a circular mesh onto a parabolic surface
 (with-surface (paraboloid focal-length)
-  (radial-repeat rib-count (rib))
-  (loop for index from 1 to ring-count do
-	(ring {index * ring-step})))
+  (circular-wire-mesh {2 * dish-radius} rib-count ring-count))
 
 ;; ------------------------------------------------------------------------
 ;; Feedpoint Antenna -- a little yagi
@@ -58,4 +39,6 @@
 	      (when (eq? role 'driven) (feed center))
 	      (spread left len))))))
 
-(export-mmana "mmana/dish.maa")
+;(export-mmana "mmana/dish.maa")
+(show-model)
+(define sweep (nec2c-vswr-sweep 400 500 #:steps 501))

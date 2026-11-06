@@ -1,5 +1,7 @@
 #lang antenna-turtle
 
+(require (prefix-in s: srfi/48))
+
 ;; Wideband N5HXR Vertical Antenna
 ;;
 ;; This fixture deliberately uses separate band scenarios.  The present NEC2C
@@ -24,7 +26,7 @@
  run-n5hxr-pattern)
 
 ;; Shared physical dimensions.
-(define mast-height 10.0)
+(define mast-height 7.0)
 (define lmr240-diameter 0.006096)
 (define lmr240-velocity-factor 0.83)
 (define lmr240-impedance 50)
@@ -138,11 +140,11 @@
         input-direction forward
         feed input
     (move down foot)
-    ;(lumped-element down
-    ;  name vhf-common-mode-choke
-    ;  inductance 1e-6
-    ;  topology series
-    ;  gap 0.03)
+    (lumped-element down
+      name vhf-common-mode-choke
+      inductance 1e-6
+      topology series
+      gap 0.03)
     (move down (- mast-height main-coax-input-height foot))))
 
 (define (build-hf-scenario! scenario)
@@ -198,42 +200,91 @@
     [(differential) (build-differential-scenario! scenario)])
   scenario)
 
+(define transformers '(0.25 1.0 4.0))
+(define bands '(3.6 3.9 7.1 10.125 14.1 18.1 21.1 24.9 28.1))
+
+(define (transformed-vswr impedance scale)
+  (define z (* scale impedance))
+  (define rho
+    (magnitude (/ (- z 50) (+ z 50))))
+  (if (>= rho 1)
+      +inf.0
+      (/ (+ 1 rho) (- 1 rho))))
+
+(define (best-match imp)
+  (apply min (map (lambda (x) (transformed-vswr imp x)) transformers)))
+
+(define (get-matches sweep freqs)
+  (loop for f in freqs collect (best-match (impedance-at sweep f #:interpolate? #t))))
+
+(define (find-length)
+  (loop for len from 3 to 12 do
+        (set! mast-height len)
+        (build-n5hxr! 'hf)
+        (let ((sweep (nec2c-vswr-sweep 3 30 #:steps 201)))
+          (let ((bc (count (lambda (x) (<= x 10)) (get-matches sweep bands))))
+            (display (format "~a meters -> ~a bands~n"
+                             (~a "" len #:min-width 4 #:align 'right)
+                             bc))))))
+
 (define (run-n5hxr-sweep value)
-  (define scenario (build-n5hxr! value))
-  (nec2c-vswr-sweep
-   (n5hxr-scenario-sweep-start scenario)
-   (n5hxr-scenario-sweep-stop scenario)
-   #:steps (n5hxr-scenario-sweep-steps scenario)))
-
+   (define scenario (build-n5hxr! value))
+   (nec2c-vswr-sweep
+    (n5hxr-scenario-sweep-start scenario)
+    (n5hxr-scenario-sweep-stop scenario)
+    #:steps (n5hxr-scenario-sweep-steps scenario)))
+ 
 (define (run-n5hxr-pattern value
-                            #:theta-step [theta-step 5]
-                            #:phi-step [phi-step 5])
-  (define scenario (build-n5hxr! value))
-  (nec2c-radiation-grid
-   #:frequency (n5hxr-scenario-pattern-frequency scenario)
-   #:theta-step theta-step
-   #:phi-step phi-step))
+                             #:theta-step [theta-step 5]
+                             #:phi-step [phi-step 5])
+   (define scenario (build-n5hxr! value))
+   (nec2c-radiation-grid
+    #:frequency (n5hxr-scenario-pattern-frequency scenario)
+    #:theta-step theta-step
+    #:phi-step phi-step))
 
-;; Select the model displayed when this file is run directly:
-;;
-;;   N5HXR_SCENARIO=hf  racket examples/n5hxr.rkt
-;;   N5HXR_SCENARIO=vhf racket examples/n5hxr.rkt
-;;   N5HXR_SCENARIO=uhf racket examples/n5hxr.rkt
-(define selected-scenario-name
-  (string->symbol (or (getenv "N5HXR_SCENARIO") "vhf")))
+(when #t
+  (begin
+    
 
-(build-n5hxr! selected-scenario-name)
+    ;; Select the model displayed when this file is run directly:
+    ;;
+    ;;   N5HXR_SCENARIO=hf  racket examples/n5hxr.rkt
+    ;;   N5HXR_SCENARIO=vhf racket examples/n5hxr.rkt
+    ;;   N5HXR_SCENARIO=uhf racket examples/n5hxr.rkt
+    (define selected-scenario-name
+      (string->symbol (or (getenv "N5HXR_SCENARIO") "hf")))
 
-(unless (getenv "ANTENNA_TURTLE_NO_GUI")
-  (show-model #:legend? #t))
+    (build-n5hxr! selected-scenario-name)
 
-(define sweep (nec2c-vswr-sweep 100 200 #:steps 201))
-(define pattern (nec2c-radiation-grid #:frequency 146 #:theta-step 1 #:phi-step 1))
-(show-return-loss-sweep sweep)
-(show-smith-chart sweep)
-(show-radiation-pattern-opengl pattern #:palette 'electric)
+    (unless (getenv "ANTENNA_TURTLE_NO_GUI")
+      (show-model #:legend? #t))
 
-(write-html-report
- sweep
- "scratch/n5hxr-vertical-no-choke.html"
- #:pattern pattern)
+    (define sweep (nec2c-vswr-sweep 3 30 #:steps 201))
+    (define pattern (nec2c-radiation-grid #:frequency 14.1 #:theta-step 1 #:phi-step 1))
+
+    ;(show-return-loss-sweep sweep)
+    (show-smith-chart sweep)
+    ;(show-radiation-pattern-opengl pattern #:palette 'electric)
+
+    ;(write-html-report
+    ; sweep
+    ; "scratch/n5hxr-vertical-hf.html"
+    ; #:pattern pattern)
+
+    (begin
+      (display (format "~a mhz ~a ~a~n"
+                       (~a "" "Freq" #:min-width 8 #:align 'right)
+                       (~a "" "Z" #:min-width 12 #:align 'right)
+                       (~a "" "SWR" #:min-width 6 #:align 'right)))
+      
+      (loop for mhz in '(3.6 3.9 7.1 10.125 14.1 18.1 21.1 24.9 28.1) do
+            (letrec ((imp (impedance-at sweep mhz #:interpolate? #t))
+                     (vswr (vswr-at sweep mhz #:interpolate? #t))
+                     (imp* (make-rectangular (round (real-part imp))
+                                             (round (imag-part imp)))))
+              (display (format "~a mhz ~a ~a~n"
+                               (~a "" mhz #:min-width 8 #:align 'right)
+                               (~a "" imp* #:min-width 12 #:align 'right)
+                               (~a "" (round vswr) #:min-width 6 #:align 'right)))))))
+  )

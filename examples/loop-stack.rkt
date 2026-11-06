@@ -25,3 +25,5 @@
 (regular-loop 8 wavelength #f)
 (move up quarter-wave)
 (regular-loop 32 wavelength #f)
+
+(show-model)

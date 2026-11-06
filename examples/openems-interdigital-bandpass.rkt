@@ -137,13 +137,24 @@
 
 (show-solid-model)
 
+(define capture
+  (field-capture
+   #:frequency 2400
+   #:excitation 'input
+   #:current 'conductors
+   #:volume '(electric magnetic)
+   #:max-samples 250000))
+
 (define result
-  (openems-sweep 1800 3000
-                 #:steps 121
-                 #:end-criteria 1e-4
-                 #:keep-artifacts? #t))
+  (simulate engine openems
+            sweep '(1000 4000)
+            profile draft
+            keep-artifacts #t
+            record-fields capture))
 
 (show-s-parameter-magnitude result)
 (show-s-parameter-phase result)
 (show-return-loss-sweep result)
 (show-smith-chart result)
+
+(write-html-report result "scratch/interdigital.html" #:title "Interdigital Filter")

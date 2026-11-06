@@ -48,7 +48,7 @@
     "mmana-frequency" "wire-diameter"
     "frequency->wavelength" "wavelength->frequency" "model-wavelength"
     "span" "frequency-retuning-scale" "paraboloid" "dome" "bowl"
-    "catenary"
+    "catenary" "circular-wire-mesh" "circular-shielded-reflector"
     "wire-off" "wire-on" "here" "goto"
     "pen-up" "pen-down" "forward" "forwards"
     "back" "backward" "backwards" "move-nearest"

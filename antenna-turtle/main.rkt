@@ -19,6 +19,7 @@
          "private/lumped-element-dsl.rkt"
          "private/wire-network.rkt"
          "private/wire-network-dsl.rkt"
+         "helpers.rkt"
          "private/view.rkt"
          k-infix
          (planet jphelps/loop:1:25)
@@ -102,6 +103,7 @@
  (all-from-out "private/lumped-element-dsl.rkt")
  (all-from-out "private/wire-network.rkt")
  (all-from-out "private/wire-network-dsl.rkt")
+ (all-from-out "helpers.rkt")
  wavelength
  half-wave
  quarter-wave

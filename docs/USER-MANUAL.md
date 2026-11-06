@@ -466,7 +466,66 @@ effects in the body are repeated normally. Inside the body,
 `(index count)` pairs. A nested 2-by-3 repetition therefore reaches values such
 as `'((1 2) (2 3))`.
 
-### 5.6 Warped Surfaces
+### 5.6 Common Wire Constructions
+
+`circular-wire-mesh` draws the radial ribs and concentric rings used by dish
+reflectors, circular ground screens, and similar structures:
+
+```racket
+(circular-wire-mesh diameter ribcount ringcount)
+(circular-wire-mesh outer-diameter inner-diameter ribcount ringcount)
+(circular-shielded-reflector diameter height ribcount ringcount
+                             #:wall-ringcount wall-ringcount)
+```
+
+The turtle's current location is the center. The mesh lies in its local
+forward/left plane, its normal points local up, and the first rib points local
+forward. Rings are spaced evenly from the center through `diameter / 2`. Every
+rib is segmented at each ring crossing, so crossings are shared model vertices
+rather than unrelated wires that merely pass through one another.
+
+The four-argument form leaves a circular opening in the center. Its rings are
+spaced evenly in radius from `inner-diameter / 2` through
+`outer-diameter / 2`, and every rib begins on the innermost ring. Besides
+modeling an actual center opening, this avoids making every rib meet at one
+high-degree NEC junction:
+
+```racket
+(circular-wire-mesh (* 13 inches) (* 2.17 inches) 18 6)
+```
+
+The helper manages its own wire traces and restores the complete turtle state
+like `from-here`; call it directly rather than wrapping it in `with-wire`. It
+also composes with the surface transformations in the next section. The dish
+example reduces to:
+
+```racket
+(with-surface (paraboloid focal-length)
+  (circular-wire-mesh dish-diameter 42 7))
+```
+
+`ribcount` must be an exact integer of at least three. `ringcount` must be a
+positive exact integer for a filled mesh and at least two for an annular mesh.
+The inner diameter must be positive and smaller than the outer diameter.
+
+`circular-shielded-reflector` draws the filled form of `circular-wire-mesh`
+and continues every rib upward by `height` along local up. Horizontal rings
+divide that cylindrical wall, including a final ring around its top edge. The
+floor's outer ring is reused as the bottom edge, so all crossings are shared
+model vertices:
+
+```racket
+(circular-shielded-reflector (* 18 inches) (* 4 inches) 18 6
+                             #:wall-ringcount 3)
+```
+
+`#:wall-ringcount` counts the horizontal rings above the floor, including the
+top rim. When omitted, the helper selects enough evenly spaced wall rings to
+approximate the radial spacing between the floor rings. This keeps the simple
+four-argument form useful as the wall height changes while still allowing
+explicit control of wall density.
+
+### 5.7 Warped Surfaces
 
 `with-surface` lets the turtle draw an ordinary flat parameter-space mesh and
 projects each emitted vertex straight up onto a height field. For a centered
@@ -536,7 +595,7 @@ approximation. Warps cannot be nested, and `move-nearest`, model reset, and
 reflection initiated inside a warp are deliberately rejected. Wrapping a warp
 in `reflect` is supported.
 
-### 5.7 Scaling and Frequency Retuning
+### 5.8 Scaling and Frequency Retuning
 
 `scale` multiplies movement distances but not conductor diameter. The scoped
 form makes frequency correction concise:
@@ -582,7 +641,7 @@ offset calculations. The read-only identifiers `wavelength`, `half-wave`, and
 therefore follow `reset-model!` and a subsequent frequency change in iterative
 generators. `(model-wavelength)` remains the equivalent procedural API.
 
-### 5.8 Measuring Wire Usage
+### 5.9 Measuring Wire Usage
 
 `wire-used` reports the total physical conductor length generated so far in
 metres. Record a reading before a helper call and subtract it afterward to
@@ -607,7 +666,7 @@ diagonal point-to-point distances, snapped endpoints, and reflected geometry.
 It ignores wire-off positioning, an unpaired point anchor, and the solver's
 export-time segmentation because none of those adds physical conductor.
 
-### 5.9 Previewing Geometry
+### 5.10 Previewing Geometry
 
 Call `show-model` after constructing geometry to open a Plot3D window:
 
