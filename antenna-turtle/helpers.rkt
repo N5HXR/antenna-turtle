@@ -14,7 +14,8 @@
                   turn-z
                   wire-off))
 
-(provide circular-wire-mesh
+(provide rectangular-wire-mesh
+         circular-wire-mesh
          circular-shielded-reflector)
 
 (define (positive-finite-real? value)
@@ -22,6 +23,49 @@
        (not (nan? value))
        (not (infinite? value))
        (positive? value)))
+
+(define (rectangular-wire-mesh length width length-divisions width-divisions)
+  "Draw a centered, electrically connected rectangular wire mesh.
+
+LENGTH runs along the turtle's local forward axis and WIDTH along its local
+left axis. The division counts specify cells, not wires, so every crossing is
+emitted as a shared model vertex. The helper owns its point traces and restores
+the complete caller turtle state."
+  (unless (positive-finite-real? length)
+    (raise-argument-error
+     'rectangular-wire-mesh "positive finite real?" length))
+  (unless (positive-finite-real? width)
+    (raise-argument-error
+     'rectangular-wire-mesh "positive finite real?" width))
+  (unless (exact-positive-integer? length-divisions)
+    (raise-argument-error
+     'rectangular-wire-mesh "exact-positive-integer?" length-divisions))
+  (unless (exact-positive-integer? width-divisions)
+    (raise-argument-error
+     'rectangular-wire-mesh "exact-positive-integer?" width-divisions))
+  ;; Point traces let this constructor own its conductor state, like the
+  ;; circular mesh helper, without relocating or otherwise disturbing the
+  ;; turtle that invoked it.
+  (call-from-here
+   (lambda ()
+     (wire-off)
+     ;; Parallel forward wires, each subdivided at every column crossing.
+     (for ([row (in-range (add1 width-divisions))])
+       (define y (- (* width (/ row width-divisions)) (/ width 2)))
+       (call-with-points
+        (lambda ()
+          (for ([column (in-range (add1 length-divisions))])
+            (point-vector-local
+             (- (* length (/ column length-divisions)) (/ length 2)) y 0)))))
+     ;; Parallel left wires, each subdivided at every row crossing.
+     (for ([column (in-range (add1 length-divisions))])
+       (define x (- (* length (/ column length-divisions)) (/ length 2)))
+       (call-with-points
+        (lambda ()
+          (for ([row (in-range (add1 width-divisions))])
+            (point-vector-local
+             x (- (* width (/ row width-divisions)) (/ width 2)) 0)))))))
+  (void))
 
 (define (draw-circular-wire-mesh outer-diameter inner-diameter
                                  ribcount ringcount annular?)

@@ -856,6 +856,39 @@
   (check-equal? (here) before-spread)
   (check-equal? (model-edges) '()))
 
+(test-case "rectangular-wire-mesh creates a connected centered grid"
+  (reset-model!)
+  (move forward 10)
+  (turn-z 90)
+  (define entry-position (here))
+  (rectangular-wire-mesh 4 2 2 2)
+  ;; (WDIV + 1) rows, each split into LDIV edges, plus (LDIV + 1)
+  ;; columns, each split into WDIV edges.
+  (check-equal? (length (model-edges)) 12)
+  (check-equal? (here) entry-position)
+  (check-false (current-wire-active?))
+  ;; Local forward has rotated to global +Y and local left to global -X.
+  (define vertices (map vertex-point (model-vertices)))
+  (for ([point (in-list (list (point3 11 -2 0) (point3 9 2 0)
+                               (point3 11 0 0) (point3 9 0 0)
+                               (point3 10 0 0)))])
+    (check-not-false (member point vertices)))
+  ;; The centre crossing is a shared endpoint, not an overlaid wire crossing.
+  (define center (point3 10 0 0))
+  (check-equal?
+   (length
+    (filter (lambda (edge)
+              (or (equal? center (vertex-point (wire-edge-start edge)))
+                  (equal? center (vertex-point (wire-edge-end edge)))))
+            (model-edges)))
+   4)
+
+  (reset-model!)
+  (check-exn exn:fail:contract?
+             (lambda () (rectangular-wire-mesh 1 1 0 1)))
+  (check-exn exn:fail:contract?
+             (lambda () (rectangular-wire-mesh 1 1 1 0))))
+
 (test-case "from-here restores turtle state and retains geometry"
   (reset-model!)
   (wire-on)

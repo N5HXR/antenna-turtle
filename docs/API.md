@@ -447,6 +447,25 @@ and `feed` are optional; `anchor` defaults to `center` and may be `start`,
 `center`, or `end` relative to the full spread. The resulting conductor has
 one or two ordinary wire edges around the dedicated one-segment port fixture.
 
+### `(rectangular-wire-mesh length width length-divisions width-divisions)`
+
+Traces a rectangular planar wire grid in the turtle's local forward/left plane,
+centered on the current turtle position without moving it. `length` runs along
+local forward and `width` along local left. The division counts are positive
+integers that count cells, so a `length-divisions` by `width-divisions` mesh has
+`width-divisions + 1` forward wires and `length-divisions + 1` left wires.
+Every crossing is a shared model vertex, so the resulting conductors are
+electrically connected as a mesh rather than merely crossing in the preview.
+
+```racket
+(rectangular-wire-mesh 4 2 8 4) ; 4 m by 2 m, with 8 × 4 cells
+```
+
+It always generates conductors; no surrounding `with-wire` is needed. It
+preserves the full turtle state, including the caller's wire state, position,
+orientation, scale, and diameter. A pending feed is rejected because a mesh has
+no unambiguous edge on which to place it.
+
 ### `(move-nearest)`
 
 Moves to the closest existing model vertex, copying its coordinates exactly.
