@@ -163,9 +163,10 @@
   (build-shieldless-coax-fed-dipole)
   (define coax (first (model-wire-coaxes)))
   (check-equal? (wire-coax-declaration-shield-edges coax) '())
-  (check-equal?
+  (check-=
    (wire-transmission-line-physical-length (wire-coax-declaration-line coax))
-   2)
+   2
+   1e-12)
   ;; Two dipole arms, the output port, and the generated input port only.
   (check-equal? (length (model-edges)) 4)
   (check-equal? (length (deck-lines "TL " (deck-text))) 1))

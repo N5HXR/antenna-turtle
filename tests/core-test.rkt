@@ -866,7 +866,10 @@
   ;; columns, each split into WDIV edges.
   (check-equal? (length (model-edges)) 12)
   (check-equal? (here) entry-position)
-  (check-false (current-wire-active?))
+  ;; The helper must leave the public turtle state wire-off. Verify that
+  ;; behavior without reaching for the deliberately private state accessor.
+  (move up 1)
+  (check-equal? (length (model-edges)) 12)
   ;; Local forward has rotated to global +Y and local left to global -X.
   (define vertices (map vertex-point (model-vertices)))
   (for ([point (in-list (list (point3 11 -2 0) (point3 9 2 0)
