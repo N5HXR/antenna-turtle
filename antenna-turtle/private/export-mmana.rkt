@@ -108,6 +108,10 @@
 (define (export-mmana path)
   (validate-model!)
   (define who 'export-mmana)
+  (when (model-has-wire-coatings?)
+    (raise-user-error
+     who
+     "coated wires are currently supported only by the NEC2C backend"))
   (define max-length (require-segmentation! who))
   (define frequency (model-frequency))
   (unless (and (real? frequency) (> frequency 0))

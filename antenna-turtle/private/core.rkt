@@ -1,7 +1,8 @@
 #lang racket/base
 
 (require racket/list
-         racket/math)
+         racket/math
+         "material.rkt")
 
 (provide
  ;; Exact length constants, in meters.
@@ -19,6 +20,8 @@
  (struct-out feed-spec)
  (struct-out ground-spec)
  (struct-out wire-edge)
+ (struct-out wire-coating-spec)
+ wire-edge-coating
  wire-edge-feed? wire-edge-feed-location wire-edge-feed-name
  wire-edge-feed-amplitude wire-edge-feed-phase
  (struct-out antenna-model)
@@ -65,6 +68,8 @@
  turn-x turn-y turn-z turn-axis
  scale scale-all
  wire-diameter
+ set-wire-coating! wire-coating-off current-wire-coating
+ call-with-wire-coating model-has-wire-coatings?
  push pop
  make-feed-spec mark-feed feed
 
@@ -101,8 +106,24 @@
 (struct vertex (id point) #:transparent)
 (struct feed-spec (location name amplitude phase) #:transparent)
 (struct ground-spec (kind relative-permittivity conductivity) #:transparent)
+(struct wire-coating-spec (material outside-diameter) #:transparent)
 (struct wire-edge (id start end diameter feed-info) #:transparent)
 (struct antenna-model (vertices edges) #:mutable #:transparent)
+
+;; Preserve wire-edge's historical five-field transparent representation.
+;; Coating is attached out-of-band by edge identity, so ordinary edge values,
+;; constructor arity, pattern matches, and printed forms remain unchanged.
+(define edge-coatings (make-weak-hasheq))
+
+(define (wire-edge-coating edge)
+  (unless (wire-edge? edge)
+    (raise-argument-error 'wire-edge-coating "wire-edge?" edge))
+  (hash-ref edge-coatings edge #f))
+
+(define (set-wire-edge-coating! edge coating)
+  (if coating
+      (hash-set! edge-coatings edge coating)
+      (hash-remove! edge-coatings edge)))
 
 ;; An orientation is a row-major 3x3 local-to-global matrix.
 (struct turtle-state
@@ -136,6 +157,7 @@
 (define current-turtle-state (make-parameter (initial-state)))
 (define current-turtle-stack (make-parameter '()))
 (define pending-feed-location (make-parameter #f))
+(define current-wire-coating-state (make-parameter #f))
 (define current-coordinate-warp (make-parameter #f))
 (define current-reflection-context (make-parameter #f))
 (define current-radial-iterations (make-parameter '()))
@@ -438,6 +460,7 @@
 (define (reset-model!)
   (check-clear-context 'reset-model!)
   (clear-construction-state! millimeter)
+  (current-wire-coating-state #f)
   (for ([hook (in-list model-reset-hooks)]) (hook))
   (model-title "Turtle Antenna")
   (model-impedance 50)
@@ -819,6 +842,78 @@
      [base-diameter diameter]))
   (void))
 
+(define (validate-wire-coating-material who material)
+  (unless (and (em-material? material)
+               (eq? (em-material-kind material) 'dielectric))
+    (raise-argument-error who "dielectric em-material?" material))
+  (define epsilon-r (em-material-relative-permittivity material))
+  (ensure-real who epsilon-r "coating relative permittivity")
+  (unless (>= epsilon-r 1)
+    (raise-arguments-error
+     who "coating relative permittivity must be at least 1"
+     "material" material))
+  (define mu-r (em-material-relative-permeability material))
+  (ensure-real who mu-r "coating relative permeability")
+  (unless (= mu-r 1)
+    (raise-arguments-error
+     who "magnetic wire coatings are not supported by NEC2C LD 7"
+     "relative permeability" mu-r))
+  (define conductivity (em-material-electric-conductivity material))
+  (ensure-real who conductivity "coating bulk conductivity")
+  (when (negative? conductivity)
+    (raise-arguments-error
+     who "coating bulk conductivity must be nonnegative"
+     "conductivity" conductivity))
+  (define loss (em-material-loss-spec material))
+  (when (and loss (not (memq (material-loss-kind loss) '(loss-tangent narrow))))
+    (raise-arguments-error
+     who
+     "frequency-dependent broadband and relaxation coatings are not yet supported"
+     "material" material))
+  (when loss
+    (define tangent (material-loss-value loss))
+    (ensure-real who tangent "coating loss tangent")
+    (when (negative? tangent)
+      (raise-arguments-error
+       who "coating loss tangent must be nonnegative"
+       "loss tangent" tangent)))
+  material)
+
+(define (set-wire-coating! material outside-diameter)
+  (validate-wire-coating-material 'wire-coating material)
+  (ensure-positive-real
+   'wire-coating outside-diameter "coating outside diameter")
+  (current-wire-coating-state
+   (wire-coating-spec material outside-diameter))
+  (void))
+
+(define (wire-coating-off)
+  (current-wire-coating-state #f)
+  (void))
+
+;; The stored diameter is the unscaled DSL setting, just like base wire
+;; diameter. Capture the effective physical diameter when an edge is emitted.
+(define (current-wire-coating)
+  (define coating (current-wire-coating-state))
+  (and coating
+       (struct-copy
+        wire-coating-spec coating
+        [outside-diameter
+         (* (wire-coating-spec-outside-diameter coating)
+            (turtle-state-diameter-scale (current-turtle-state)))])))
+
+(define (call-with-wire-coating material outside-diameter thunk)
+  (validate-thunk 'with-wire-coating thunk)
+  (define entry (current-wire-coating-state))
+  (dynamic-wind
+    (lambda () (set-wire-coating! material outside-diameter))
+    thunk
+    (lambda () (current-wire-coating-state entry))))
+
+(define (model-has-wire-coatings? [model (current-antenna-model)])
+  (for/or ([edge (in-list (antenna-model-edges model))])
+    (and (wire-edge-coating edge) #t)))
+
 (define (current-wire-diameter)
   (define state (current-turtle-state))
   (* (turtle-state-base-diameter state)
@@ -988,24 +1083,32 @@
      (when (pending-feed-location)
        (error 'feed "cannot place a feed on a zero-length edge"))]
     [else
+     (define diameter (current-wire-diameter))
+     (define coating (current-wire-coating))
+     (when (and coating
+                (< (wire-coating-spec-outside-diameter coating) diameter))
+       (raise-arguments-error
+        'wire-coating
+        "coating outside diameter must be at least the metal wire diameter"
+        "coating outside diameter"
+        (wire-coating-spec-outside-diameter coating)
+        "metal wire diameter" diameter))
      (define new-edge
-       (wire-edge (add1 (length edges))
-                  start
-                  end
-                  (current-wire-diameter)
-                  finalized-feed))
+       (wire-edge (add1 (length edges)) start end diameter finalized-feed))
+     (set-wire-edge-coating! new-edge coating)
      (set-antenna-model-edges! m (append edges (list new-edge)))
      (when (pending-feed-location) (pending-feed-location #f))])
   (values (vertex-point start) (vertex-point end)))
 
-(define (same-undirected-edge? edge start end diameter)
+(define (same-undirected-edge? edge start end diameter coating)
   (and (= (wire-edge-diameter edge) diameter)
+       (equal? (wire-edge-coating edge) coating)
        (or (and (eq? (wire-edge-start edge) start)
                 (eq? (wire-edge-end edge) end))
            (and (eq? (wire-edge-start edge) end)
                 (eq? (wire-edge-end edge) start)))))
 
-(define (append-reflected-edge! start-point end-point diameter)
+(define (append-reflected-edge! start-point end-point diameter coating)
   (define m (current-antenna-model))
   (define start (intern-vertex! start-point))
   (define end
@@ -1014,10 +1117,11 @@
         (intern-vertex! end-point start)))
   (unless (or (eq? start end)
               (for/or ([edge (in-list (antenna-model-edges m))])
-                (same-undirected-edge? edge start end diameter)))
+                (same-undirected-edge? edge start end diameter coating)))
     (define edges (antenna-model-edges m))
     (define reflected-edge
       (wire-edge (add1 (length edges)) start end diameter #f))
+    (set-wire-edge-coating! reflected-edge coating)
     (set-antenna-model-edges! m (append edges (list reflected-edge))))
   (void))
 
@@ -1068,7 +1172,8 @@
       (vertex-point (wire-edge-start edge)) anchor normal)
      (reflect-point-across-plane
       (vertex-point (wire-edge-end edge)) anchor normal)
-     (wire-edge-diameter edge)))
+     (wire-edge-diameter edge)
+     (wire-edge-coating edge)))
   (apply values results))
 
 (define (perform-movement destination)

@@ -19,6 +19,11 @@
     (setq-local indent-tabs-mode nil)
     (insert "#lang antenna-turtle\n"
             "(define ordinary-length (length values))\n"
+            "(wire-coating material petg diameter 0.012)\n"
+            "(with-wire-coating material petg diameter 0.014\n"
+            "  (with-wire (forward 1)))\n"
+            "(wire-coating-off)\n"
+            "(set-coating-experimental #t)\n"
             "(circular-wire-mesh 2 12 4)\n"
             "(circular-shielded-reflector 2 0.2 12 4)\n"
             "(cuboid name substrate\n"
@@ -41,6 +46,14 @@
     (font-lock-ensure)
     (should (eq (antenna-turtle-test--face-at "cuboid" 1)
                 'antenna-turtle-macro-face))
+    (should (eq (antenna-turtle-test--face-at "wire-coating" 1)
+                'antenna-turtle-macro-face))
+    (should (eq (antenna-turtle-test--face-at "with-wire-coating" 1)
+                'antenna-turtle-macro-face))
+    (should (eq (antenna-turtle-test--face-at "wire-coating-off" 1)
+                'antenna-turtle-api-face))
+    (should (eq (antenna-turtle-test--face-at "set-coating-experimental" 1)
+                'antenna-turtle-api-face))
     (should (eq (antenna-turtle-test--face-at "circular-wire-mesh" 1)
                 'antenna-turtle-api-face))
     (should (eq (antenna-turtle-test--face-at

@@ -200,6 +200,10 @@
 (define (export-matlab path)
   (validate-model!)
   (define who 'export-matlab)
+  (when (model-has-wire-coatings?)
+    (raise-user-error
+     who
+     "coated wires are currently supported only by the NEC2C backend"))
   (when (null? (model-edges))
     (error who "cannot export an empty model"))
   (for ([edge (in-list (model-edges))]

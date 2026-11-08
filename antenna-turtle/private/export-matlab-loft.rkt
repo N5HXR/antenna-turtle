@@ -300,6 +300,10 @@ MATLAB
 (define (export-matlab-loft path)
   (validate-model!)
   (define who 'export-matlab-loft)
+  (when (model-has-wire-coatings?)
+    (raise-user-error
+     who
+     "coated wires are currently supported only by the NEC2C backend"))
   (define feeds (validate-loft-model! who))
   (call-with-output-file path
     #:exists 'truncate/replace

@@ -248,6 +248,11 @@ For example:
 (model [setting value] ...)
 (wire-off)
 (wire-on)
+(wire-coating material dielectric-material diameter outside-diameter)
+(wire-coating-off)
+(with-wire-coating material dielectric-material
+                    diameter outside-diameter
+  body ...)
 (with-wire body ...)
 (with-points body ...)
 (with-scale factor body ...)
@@ -438,6 +443,28 @@ restores it to wire-off on exit:
 The restoration also occurs if the body raises an exception, and the body's
 result values are returned normally. Entering `with-wire` while the wire is
 already on is an error, which also prevents accidental nested drawing scopes.
+
+`wire-coating` makes subsequently created wire edges dielectric-coated. The
+ordinary `wire-diameter` remains the metal diameter; the coating's `diameter`
+is its physical outside diameter. Each edge captures the active material and
+outside diameter when it is drawn, so later setting changes do not alter
+existing geometry. Use `wire-coating-off` to return to bare wire, or
+`with-wire-coating` to restore the previous coating automatically:
+
+```racket
+(define petg
+  (dielectric name petg er 3.2 loss (narrow 0.015 435)))
+
+(wire-coating material petg diameter (* 12 millimeters))
+(with-wire (forward half-wave))
+(wire-coating-off)
+```
+
+Coated wires currently export only through NEC2C-N5HXR. Mixed coated/bare or
+unequal-coating junctions retain NEC2C's strict default policy. Research models
+may explicitly enable NEC2C's experimental junction treatment with
+`(set-coating-experimental #t)`; this is an execution setting, not model
+geometry, and remains in effect until disabled.
 
 `with-points` similarly requires wire-off and no active point trace. It starts
 an independent point path and terminates that path on normal or exceptional

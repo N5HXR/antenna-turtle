@@ -122,6 +122,34 @@
                                  (ground-spec-relative-permittivity ground))
               (coordinate-string who (ground-spec-conductivity ground)))]))
 
+(define (write-wire-coating-card out who edge)
+  (define coating (wire-edge-coating edge))
+  (when coating
+    (define material (wire-coating-spec-material coating))
+    (unless (and (em-material? material)
+                 (eq? (em-material-kind material) 'dielectric))
+      (raise-arguments-error
+       who "wire coating must use a dielectric material"
+       "wire" (wire-edge-id edge) "material" material))
+    (define loss (em-material-loss-spec material))
+    (define tangent
+      (cond
+        [(not loss) 0]
+        [(memq (material-loss-kind loss) '(loss-tangent narrow))
+         (material-loss-value loss)]
+        [else
+         (raise-arguments-error
+          who
+          "frequency-dependent broadband and relaxation wire coatings are not yet supported"
+          "wire" (wire-edge-id edge) "material" material)]))
+    (fprintf out "LD 7 ~a 0 0 ~a ~a ~a ~a\n"
+             (wire-edge-id edge)
+             (coordinate-string who (em-material-relative-permittivity material))
+             (coordinate-string
+              who (/ (wire-coating-spec-outside-diameter coating) 2))
+             (coordinate-string who tangent)
+             (coordinate-string who (em-material-electric-conductivity material)))))
+
 (define (nec2c-edge-segment-count edge max-length)
   (if (wire-port-edge? edge)
       1
@@ -619,6 +647,8 @@
        dielectric-resource))
     (fprintf out "DF \"~a\"\n" dielectric-resource))
   (write-ground-card out who)
+  (for ([edge (in-list (model-edges))])
+    (write-wire-coating-card out who edge))
   (for ([load (in-list wire-loads)])
     (write-wire-load-card out who load))
   (for ([line (in-list transmission-lines)])

@@ -45,7 +45,9 @@
 (defconst antenna-turtle--procedures
   '("model-title" "model-impedance" "model-ground" "model-height"
     "real-ground" "maximum-segment-length" "snap-length" "model-frequency"
-    "mmana-frequency" "wire-diameter"
+    "mmana-frequency" "wire-diameter" "wire-coating-off"
+    "current-wire-coating" "set-coating-experimental"
+    "coating-experimental?"
     "frequency->wavelength" "wavelength->frequency" "model-wavelength"
     "span" "frequency-retuning-scale" "paraboloid" "dome" "bowl"
     "catenary" "circular-wire-mesh" "circular-shielded-reflector"
@@ -125,6 +127,7 @@
   '("model" "move" "point" "spread" "feed" "turn" "reflect"
     "radial-repeat"
     "wire-port" "transmission-line" "two-port-y" "ideal-transformer" "coax"
+    "wire-coating" "with-wire-coating"
     "with-wire" "with-points" "from-here" "with-scale" "with-warp"
     "with-surface" "with-pen" "with-push" "with-material" "with-body"
     "with-traces"
@@ -175,7 +178,8 @@
     "y11" "y12" "y22" "turns-ratio" "series-resistance"))
 
 (defconst antenna-turtle--pairwise-forms
-  '("body" "with-body" "with-traces" "sheet" "port" "lumped-element" "dielectric" "conductor" "cuboid" "sphere" "cylinder"
+  '("body" "with-body" "with-traces" "wire-coating" "with-wire-coating"
+    "sheet" "port" "lumped-element" "dielectric" "conductor" "cuboid" "sphere" "cylinder"
     "capsule" "stl" "simulate"))
 
 (defconst antenna-turtle--wire-pairwise-forms
@@ -362,6 +366,8 @@ with INDENT-POINT first, so accept both documented conventions."
 
 (defconst antenna-turtle--indentation-rules
   '((with-scale . 1)
+    (with-wire-coating . 1)
+    (wire-coating . 0)
     (with-material . 1)
     (with-body . 1)
     (with-traces . 1)

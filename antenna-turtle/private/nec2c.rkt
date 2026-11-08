@@ -43,6 +43,8 @@
 (provide
  nec2c-executable
  nec2c-use-ssh-alias
+ set-coating-experimental
+ coating-experimental?
  probe-nec2c-capabilities
  (all-from-out "nec2c-capabilities.rkt")
  (struct-out nec2c-artifacts)
@@ -314,6 +316,20 @@
        (raise-argument-error
         'nec2c-use-ssh-alias "(or/c #f non-empty-string?)" value))
      value)))
+
+;; Coated/bare and unequal-coating junctions are research-only in NEC2C.
+;; Keep this execution policy separate from model geometry, like SSH target
+;; selection, and require an explicit opt-in for every process context.
+(define coating-experimental-enabled? (make-parameter #f))
+
+(define (set-coating-experimental enabled?)
+  (unless (boolean? enabled?)
+    (raise-argument-error 'set-coating-experimental "boolean?" enabled?))
+  (coating-experimental-enabled? enabled?)
+  (void))
+
+(define (coating-experimental?)
+  (coating-experimental-enabled?))
 
 (define numeric-token-rx
   #px"^[+-]?(?:[0-9]+(?:[.][0-9]*)?|[.][0-9]+)(?:[Ee][+-]?[0-9]+)?$")
@@ -1256,6 +1272,10 @@
     (define arguments
       (append
        (if machine-results? '("--result-json" "analysis.json") '())
+       (if (and (model-has-wire-coatings?)
+                (coating-experimental-enabled?))
+           '("--coated-wire-junctions" "experimental")
+           '())
        (if (pair? staged-resources)
            (append
             (list "-s" (symbol->string dielectric-solver))

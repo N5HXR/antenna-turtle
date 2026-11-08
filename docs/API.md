@@ -281,6 +281,42 @@ space. This is useful when choosing an elevation range:
 - Sets the base diameter for subsequently created edges.
 - Effective diameter also includes the current `scale-all` diameter factor.
 
+### `(wire-coating material dielectric-material diameter outside-diameter)`
+
+Sets persistent dielectric coating state for subsequently created wire edges.
+`dielectric-material` must be a dielectric `em-material` with relative
+permittivity at least 1, relative permeability 1, and either constant or
+narrow-band loss. `outside-diameter` is the coating's complete physical
+diameter in metres; the metal diameter remains controlled independently by
+`wire-diameter`.
+
+Each edge captures its coating when the edge is created. Later calls do not
+retroactively change existing edges. The effective outside diameter includes
+the current `scale-all` factor but not the movement-only `scale` factor. It
+must be at least the effective metal diameter when the edge is emitted.
+
+### `(wire-coating-off)`
+
+Clears persistent coating state, so subsequently created edges are bare.
+`clear-wires` preserves the active coating declaration; `reset-model!` clears
+it.
+
+### `(current-wire-coating)`
+
+Returns the effective `wire-coating-spec` for newly created edges, including
+the current `scale-all` factor, or `#f` when coating is off.
+
+### `(with-wire-coating material dielectric-material diameter outside-diameter body ...+)`
+
+Temporarily selects a coating while evaluating `body`, then restores the
+previous coating on normal or exceptional exit. It changes no turtle position,
+orientation, wire state, or metal diameter.
+
+Coated wires are currently supported only by NEC2C-N5HXR. NEC export writes
+one complete-tag `LD 7` card for each coated edge. MMANA, MATLAB, and OpenEMS
+operations reject a coated model explicitly rather than silently discarding
+the coating.
+
 ## 4. Wire Operations
 
 ### `(wire-off)`
@@ -2640,6 +2676,23 @@ Completed remote directories are removed after their artifacts are retrieved.
 On a timeout the remote directory is retained, because an interrupted SSH
 connection cannot guarantee that every remote solver process has exited.
 
+### Experimental coated-wire junctions
+
+`(set-coating-experimental boolean)` controls NEC2C-N5HXR's mixed-junction
+execution policy. Its default is `#f`, leaving NEC2C's strict rule in force:
+wires meeting at a node must have identical coating parameters. With `#t`, a
+coated model is executed with:
+
+```text
+--coated-wire-junctions experimental
+```
+
+This permits coated/bare and unequal-coating junctions under NEC2C's explicitly
+experimental treatment. `(coating-experimental?)` reports the current value.
+Like `nec2c-use-ssh-alias`, this is process execution state rather than model
+geometry and therefore persists across `reset-model!`. Disable it explicitly
+with `(set-coating-experimental #f)`.
+
 Every measurement function accepts these common keyword arguments:
 
 ```racket
@@ -3537,6 +3590,11 @@ the order shown. For example, `(openems-run-info-artifacts run)` reads the
 large accessor surface without requiring callers to memorize a separate name
 list.
 
+`wire-edge-coating` returns `#f` for a bare `wire-edge` or its captured
+`wire-coating-spec` for a coated edge. Coating metadata is associated with the
+edge without changing the historical five-field transparent structure or its
+constructor signature shown below.
+
 ### Core and solid-scene structures
 
 ```racket
@@ -3544,6 +3602,7 @@ list.
 (vertex id point)
 (feed-spec location name amplitude phase)
 (ground-spec kind relative-permittivity conductivity)
+(wire-coating-spec material outside-diameter)
 (wire-edge id start end diameter feed-info)
 (antenna-model vertices edges)
 

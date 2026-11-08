@@ -19,6 +19,7 @@
          "private/lumped-element-dsl.rkt"
          "private/wire-network.rkt"
          "private/wire-network-dsl.rkt"
+         "private/wire-coating-dsl.rkt"
          "helpers.rkt"
          "private/view.rkt"
          k-infix
@@ -103,6 +104,7 @@
  (all-from-out "private/lumped-element-dsl.rkt")
  (all-from-out "private/wire-network.rkt")
  (all-from-out "private/wire-network-dsl.rkt")
+ (all-from-out "private/wire-coating-dsl.rkt")
  (all-from-out "helpers.rkt")
  wavelength
  half-wave
@@ -115,6 +117,8 @@
              call-with-wire call-with-points call-with-scale call-from-here
              call-with-warp call-with-surface call-with-reflection
              call-with-radial-repeat radial-iterations-value
+             set-wire-coating! call-with-wire-coating
+             model-has-wire-coatings?
              register-model-reset-hook! current-turtle-affine-transform
              current-turtle-event-handler current-wire-active?
              call-with-pen call-with-push)

@@ -362,6 +362,44 @@ turtle. Prefer the scoped form for drawing:
 the body raises an error, helping reveal accidentally overlapping drawing
 scopes.
 
+#### Dielectric Wire Coating
+
+Use `wire-coating` when subsequently drawn metal wire is surrounded by a
+uniform dielectric jacket. The wire diameter and coating outside diameter are
+separate physical dimensions:
+
+```racket
+(define petg
+  (dielectric name petg er 3.2
+              loss (narrow 0.015 435)))
+
+(wire-diameter (* 2 millimeters))
+(wire-coating material petg diameter (* 12 millimeters))
+(with-wire
+  (forward half-wave))
+(wire-coating-off)
+```
+
+The setting is persistent and each new edge remembers the coating active when
+it was drawn. Changing or clearing the setting later does not change earlier
+edges. For a local section, `with-wire-coating` restores the previous setting
+even if its body fails:
+
+```racket
+(with-wire-coating material petg diameter (* 12 millimeters)
+  (with-wire
+    (forward half-wave)))
+```
+
+This capability targets NEC2C-N5HXR's coated-wire `LD 7` model. Other solver
+and geometry exporters reject coated models rather than treating them as bare.
+NEC2C normally requires every wire meeting at a junction to have identical
+coating. Deliberate research into mixed junctions requires the separate,
+persistent execution opt-in `(set-coating-experimental #t)`; restore strict
+behavior with `#f`.
+
+#### Point Traces
+
 An explicit `point` sequence is the exception to the usual wire-off geometry
 rule. It traces between stationary relative endpoints while ordinary turtle
 movement remains non-drawing. `point` is an error while the wire is on. Calling

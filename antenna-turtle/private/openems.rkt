@@ -2623,6 +2623,10 @@
                        #:record-radiation? [record-radiation? #t]
                        #:field-capture [capture #f]
                        #:timeout [timeout #f])
+  (when (model-has-wire-coatings?)
+    (raise-user-error
+     'openems-sweep
+     "coated wires are currently supported only by the NEC2C backend"))
   (call-with-derived-wire-scene
    (lambda (derivation)
      (openems-sweep/prepared
