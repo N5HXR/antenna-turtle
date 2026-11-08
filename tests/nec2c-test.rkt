@@ -6,7 +6,8 @@
          (only-in plot/no-gui plot-bitmap plot3d-bitmap)
          (only-in plot/utils plot-element-bounds-rect ivl-min ivl-max)
          (only-in "../antenna-turtle/private/visualization-handle.rkt"
-                  make-visualization-handle)
+                  make-visualization-handle
+                  set-visualization-handle-restage!)
          (only-in "../antenna-turtle/private/plot-cursor.rkt"
                   cursor-series
                   cursor-selection-series
@@ -97,7 +98,12 @@ REPORT
   (visualization-close! handle)
   (check-false (visualization-open? handle))
   (visualization-show! handle)
-  (check-true (visualization-open? handle)))
+  (check-true (visualization-open? handle))
+  (check-exn #rx"does not support restaging"
+             (lambda () (visualization-restage! handle)))
+  (define replacement 'replacement-handle)
+  (set-visualization-handle-restage! handle (lambda () replacement))
+  (check-eq? (visualization-restage! handle) replacement))
 
 (test-case "data cursor selects the nearest finite harvested sample"
   (define first-series

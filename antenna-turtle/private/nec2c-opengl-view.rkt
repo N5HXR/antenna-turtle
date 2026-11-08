@@ -1301,12 +1301,16 @@
   (parameterize ([current-eventspace eventspace])
     (queue-callback thunk #f)))
 
-(define (make-opengl-handle frame update-procedure)
-  (make-visualization-handle
-   update-procedure
-   (lambda () (send frame show #t))
-   (lambda () (send frame show #f))
-   (lambda () (send frame is-shown?))))
+(define (make-opengl-handle frame update-procedure [restage-procedure #f])
+  (define handle
+    (make-visualization-handle
+     update-procedure
+     (lambda () (send frame show #t))
+     (lambda () (send frame show #f))
+     (lambda () (send frame is-shown?))))
+  (when restage-procedure
+    (set-visualization-handle-restage! handle restage-procedure))
+  handle)
 
 (define (show-radiation-pattern-opengl grid
                                         #:component [component 'total]
@@ -1333,6 +1337,9 @@
   (validate-radial-scale 'show-radiation-pattern-opengl radial-scale)
   (define color-stops
     (resolve-palette 'show-radiation-pattern-opengl palette))
+  ;; Keep the most recently requested data so a failed Pict3D context can be
+  ;; replaced with a new window without forcing another solver run.
+  (define current-grid (box grid))
   (define-values (surface radius view-center peak-gain)
     (build-radiation-pict3d grid
                             #:component component
@@ -1397,6 +1404,7 @@
      (unless (nec2c-pattern-grid? new-grid)
        (raise-argument-error
         'visualization-update! "nec2c-pattern-grid?" new-grid))
+     (set-box! current-grid new-grid)
      ;; Surface construction is the expensive part and deliberately happens
      ;; in the caller's thread. Only widget mutation is queued to the GUI.
      (define-values (new-surface new-radius new-center new-peak)
@@ -1416,7 +1424,25 @@
         (send canvas replace-scene new-surface new-center new-radius)
         (send legend set-peak-gain new-peak)
         (when antenna-canvas
-          (send antenna-canvas set-edges new-edges)))))))
+          (send antenna-canvas set-edges new-edges)))))
+   (lambda ()
+     ;; Pict3D owns the render thread and does not provide a supported way to
+     ;; revive a failed GL context in place. Hide the failed frame and create a
+     ;; new context from the retained grid instead.
+     (queue-in-eventspace eventspace (lambda () (send frame show #f)))
+     (show-radiation-pattern-opengl
+      (unbox current-grid)
+      #:component component
+      #:floor-db floor-db
+      #:normalize? normalize?
+      #:scale radial-scale
+      #:palette palette
+      #:color-step color-step
+      #:mesh-step mesh-step
+      #:axes? axes?
+      #:antenna? antenna?
+      #:width width
+      #:height height))))
 
 ;; Experimental near-field energy-flow workbench. The tracers are visualization
 ;; probes advected by S/u; they are not conserved photons or charge carriers.

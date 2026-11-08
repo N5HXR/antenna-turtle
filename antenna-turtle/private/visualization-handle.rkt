@@ -2,16 +2,20 @@
 
 (provide visualization-handle?
          visualization-update!
+         visualization-restage!
          visualization-show!
          visualization-close!
          visualization-open?
-         make-visualization-handle)
+         make-visualization-handle
+         set-visualization-handle-restage!)
 
 ;; GUI implementations retain their own widgets and eventspace. Keeping those
 ;; details behind callbacks gives Antenna Turtle one small public protocol that
 ;; can later be shared by Plot-backed viewers without exposing Racket GUI
 ;; objects as part of the language API.
-(struct visualization-handle (update show close open?)
+(struct visualization-handle (update show close open? [restage #:auto])
+  #:mutable
+  #:auto-value #f
   #:constructor-name make-visualization-handle)
 
 (define (check-handle who handle)
@@ -21,6 +25,16 @@
 (define (visualization-update! handle data)
   (check-handle 'visualization-update! handle)
   ((visualization-handle-update handle) data))
+
+(define (visualization-restage! handle)
+  (check-handle 'visualization-restage! handle)
+  (define restage (visualization-handle-restage handle))
+  (unless restage
+    (raise-arguments-error
+     'visualization-restage!
+     "this viewer does not support restaging"
+     "handle" handle))
+  (restage))
 
 (define (visualization-show! handle)
   (check-handle 'visualization-show! handle)

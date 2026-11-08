@@ -3265,6 +3265,7 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
 
 (visualization-handle? value)
 (visualization-update! handle replacement)
+(visualization-restage! handle)
 (visualization-show! handle)
 (visualization-close! handle)
 (visualization-open? handle)
@@ -3357,6 +3358,16 @@ Surface construction occurs in the calling thread and the finished scene swap
 is queued to the GUI, so NEC2C analysis remains explicit and under programmer
 control. `visualization-close!` hides the window, which may be reopened with
 `visualization-show!`; `visualization-open?` reports its current visibility.
+`visualization-restage!` is available for a radiation-pattern OpenGL handle:
+it hides that window and creates a fresh Pict3D frame and OpenGL context from
+the most recently displayed grid, returning a replacement handle. This is a
+recovery path for a failed driver/context, not an in-place repair, so retain
+the returned handle:
+
+```racket
+(set! view (visualization-restage! view))
+```
+
 The Plot and Plot3D operations do not yet return these handles.
 
 The Plot3D viewer uses equal symmetric X/Y/Z bounds and a proportional
