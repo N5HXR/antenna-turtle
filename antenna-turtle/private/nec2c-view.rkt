@@ -36,6 +36,7 @@
  show-radiation-comparison
  visualization-handle?
  visualization-update!
+ visualization-restage!
  visualization-show!
  visualization-close!
  visualization-open?
