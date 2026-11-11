@@ -247,7 +247,8 @@
                                 #:axes? [axes? #f]
                                 #:spherical-grid? [spherical-grid? #f]
                                 #:reference-peak [reference-peak #f]
-                                #:color-at [color-at #f])
+                                #:color-at [color-at #f]
+                                #:radius-at [radius-at #f])
   (unless (nec2c-pattern-grid? grid)
     (raise-argument-error 'radiation-grid->pict3d "nec2c-pattern-grid?" grid))
   (unless (and (real? floor-db) (< floor-db 0))
@@ -294,17 +295,18 @@
     (define normalized-phi
       (- phi (* 360 (floor (/ phi 360)))))
     (hash-ref table (angle-key theta normalized-phi)))
-  (define (radius-for sample)
+  (define (radius-for sample theta phi)
     (define gain (sample-gain sample component))
-    (if (real? gain)
-        (scaled-radius gain display-peak floor-db normalize? radial-scale)
-        0))
+    (cond [radius-at (radius-at theta phi)]
+          [(real? gain)
+           (scaled-radius gain display-peak floor-db normalize? radial-scale)]
+          [else 0]))
   (define (relative-gain-at theta-deg phi-deg)
     (define gain (sample-gain (grid-sample theta-deg phi-deg) component))
     (if (real? gain) (- gain display-peak) -30))
   (define (make-surface-vertex theta-deg phi-deg [face-color-db #f])
     (define sample (grid-sample theta-deg phi-deg))
-    (define radius (radius-for sample))
+    (define radius (radius-for sample theta-deg phi-deg))
     (define direction (sample-direction sample))
     (define nx (vector-ref direction 0))
     (define ny (vector-ref direction 1))
@@ -389,7 +391,7 @@
                     #:material surface-material))
           (define (make-rim-vertex phi-deg [face-color-db #f])
             (define sample (grid-sample theta phi-deg))
-            (define radius (radius-for sample))
+            (define radius (radius-for sample theta phi-deg))
             (define phi (degrees->radians phi-deg))
             (define gain (sample-gain sample component))
             (define rgb
@@ -427,7 +429,9 @@
   ;; while keeping the center stable throughout an orbit.
   (define surface-points
     (for/list ([sample (in-list samples)])
-      (define radius (radius-for sample))
+      (define theta (nec2c-pattern-sample-theta-deg sample))
+      (define phi (nec2c-pattern-sample-phi-deg sample))
+      (define radius (radius-for sample theta phi))
       (define direction (sample-direction sample))
       (vector (* radius (vector-ref direction 0))
               (* radius (vector-ref direction 1))
@@ -470,7 +474,7 @@
                [surface-point
                 (lambda (theta phi)
                   (define sample (grid-sample theta phi))
-                  (define radius (* 1.004 (radius-for sample)))
+                  (define radius (* 1.004 (radius-for sample theta phi)))
                   (define direction (sample-direction sample))
                   (pos (* radius (vector-ref direction 0))
                        (* radius (vector-ref direction 1))
@@ -1228,6 +1232,25 @@
             0)
         range-db)])))
 
+;; Subtract the two already-scaled display surfaces rather than attempting to
+;; assign a direction to a negative radius. Magnitude becomes radius and the
+;; diverging difference color retains the sign. This inherits the selected
+;; ARRL/dB radial scale and its handling of deep nulls.
+(define (difference-radius-function reference-grid candidate-grid component
+                                    floor-db radial-scale reference-peak)
+  (define reference-table (grid-gain-table reference-grid component))
+  (define candidate-table (grid-gain-table candidate-grid component))
+  (lambda (theta phi)
+    (define normalized-phi
+      (- phi (* 360 (floor (/ phi 360)))))
+    (define key (angle-key theta normalized-phi))
+    (define reference-gain (hash-ref reference-table key #f))
+    (define candidate-gain (hash-ref candidate-table key #f))
+    (if (and (real? reference-gain) (real? candidate-gain))
+        (abs (- (scaled-radius candidate-gain reference-peak floor-db #t radial-scale)
+                (scaled-radius reference-gain reference-peak floor-db #t radial-scale)))
+        0)))
+
 (define (automatic-difference-range cases component)
   (define reference-grid (radiation-case-grid (first cases)))
   (define reference-table (grid-gain-table reference-grid component))
@@ -1257,7 +1280,7 @@
   (max 0.1 (if (null? differences) 0 (apply max differences))))
 
 (define (comparison-proxy-polylines grid component floor-db radial-scale
-                                    reference-peak mesh-step)
+                                    reference-peak mesh-step [radius-at #f])
   (define samples (nec2c-pattern-grid-samples grid))
   (define table (make-hash))
   (for ([sample (in-list samples)])
@@ -1279,9 +1302,10 @@
     (define sample (sample-at theta-deg phi-deg))
     (define gain (sample-gain sample component))
     (define radius
-      (if (real? gain)
-          (scaled-radius gain reference-peak floor-db #t radial-scale)
-          0))
+      (cond [radius-at (radius-at theta-deg phi-deg)]
+            [(real? gain)
+             (scaled-radius gain reference-peak floor-db #t radial-scale)]
+            [else 0]))
     (define direction (sample-direction sample))
     (vector (* radius (vector-ref direction 0))
             (* radius (vector-ref direction 1))
@@ -3001,7 +3025,9 @@
 
 (define (comparison-data cases component floor-db radial-scale palette
                          color-step mesh-step drag-mesh-step
-                         difference? difference-range-db)
+                         difference-mode difference-range-db)
+  (define difference? (and difference-mode #t))
+  (define surface-difference? (eq? difference-mode 'surface))
   (define local-peaks
     (for/list ([item (in-list cases)])
       (component-peak (radiation-case-grid item) component)))
@@ -3025,6 +3051,11 @@
              (difference-color-function
               reference-grid candidate-grid component
               effective-difference-range-db)))
+      (define radius-at
+        (and surface-difference? (positive? index)
+             (difference-radius-function
+              reference-grid candidate-grid component
+              floor-db radial-scale geometry-peak)))
       (define-values (surface radius center _local-peak)
         (build-radiation-pict3d
          grid
@@ -3036,22 +3067,33 @@
          #:color-step color-step
          #:mesh-step mesh-step
          #:reference-peak geometry-peak
-         #:color-at color-at))
+         #:color-at color-at
+         #:radius-at radius-at))
       (define proxy-polylines
         (comparison-proxy-polylines
-         grid component floor-db radial-scale geometry-peak drag-mesh-step))
+         grid component floor-db radial-scale geometry-peak drag-mesh-step
+         radius-at))
       (list surface proxy-polylines radius center)))
   (values local-peaks geometry-peak scene-data
           (apply max (map third scene-data))
           effective-difference-range-db))
 
-(define (comparison-tile-label item peak difference? index)
+(define (comparison-tile-label item peak difference-mode index)
   (format "~a — ~a dBi peak~a"
           (radiation-case-title item)
           (real->decimal-string (exact->inexact peak) 1)
-          (cond [(not difference?) ""]
+          (cond [(not difference-mode) ""]
                 [(zero? index) " — reference"]
-                [else " — Δ from reference"])))
+                [(eq? difference-mode 'surface) " — Δ surface from reference"]
+                [else " — Δ color from reference"])))
+
+(define (normalize-difference-mode who value)
+  (cond [(not value) #f]
+        [(eq? value #t) 'color]
+        [(memq value '(color surface)) value]
+        [else
+         (raise-argument-error
+          who "(or/c #f #t 'color 'surface)" value)]))
 
 (define (show-radiation-comparison cases
                                    #:component [component 'total]
@@ -3065,15 +3107,15 @@
                                    #:aspect-ratio [aspect-ratio 16/9]
                                    #:width [width 1400])
   (validate-comparison-cases 'show-radiation-comparison cases)
-  (unless (boolean? difference?)
-    (raise-argument-error 'show-radiation-comparison "boolean?" difference?))
+  (define difference-mode
+    (normalize-difference-mode 'show-radiation-comparison difference?))
   (unless (or (eq? difference-range-db 'auto)
               (and (real? difference-range-db)
                    (positive? difference-range-db)))
     (raise-argument-error
      'show-radiation-comparison "(or/c 'auto positive-real?)"
      difference-range-db))
-  (when difference?
+  (when difference-mode
     (validate-difference-grids 'show-radiation-comparison cases))
   (unless (and (real? floor-db) (< floor-db 0))
     (raise-argument-error 'show-radiation-comparison "negative-real?" floor-db))
@@ -3098,11 +3140,11 @@
                               effective-difference-range-db)
     (comparison-data cases component floor-db radial-scale palette
                      color-step mesh-step drag-mesh-step
-                     difference? difference-range-db))
+                     difference-mode difference-range-db))
   (define height (max 1 (exact-round (/ width aspect-ratio))))
   (define-values (rows columns)
     (comparison-layout (length cases) width height
-                       (if difference? 174 112)))
+                       (if difference-mode 174 112)))
   (define frame
     (new frame%
          [label "NEC2C radiation pattern comparison"]
@@ -3135,7 +3177,7 @@
          [peak-gain shared-peak]
          [color-step color-step]))
   (define difference-legend
-    (and difference?
+    (and difference-mode
          (new difference-legend-canvas%
               [parent legend-panel]
               [range-db effective-difference-range-db])))
@@ -3168,7 +3210,7 @@
                   [parent row]
                   [label
                     (comparison-tile-label
-                     item (list-ref local-peaks index) difference? index)]
+                     item (list-ref local-peaks index) difference-mode index)]
                   [alignment '(center center)]))
            (define view-host
              (new vertical-panel% [parent tile] [spacing 0]))
@@ -3208,14 +3250,14 @@
    (lambda (new-cases)
      (validate-comparison-cases
       'visualization-update! new-cases case-count)
-     (when difference?
+     (when difference-mode
        (validate-difference-grids 'visualization-update! new-cases))
      (define-values (new-local-peaks new-shared-peak
                                     new-scene-data new-shared-radius
                                     new-effective-difference-range-db)
        (comparison-data new-cases component floor-db radial-scale palette
                         color-step mesh-step drag-mesh-step
-                        difference? difference-range-db))
+                        difference-mode difference-range-db))
      (queue-in-eventspace
       eventspace
       (lambda ()
@@ -3227,7 +3269,7 @@
               [proxy (in-list proxies)]
               [index (in-naturals)])
           (send tile set-label
-                (comparison-tile-label item peak difference? index))
+                (comparison-tile-label item peak difference-mode index))
           (send canvas replace-scene
                 (first data) (fourth data) new-shared-radius)
           (send proxy replace-polylines

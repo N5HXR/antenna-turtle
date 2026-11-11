@@ -3105,16 +3105,21 @@ the identical quantized ramp, while radial geometry and simulation data remain
 unchanged.
 The 3-D model can also color its NEC segments by current magnitude or phase,
 animate instantaneous signed current, and display charge-density magnitude or
-instantaneous signed charge. A compact legend reports the applicable peak and
-units. Current magnitude may be referenced to all conductors, the selected
+instantaneous signed charge. Instantaneous wire current has three presentations:
+the existing canonical scalar direction, the raw authored start-to-end direction,
+and a physical `XYZ direction` vector view. The vector view mixes red/cyan for
++/-X, green/magenta for +/-Y, and blue/yellow for +/-Z. All three opponent
+ramps are centered on black, so current magnitude controls brightness while
+direction controls their mixture; at full brightness, reversing the physical
+vector produces the complementary color. A
+compact legend reports the applicable peak and units. Current magnitude may be referenced to all conductors, the selected
 wire, the selected coax shield, or a fixed current, and its logarithmic floor
 is adjustable. Wire-current phase and instantaneous signs are projected onto a
 canonical Cartesian direction for each straight segment, so reversing the
 authored direction of a collinear wire does not introduce a false 180-degree
 phase or color discontinuity. The phase legend follows the same cyclic hue
 mapping as the conductors, with -180 and +180 degrees meeting at the same
-color. The bipolar ramp uses black at zero between blue and red current
-directions.
+color. The scalar and vector bipolar ramps use black at zero current.
 
 Wire conductors default to a minimum presentation diameter derived from the
 model bounds. This makes thin wires readable and provides a practical hover
@@ -3312,6 +3317,8 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
  [#:scale 'arrl]
  [#:palette 'mmana]
  [#:color-step #f]
+ [#:difference? #f]
+ [#:difference-range-db 'auto]
  [#:mesh-step 2]
  [#:aspect-ratio 16/9]
  [#:width 1400])
@@ -3540,26 +3547,38 @@ For example:
  #:palette 'inferno)
 ```
 
-Pass `#:difference? #t` to treat the first case as the reference. The first
-tile keeps its ordinary absolute-gain rendering. Every subsequent tile uses
-the reference surface geometry and colors each direction by its signed
-absolute-gain change, `candidate dBi - reference dBi`. Blue indicates lower
-gain, gray no change, and red higher gain. One shared symmetric difference
-legend defaults to `#:difference-range-db 'auto`: its endpoints are the
-largest absolute difference within 30 dB of the reference peak, with a
-0.1 dB minimum that avoids magnifying numerical noise. Pass a positive number
-for a fixed range. Difference rendering deliberately requires identical theta
-and phi sample grids and at least two cases.
+Pass `#:difference? #t` (or the explicit synonym `#:difference? 'color`) to
+treat the first case as the reference. The first tile keeps its ordinary
+absolute-gain rendering. Every subsequent tile uses the reference surface
+geometry and colors each direction by its signed absolute-gain change,
+`candidate dBi - reference dBi`. Blue indicates lower gain, gray no change,
+and red higher gain.
+
+Pass `#:difference? 'surface` for a geometric difference pattern. Candidate
+and reference gains at each sampled angle are converted to radii with the
+selected `#:scale` and shared reference peak, then subtracted. The absolute
+radial difference forms the new surface while the same blue/gray/red color
+retains its sign. Exact agreement therefore collapses to the origin instead
+of reproducing the reference shape. This is subtraction of the displayed
+radial surfaces; the color remains the absolute-gain difference in dB.
+
+Both modes use one shared symmetric difference legend. It defaults to
+`#:difference-range-db 'auto`: its endpoints are the largest absolute
+difference within 30 dB of the reference peak, with a 0.1 dB minimum that
+avoids magnifying numerical noise. Pass a positive number for a fixed range.
+Difference rendering deliberately requires identical theta and phi sample
+grids and at least two cases.
 
 ```racket
 (show-radiation-comparison
  (list (radiation-case "reference" reference-grid)
        (radiation-case "loaded" loaded-grid))
- #:difference? #t)
+ #:difference? 'surface)
 ```
 
-An identical candidate therefore appears uniformly gray. This is the exact
-zero-difference result rather than a missing color range.
+In color mode an identical candidate appears uniformly gray. In surface mode
+it collapses to the origin. Both are exact zero-difference results rather than
+a missing color range.
 
 `#:mesh-step` controls only the displayed surface mesh, in degrees. Plot3D
 defaults to 5 degrees; OpenGL defaults to 2 degrees and uses every available

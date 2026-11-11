@@ -2,7 +2,13 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { createPlotWorkspace, Plotly } from "./plot-workspace.js";
 import { installReportSideRail } from "./side-rail.js";
-import { canonicalCurrentPhase, canonicalWireSign, loadImpedance } from "./nec2c-inspector.js";
+import {
+  canonicalCurrentPhase,
+  canonicalWireSign,
+  instantaneousWireCurrent,
+  loadImpedance,
+  opponentCurrentColor,
+} from "./nec2c-inspector.js";
 import { averagePoynting, instantaneousComponent, instantaneousPoynting } from "./field-math.js";
 import {
   componentGainRange,
@@ -819,7 +825,9 @@ export async function startNec2cReport(data) {
     <div id="segment-controls" class="row"><label for="segment-display">CONDUCTORS</label>
     <select id="segment-display"><option value="geometry">model color</option>
     <option value="current-magnitude">current magnitude</option><option value="current-phase">current phase</option>
-    <option value="current-instantaneous">instantaneous current</option>
+    <option value="current-instantaneous">instantaneous current · canonical</option>
+    <option value="current-authored-instantaneous">instantaneous current · authored path</option>
+    <option value="current-vector-instantaneous">instantaneous current · XYZ direction</option>
     <option value="charge-magnitude">charge magnitude</option>
     <option value="charge-instantaneous">instantaneous charge</option>
     <option value="volume-current-magnitude">dielectric J magnitude</option>
@@ -960,6 +968,13 @@ export async function startNec2cReport(data) {
     const middle = new THREE.Color(0x000000);
     const edge = new THREE.Color(value < 0 ? 0x1743ff : 0xff315f);
     return middle.lerp(edge, amount);
+  }
+
+  function vectorCurrentColor(sample, wire, maximum) {
+    const vector = instantaneousWireCurrent(sample.current, segmentPhaseDegrees,
+      wire.start, wire.end);
+    const rgb = opponentCurrentColor(vector, maximum);
+    return new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
   }
 
   function phaseColor(value, wireSign = 1) {
@@ -1176,6 +1191,19 @@ export async function startNec2cReport(data) {
       labels[0].textContent = "−180°"; labels[1].textContent = "phase"; labels[2].textContent = "+180°";
       segmentLegend.querySelector(".segment-legend-bar").style.background =
         "linear-gradient(90deg,#00ffff,#0000ff,#ff00ff,#ff0000,#ffff00,#00ff00,#00ffff)";
+    } else if (mode === "current-vector-instantaneous") {
+      labels[0].textContent = "−X cyan · −Y magenta · −Z yellow";
+      labels[1].textContent = `black 0 · full color ${currentReference.toPrecision(3)} A`;
+      labels[2].textContent = "+X red · +Y green · +Z blue";
+      segmentLegend.querySelector(".segment-legend-bar").style.background =
+        "linear-gradient(90deg,#2ad4d4 0 16.6%,#d42ad4 16.6% 33.2%,#d4d42a 33.2% 49.8%," +
+        "#000 49.8% 50.2%,#d42a2a 50.2% 66.8%,#2ad42a 66.8% 83.4%,#2a2ad4 83.4%)";
+    } else if (mode === "current-authored-instantaneous") {
+      labels[0].textContent = `−${currentReference.toPrecision(3)} A · toward start`;
+      labels[1].textContent = "black at zero";
+      labels[2].textContent = `toward end · +${currentReference.toPrecision(3)} A`;
+      segmentLegend.querySelector(".segment-legend-bar").style.background =
+        "linear-gradient(90deg,#1743ff,#000000,#ff315f)";
     } else if (instantaneousMode) {
       const volumeMode = mode.startsWith("volume-current");
       const maximum = volumeMode ? volumeCurrentMaximum
@@ -1199,6 +1227,10 @@ export async function startNec2cReport(data) {
       else if (sample && mode === "current-instantaneous")
         color = signedColor(instantaneous(sample.current) * mesh.userData.currentSign,
           currentReference);
+      else if (sample && mode === "current-authored-instantaneous")
+        color = signedColor(instantaneous(sample.current), currentReference);
+      else if (sample && mode === "current-vector-instantaneous")
+        color = vectorCurrentColor(sample, mesh.userData.wire, currentReference);
       else if (sample && mode === "charge-magnitude")
         color = magnitudeColor(sample.charge_density, chargeMaximum);
       else if (sample && mode === "charge-instantaneous")

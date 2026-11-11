@@ -1034,10 +1034,19 @@ parameters exported by network-design tools.
 Portable NEC2C reports draw very thin wires with a minimum presentation
 diameter by default, making conductor-current colors and hover inspection easy
 to see. Select `ACTUAL DIAMETER` to restore geometrically scaled conductors;
-this affects only display geometry, never the NEC model. Instantaneous-current
-colors use blue and red for opposite canonical current directions with black
-at zero. Collinear wire pieces remain visually continuous even when their
-authored start/end directions are reversed.
+this affects only display geometry, never the NEC model.
+
+The conductor menu offers three instantaneous wire-current views. `canonical`
+uses blue and red for opposite canonical current directions with black at zero;
+collinear wire pieces remain visually continuous even when their authored
+start/end directions are reversed. `authored path` instead preserves the NEC
+start-to-end sign, which makes a continuously authored loop read naturally as
+current around the path. `XYZ direction` reconstructs the physical Cartesian
+current vector. It mixes three opponent color pairs—red/cyan for +/-X,
+green/magenta for +/-Y, and blue/yellow for +/-Z. Each pair is centered on
+black, so current magnitude controls brightness while direction controls their
+mixture. At full brightness, opposite physical directions have complementary
+colors; low current fades naturally toward black.
 
 This is not geometrical coax: the center conductor and shield interior are not
 drawn, do not radiate, and do not couple to nearby objects. Revision 1 is
@@ -1522,6 +1531,15 @@ surface. The default automatic range uses the largest absolute difference in
 the portion of the reference pattern within 30 dB of its peak. Supply a
 positive `#:difference-range-db` value when several separately opened viewers
 need an identical fixed scale.
+
+Use `#:difference? 'surface` to render the geometric difference instead. At
+each angle the viewer converts the candidate and reference gains through the
+selected ARRL or dB radial scale, subtracts those radii, and uses the absolute
+difference as the new radius. The diverging color still shows the sign of
+`candidate dBi - reference dBi`, so improvements remain red and reductions
+blue. An unchanged candidate collapses to the origin. `#t` remains the
+backward-compatible spelling of the color-only mode; `'color` is its explicit
+name.
 
 Both OpenGL viewers return a reusable visualization handle. This is useful at
 a REPL when geometry and analysis are being regenerated repeatedly:

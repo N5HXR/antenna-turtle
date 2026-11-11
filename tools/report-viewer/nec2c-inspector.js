@@ -38,3 +38,41 @@ export function canonicalCurrentPhase(phaseDegrees, wireSign = 1) {
   const oriented = Number(phaseDegrees) + (wireSign < 0 ? 180 : 0);
   return ((oriented + 180) % 360 + 360) % 360 - 180;
 }
+
+// Recover the physical, instantaneous Cartesian current vector from NEC's
+// scalar current.  NEC references the scalar to the wire's authored
+// start-to-end direction, so multiplying by that unit tangent removes the
+// arbitrary endpoint convention.
+export function instantaneousWireCurrent(current, phaseDegrees, start, end) {
+  const radians = Number(phaseDegrees) * Math.PI / 180;
+  const scalar = (Number(current?.real) || 0) * Math.cos(radians) -
+    (Number(current?.imaginary) || 0) * Math.sin(radians);
+  const delta = [0, 1, 2].map(index => Number(end[index]) - Number(start[index]));
+  const length = Math.hypot(...delta);
+  return length > 0
+    ? delta.map(component => component === 0 ? 0 : scalar * component / length)
+    : [0, 0, 0];
+}
+
+// Encode a signed XYZ direction with three opponent spectra:
+//   +X red / -X cyan, +Y green / -Y magenta, +Z blue / -Z yellow.
+// Direction sets the mixture. Magnitude raises that mixture out of black, as
+// if each opponent pair had its own negative-color -> black -> positive-color
+// ramp. At full magnitude, reversing a vector produces its complementary
+// color; low-current conductors naturally darken toward black.
+export function opponentCurrentColor(vector, maximum) {
+  const value = [0, 1, 2].map(index => Number(vector[index]) || 0);
+  const magnitude = Math.hypot(...value);
+  const amount = Math.min(1, magnitude / Math.max(Number(maximum), Number.EPSILON));
+  if (magnitude <= Number.EPSILON || amount <= Number.EPSILON) return [0, 0, 0];
+  const weights = value.map(Math.abs);
+  const weightSum = weights.reduce((sum, component) => sum + component, 0);
+  const pairs = [
+    value[0] < 0 ? [0, 1, 1] : [1, 0, 0],
+    value[1] < 0 ? [1, 0, 1] : [0, 1, 0],
+    value[2] < 0 ? [1, 1, 0] : [0, 0, 1],
+  ];
+  const brightness = Math.sqrt(amount);
+  return [0, 1, 2].map(channel => brightness * pairs.reduce((sum, pair, axis) =>
+    sum + weights[axis] * pair[channel], 0) / weightSum);
+}
