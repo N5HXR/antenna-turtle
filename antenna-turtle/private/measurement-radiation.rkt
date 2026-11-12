@@ -3,15 +3,18 @@
 (require racket/list
          racket/math
          "measurement-interpolation.rkt"
-         "nec2c.rkt")
+         "nec2c.rkt"
+         "polarization.rkt")
 
 (provide
+ (all-from-out "polarization.rkt")
  gain-at maximum-gain maximum-gain-direction
  maximum-gain-at-frequency realized-maximum-gain-at-frequency
  horizon-gain-at-frequency realized-horizon-gain-at-frequency
  maximum-gain-direction-at-frequency radiation-pattern-at-frequency
  front-to-back-ratio front-to-side-ratio
- axial-ratio-at polarization-tilt-at polarization-sense-at e-field-at
+ polarization-at axial-ratio-at polarization-tilt-at polarization-sense-at
+ e-field-at
  pattern-angular-resolution measurement-pattern-frequencies)
 
 (define (pattern-samples who pattern)
@@ -340,23 +343,37 @@
    who (pattern-samples who pattern) azimuth elevation accessor interpolator
    interpolate?))
 
+(define (polarization-at pattern #:azimuth azimuth #:elevation elevation
+                         #:interpolate? [interpolate? #t]
+                         #:tolerance [tolerance 1e-12]
+                         #:minimum-power [minimum-power 0.0])
+  ;; Interpolate the complex Jones components, never the derived angles,
+  ;; ratios, or categorical sense. Those quantities are nonlinear and tilt
+  ;; also wraps at 180 degrees.
+  (define-values (e-theta e-phi)
+    (e-field-at pattern #:azimuth azimuth #:elevation elevation
+                #:interpolate? interpolate?))
+  (analyze-polarization e-theta e-phi
+                        #:tolerance tolerance
+                        #:minimum-power minimum-power))
+
 (define (axial-ratio-at pattern #:azimuth azimuth #:elevation elevation
                         #:interpolate? [interpolate? #t])
-  (ordinary-pattern-value
-   'axial-ratio-at pattern azimuth elevation
-   nec2c-pattern-sample-axial-ratio interpolate?))
+  (polarization-state-axial-ratio
+   (polarization-at pattern #:azimuth azimuth #:elevation elevation
+                    #:interpolate? interpolate?)))
 
 (define (polarization-tilt-at pattern #:azimuth azimuth #:elevation elevation
                               #:interpolate? [interpolate? #t])
-  (ordinary-pattern-value
-   'polarization-tilt-at pattern azimuth elevation
-   nec2c-pattern-sample-tilt-deg interpolate?))
+  (polarization-state-tilt-deg
+   (polarization-at pattern #:azimuth azimuth #:elevation elevation
+                    #:interpolate? interpolate?)))
 
-(define (polarization-sense-at pattern #:azimuth azimuth #:elevation elevation)
-  (ordinary-pattern-value
-   'polarization-sense-at pattern azimuth elevation
-   nec2c-pattern-sample-polarization-sense #f
-   (lambda (left _right _fraction) left)))
+(define (polarization-sense-at pattern #:azimuth azimuth #:elevation elevation
+                               #:interpolate? [interpolate? #t])
+  (polarization-state-sense
+   (polarization-at pattern #:azimuth azimuth #:elevation elevation
+                    #:interpolate? interpolate?)))
 
 (define (e-field-at pattern #:azimuth azimuth #:elevation elevation
                     #:interpolate? [interpolate? #t])

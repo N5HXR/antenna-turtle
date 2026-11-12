@@ -19,9 +19,10 @@
     (move up inch)
     (feed start)
     (point right radius)
+    (turn up 90)
     (loop repeat 48 do
-          (turn left 30)
-          (move up upstep)
+          (turn roll-right 30)
+          (move forward upstep)
           (point right radius))))
 
 ;; Modes for the experiment; 'ref is the "best case so far"

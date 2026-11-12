@@ -17,6 +17,7 @@
          "nec2c-capabilities.rkt"
          "nec2c-dielectric.rkt"
          "nec2c-result-json.rkt"
+         "polarization.rkt"
          "wire-network.rkt")
 
 ;; A runtime path prevents the compiler from eagerly compiling the optional
@@ -922,25 +923,13 @@
   (and linear (positive? linear) (* 10 (/ (log linear) (log 10)))))
 
 (define (polarization-values e-theta e-phi)
-  (define theta-power (sqr (magnitude e-theta)))
-  (define phi-power (sqr (magnitude e-phi)))
-  (define total (+ theta-power phi-power))
-  (cond
-    [(zero? total) (values 0 0 #f)]
-    [else
-     (define cross (* e-theta (conjugate e-phi)))
-     (define s1 (- theta-power phi-power))
-     (define s2 (* 2 (real-part cross)))
-     (define s3 (* -2 (imag-part cross)))
-     (define tilt (* 1/2 (/ (* 180 (atan s2 s1)) pi)))
-     (define ellipticity
-       (* 1/2 (asin (max -1.0 (min 1.0 (/ s3 total))))))
-     (define minor/major (abs (tan ellipticity)))
-     (values (if (zero? minor/major) +inf.0 (/ 1 minor/major))
-             tilt
-             (cond [(positive? s3) 'right]
-                   [(negative? s3) 'left]
-                   [else #f]))]))
+  (define state (analyze-polarization e-theta e-phi))
+  (values (or (polarization-state-axial-ratio state) 0)
+          (or (polarization-state-tilt-deg state) 0)
+          (case (polarization-state-sense state)
+            [(rhcp) 'right]
+            [(lhcp) 'left]
+            [else #f])))
 
 (define (machine-result->parsed-report result)
   (define executions
@@ -1484,17 +1473,18 @@
 (define (enrich-pattern parsed)
   (define theta (parsed-nec2c-pattern-theta-deg parsed))
   (define phi (parsed-nec2c-pattern-phi-deg parsed))
+  (define e-theta (parsed-nec2c-pattern-e-theta parsed))
+  (define e-phi (parsed-nec2c-pattern-e-phi parsed))
+  ;; Recompute presentation metadata from the complex fields so classic text,
+  ;; machine-readable NEC2C, and OpenEMS all use the same convention.
+  (define-values (axial tilt sense) (polarization-values e-theta e-phi))
   (nec2c-pattern-sample
    (parsed-nec2c-pattern-frequency-mhz parsed)
    theta phi (- 90 theta) (normalize-degrees phi)
    (parsed-nec2c-pattern-vertical-gain-db parsed)
    (parsed-nec2c-pattern-horizontal-gain-db parsed)
    (parsed-nec2c-pattern-total-gain-db parsed)
-   (parsed-nec2c-pattern-axial-ratio parsed)
-   (parsed-nec2c-pattern-tilt-deg parsed)
-   (parsed-nec2c-pattern-polarization-sense parsed)
-   (parsed-nec2c-pattern-e-theta parsed)
-   (parsed-nec2c-pattern-e-phi parsed)))
+   axial tilt sense e-theta e-phi))
 
 (define (enrich-diagnostics report frequency)
   (define current-frequencies

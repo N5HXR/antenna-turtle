@@ -18,6 +18,7 @@
          "nec2c.rkt"
          "network.rkt"
          "openems-material.rkt"
+         "polarization.rkt"
          "solid-core.rkt"
          "wire-solid.rkt")
 
@@ -2259,6 +2260,8 @@
         (complex-dot user-field (spherical-theta-basis user-theta user-phi)))
       (define user-e-phi
         (complex-dot user-field (spherical-phi-basis user-theta user-phi)))
+      (define polarization
+        (analyze-polarization user-e-theta user-e-phi))
       (define sample
         (nec2c-pattern-sample
          frequency-mhz theta-deg phi-deg
@@ -2267,7 +2270,13 @@
          (db-from-field (magnitude user-e-theta) maximum-field directivity-db)
          (db-from-field (magnitude user-e-phi) maximum-field directivity-db)
          (db-from-field field-norm maximum-field directivity-db)
-         #f #f #f user-e-theta user-e-phi))
+         (polarization-state-axial-ratio polarization)
+         (polarization-state-tilt-deg polarization)
+         (case (polarization-state-sense polarization)
+           [(rhcp) 'right]
+           [(lhcp) 'left]
+           [else #f])
+         user-e-theta user-e-phi))
       (set-nec2c-pattern-sample-direction! sample user-direction)
       sample))
   (define theta-values (remove-duplicates (map first rows)))

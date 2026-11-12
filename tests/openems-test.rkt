@@ -98,6 +98,10 @@
       (check-= (vector-ref direction 2) 0.0 1e-12)
       (check-= (nec2c-pattern-sample-elevation-deg sample) 0.0 1e-12)
       (check-= (nec2c-pattern-sample-azimuth-deg sample) 0.0 1e-12)
+      (check-true
+       (infinite? (nec2c-pattern-sample-axial-ratio sample)))
+      (check-= (nec2c-pattern-sample-tilt-deg sample) 0.0 1e-12)
+      (check-false (nec2c-pattern-sample-polarization-sense sample))
       (check-not-false (pair? (radiation-grid-renderers grid #:mesh-step 30))))
     (lambda () (when (file-exists? path) (delete-file path)))))
 
