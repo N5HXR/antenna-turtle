@@ -116,6 +116,25 @@
   (check-false (symbol-interned? (lumped-component-name element)))
   (clear-bodies))
 
+(test-case "electric dipole sources use the turtle frame without geometry"
+  (reset-model!)
+  (move forward 2)
+  (turn left 90)
+  (define source
+    (electric-dipole-source forward
+      name ideal-dipole length 0.2 amplitude 3 anchor start))
+  (check-equal? (impressed-source-name source) 'ideal-dipole)
+  (check-equal? (impressed-source-kind source) 'electric-dipole)
+  (check-= (impressed-source-amplitude source) 3 1e-12)
+  (check-point~= (point->list (impressed-source-start source)) '(2 0 0))
+  (check-point~= (point->list (impressed-source-stop source)) '(2 0.2 0))
+  (check-equal? (model-sources) (list source))
+  (check-exn #rx"must be unique"
+             (lambda ()
+               (electric-dipole-source up name ideal-dipole length 0.1)))
+  (clear-bodies)
+  (check-equal? (model-sources) '()))
+
 (test-case "legacy positional solid names report the named-pair migration"
   (check-exn #rx"positional names are not supported; use name VALUE"
              (lambda ()

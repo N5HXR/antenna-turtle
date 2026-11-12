@@ -1262,6 +1262,38 @@ therefore also includes PML and numerical closure error. Loss data is selected
 before FDTD, so simulations made by an older harness must be rerun before they
 can produce this report.
 
+The solver-neutral power measurement layer can print the same style of report
+for either backend. For an ordinary NEC2C wire model, the shortest form runs a
+complete absolute-gain grid and writes the result to standard output:
+
+```racket
+(power-report)
+```
+
+When a pattern has already been calculated, reuse it:
+
+```racket
+(define pattern (nec2c-radiation-grid #:theta-step 2 #:phi-step 2))
+(power-report pattern)
+
+(define eta (radiation-efficiency pattern)) ; ratio, not percent
+(define eta-realized (realized-efficiency pattern))
+```
+
+NEC's traditional power-budget efficiency does not isolate absorption by a
+real ground. Antenna Turtle therefore integrates the pattern's absolute linear
+power gain over the modeled sphere or upper hemisphere. The report calls the
+remaining accepted power `Ground / unaccounted loss`, because that residual
+also contains angular-integration and solver closure error. Repeat important
+calculations with a finer theta/phi step to establish convergence.
+
+An OpenEMS budget uses the identical convenience interface:
+
+```racket
+(define budget (power-budget result #:excitation 'input))
+(power-report budget)
+```
+
 ## 6. Repetition and Layout Tables
 
 Normal Racket iteration is available, and Antenna Turtle also imports the
@@ -1619,9 +1651,10 @@ camera, drag-to-orbit navigation, and wheel zoom. Its display mesh defaults to
 asymmetric main lobe does not waste zoom room on the opposite side of the RF
 origin.
 
-Select the color ramp with `#:palette`. The choices are `'mmana` (the bright
-antenna-plot default), `'magma` (also named `'sdr`) for a dark-purple through
-orange SDR-waterfall style, `'inferno`, `'viridis`, and `'grayscale`. The
+Select the color ramp with `#:palette`. The choices are `'magma` (the default,
+also named `'sdr`) for a dark-purple through orange SDR-waterfall style,
+`'mmana` for the bright conventional antenna-plot palette,
+`'inferno`, `'viridis`, and `'grayscale`. The
 legend names the active palette and radial scale. Relative attenuation appears
 to the right of its color strip; matching absolute gain in dBi appears to the
 left, calculated from the selected component's peak.

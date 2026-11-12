@@ -11,7 +11,7 @@
          "lumped-element-dsl.rkt"
          (for-syntax racket/base racket/list syntax/parse))
 
-(provide body sheet port lumped-element dielectric conductor with-material mesh-plane
+(provide body sheet port electric-dipole-source lumped-element dielectric conductor with-material mesh-plane
          (all-from-out "solid-csg-dsl.rkt")
          cuboid sphere cylinder capsule stl read-stl-solid)
 
@@ -333,6 +333,39 @@
          #`(add-lumped-port '#,(syntax-e #'direction) #,@keyword-arguments))]
     [(_ . _)
      (raise-syntax-error 'port "expected (port DIRECTION setting value ...)" stx)]))
+
+(define-syntax (electric-dipole-source stx)
+  (syntax-parse stx
+    [(_ direction:id setting ...)
+     (unless (memq (syntax-e #'direction) valid-directions)
+       (raise-syntax-error
+        'electric-dipole-source "expected a turtle direction" stx #'direction))
+     (define values
+       (settings 'electric-dipole-source stx #'(setting ...)
+                 '(name length amplitude anchor)
+                 (string-append
+                  "expected name, length, amplitude, or anchor "
+                  "setting/value pairs")))
+     (define arguments
+       (append
+        (if (hash-has-key? values 'name)
+            (list #'#:name (name-expression (hash-ref values 'name))) '())
+        (optional-keyword values 'length #'#:length)
+        (optional-keyword values 'amplitude #'#:amplitude)
+        (if (hash-has-key? values 'anchor)
+            (list #'#:anchor
+                  (literal-expression
+                   (hash-ref values 'anchor) '(start center end)
+                   'electric-dipole-source stx
+                   "anchor must be start, center, or end"))
+            '())))
+     #`(add-electric-dipole-source '#,(syntax-e #'direction) #,@arguments)]
+    [(_ . _)
+     (raise-syntax-error
+      'electric-dipole-source
+      (string-append
+       "expected (electric-dipole-source DIRECTION "
+       "setting value ...)") stx)]))
 
 (define-syntax (cuboid stx)
   (syntax-parse stx

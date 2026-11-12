@@ -824,7 +824,7 @@ Use this when regenerating geometry interactively under the current `(model
 ### `(clear-bodies)` and `(clear-mesh-constraints)`
 
 `clear-bodies` closes owned Manifold handles and clears bodies, sheets, ports,
-and lumped components. `clear-mesh-constraints` clears only explicit
+lumped components, and impressed sources. `clear-mesh-constraints` clears only explicit
 `mesh-point`/`mesh-plane` annotations. `reset-model!` calls both through reset
 hooks.
 
@@ -864,7 +864,7 @@ A parameter containing the mutable `antenna-model` value.
 
 The corresponding solid-scene parameter is `(current-solid-scene [scene])`.
 `(model-bodies [scene])`, `(model-sheets [scene])`, `(model-ports [scene])`,
-and `(model-components [scene])` return its lists, defaulting to the current
+`(model-components [scene])`, and `(model-sources [scene])` return its lists, defaulting to the current
 scene. `(model-mesh-constraints)` returns the current manual constraints.
 
 ```racket
@@ -1098,7 +1098,34 @@ forms are:
       [gap length] [size size | width width depth depth]
       [anchor (start | center | end)]
       [precedence integer | priority integer])
+
+(electric-dipole-source direction
+      [name value] [length length] [amplitude real]
+      [anchor (start | center | end)])
 ```
+
+`electric-dipole-source` is an experimental OpenEMS-only hard impressed
+electric-field source, following the excitation used by OpenEMS's canonical
+infinitesimal-dipole example. It follows the turtle position and frame but creates no
+conductor geometry, port, feed gap, reference impedance, or network
+measurement. Its default length is wavelength/100 and its default amplitude is
+1 V/m along the selected direction. The two endpoints are hard Yee-mesh coordinates;
+the source therefore spans
+the mesh without imposing the transverse refinement of a physical probe or
+coupling loop.
+
+Use it to excite free-space fields, search for cavity modes, and compare an
+ideal electric dipole with a physical antenna. The returned
+`openems-source-result` supports field capture, portable OpenEMS reports, and
+`openems-radiation-grid`. It deliberately does not support S-parameters,
+VSWR, input impedance, or power-budget functions: those quantities require a
+physical port. Field captures retain the authored source amplitude rather than
+being normalized to one watt incident power, and NF2FF values represent
+directivity derived from radiated power.
+
+The initial implementation permits one impressed source and no simultaneous
+lumped ports. It is a mode-excitation tool, not a model of how strongly a real
+probe couples to a cavity.
 
 `with-material` is syntax over
 `(call-with-solid-material material thunk)`. The parameter
@@ -1380,6 +1407,12 @@ libraries, are:
                  #:anchor [(or 'start 'center 'end) 'center]
                  #:priority [integer-or-#f #f]
                  #:precedence [integer-or-#f #f])
+
+(add-electric-dipole-source direction
+                            #:name [name-or-#f #f]
+                            #:length [length (/ (model-wavelength) 100)]
+                            #:amplitude [nonzero-real 1]
+                            #:anchor [(or 'start 'center 'end) 'center])
 
 (add-lumped-element direction
                     #:name [name-or-#f #f]
@@ -2521,6 +2554,77 @@ reporting code:
 (pattern-angular-resolution pattern)  ; '(azimuth-step elevation-step)
 ```
 
+Power measurements use absolute power gain rather than NEC's historical
+`RADIATED POWER` subtotal. This matters over real ground: the historical
+subtotal subtracts wire and network loss but does not separate energy absorbed
+by the ground. A complete upper-hemisphere or full-sphere pattern contains the
+information needed to integrate the power that actually reaches the air far
+field.
+
+```racket
+(pattern-power-gain-integral pattern)       ; linear gain integral, steradians
+(pattern-air-radiation-efficiency pattern)  ; ratio, normally 0 through 1
+(reflection-mismatch-efficiency gamma)      ; 1 - |gamma|^2
+
+(analyze-power source
+               #:reference-impedance [ohms (model-impedance)])
+(radiation-efficiency source)               ; ratio, radiated / accepted
+(air-radiation-efficiency source)           ; synonym
+(mismatch-efficiency source)                ; ratio, accepted / incident
+(realized-efficiency source)                ; ratio, radiated / incident
+(power-loss-breakdown source)               ; immutable symbol -> watts hash
+
+(format-power-report source
+                     #:reference-impedance [ohms (model-impedance)])
+(power-report [source #f]
+              #:frequency [MHz (model-frequency)]
+              #:theta-step [degrees 2]
+              #:phi-step [degrees 2]
+              #:reference-impedance [ohms (model-impedance)]
+              #:output [port (current-output-port)])
+```
+
+`source` may be a NEC2C power-gain `nec2c-pattern-grid`, a previously calculated
+`power-metrics`, or an OpenEMS `openems-power-budget`. OpenEMS pattern grids
+contain directivity rather than accepted-power gain and are therefore rejected;
+use `(power-budget result)` for that backend. The efficiency
+accessors return ratios so they compose naturally in optimization scores;
+`power-report` formats them as percentages and dB.
+
+With no source, `power-report` runs one NEC2C radiation grid at the requested
+resolution and writes its table to standard output:
+
+```racket
+(power-report)
+```
+
+Pass an existing pattern to avoid another solve:
+
+```racket
+(define pattern
+  (nec2c-radiation-grid #:theta-step 2 #:phi-step 2))
+(power-report pattern)
+(printf "efficiency: ~a%\n" (* 100 (radiation-efficiency pattern)))
+```
+
+For OpenEMS, first request its detailed budget and then use the same reporting
+and query layer:
+
+```racket
+(define budget (power-budget result #:excitation 'input))
+(power-report budget)
+```
+
+For NEC2C, `analyze-power` integrates linear absolute gain over every spherical
+cell and divides by `4*pi`. Grounded grids cover the upper hemisphere;
+free-space grids cover the full sphere. Retained feed impedance supplies
+mismatch and realized efficiency when exactly one feed is present.
+Air-radiated watts are the integrated efficiency times accepted power. After
+subtracting explicit structure and network losses, a grounded model's
+remainder is labeled `ground-or-unaccounted`; it includes angular-integration
+and solver closure error. Increase angular resolution and check convergence
+before interpreting a small residual as physical ground heat.
+
 ## 14. Export Functions
 
 Each exporter validates pending-feed state and returns its output path. NEC2C
@@ -3291,7 +3395,7 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
                                [#:floor-db -40]
                                [#:normalize? #t]
                                [#:scale 'arrl]
-                               [#:palette 'mmana]
+                               [#:palette 'magma]
                                [#:color-step #f]
                                [#:mesh-step 2]
                                [#:axes? #t]
@@ -3315,7 +3419,7 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
  [#:component 'total]
  [#:floor-db -40]
  [#:scale 'arrl]
- [#:palette 'mmana]
+ [#:palette 'magma]
  [#:color-step #f]
  [#:difference? #f]
  [#:difference-range-db 'auto]
@@ -3449,12 +3553,12 @@ moves only the camera during interaction. Drag to orbit and use the mouse
 wheel to zoom. The camera orbits the center of the radiation surface's 3-D
 bounds rather than the RF origin, allowing asymmetric patterns to use the
 viewport efficiently. `#:palette` selects the surface and legend color ramp:
-`'mmana` (the default) follows the conventional antenna-plot progression from
-deep blue through cyan, green, yellow, red, and magenta, with its own strongly
-curved distribution near the peak. All other ramps use common stops at -30,
+`'magma` (the default, with `'sdr` as its alias) provides a dark
+navy/purple/magenta/orange SDR-style ramp. `'mmana` follows the conventional
+antenna-plot progression from deep blue through cyan, green, yellow, red, and
+magenta, with its own strongly curved distribution near the peak. All other ramps use common stops at -30,
 -25, -19, -15, -11, -7, -3, -1, and 0 dB, preserving fine main-lobe detail
-while bringing midtones into ordinary sidelobe ranges. `'magma` provides a dark
-navy/purple/magenta/orange SDR-style ramp; `'sdr` is its alias. `'inferno`,
+while bringing midtones into ordinary sidelobe ranges. `'inferno`,
 `'viridis`, and `'grayscale` are also available. Every palette covers 0
 through -30 dB, independently of the radial geometry selected by `#:scale`.
 The legend's right side shows those relative values. Its left side adds each
@@ -3695,7 +3799,18 @@ lifecycle calls.
 (nec2c-segment-sample frequency-mhz wire-id segment current charge-density)
 (nec2c-power-budget frequency-mhz input-power radiated-power structure-loss
                      network-loss efficiency-percent)
-(nec2c-diagnostics frequency-mhz segments power-budget)
+(nec2c-diagnostics frequency-mhz segments power-budget
+                    [feedpoints #:auto]
+                    [surface-currents #:auto]
+                    [volume-currents #:auto])
+(power-metrics backend frequency-mhz excitation
+               incident-power-w reflected-power-w accepted-power-w
+               air-radiated-power-w delivered-power-w
+               structure-loss-w network-loss-w dielectric-loss-w lumped-loss-w
+               residual-loss-w residual-label
+               radiation-efficiency mismatch-efficiency realized-efficiency
+               gain-integral-sr sampled-solid-angle-sr angular-resolution-deg
+               notes)
 (nec2c-gain-sweep-sample frequency-mhz feedpoint reflection-coefficient
                          return-loss-db vswr pattern maximum-gain-db
                          realized-maximum-gain-db maximum-gain-direction

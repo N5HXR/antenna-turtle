@@ -65,7 +65,7 @@ function stopColor(rgb) {
 }
 
 function colorAt(paletteName, relativeDb) {
-  const selected = palettes[paletteName] || palettes.mmana;
+  const selected = palettes[paletteName] || palettes.magma;
   const bounded = Math.max(-30, Math.min(0, relativeDb));
   for (let index = 1; index < selected.length; ++index) {
     if (bounded <= selected[index][0]) {
@@ -819,7 +819,7 @@ export async function startNec2cReport(data) {
     <option value="arrl">ARRL modified log</option><option value="db">dB</option>
     <option value="linear">linear</option></select></div>
     <div class="row"><label for="pattern-palette">COLOR</label><select id="pattern-palette">
-    <option value="mmana">MMANA</option><option value="magma">magma</option><option value="sdr">SDR</option>
+    <option value="mmana">MMANA</option><option value="magma" selected>magma</option><option value="sdr">SDR</option>
     <option value="inferno">inferno</option><option value="viridis">viridis</option>
     <option value="grayscale">grayscale</option><option value="electric">electric</option></select></div>
     <div id="segment-controls" class="row"><label for="segment-display">CONDUCTORS</label>
@@ -1293,7 +1293,7 @@ export async function startNec2cReport(data) {
   }
 
   function updateLegend() {
-    const selected = palettes[paletteSelect.value] || palettes.mmana;
+    const selected = palettes[paletteSelect.value] || palettes.magma;
     const gradient = colorBands.checked
       ? Array.from({ length: 10 }, (_, index) => {
         const lower = -30 + index * 3;

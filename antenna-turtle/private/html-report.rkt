@@ -25,10 +25,13 @@
   (cond
     [(openems-sweep-result? result) (openems-sweep-result-run result)]
     [(openems-multiport-result? result) (openems-multiport-result-run result)]
+    [(openems-source-result? result) (openems-source-result-run result)]
     [else
      (raise-argument-error
       'write-html-report
-      "(or/c openems-sweep-result? openems-multiport-result?)" result)]))
+      (string-append
+       "(or/c openems-sweep-result? openems-multiport-result? "
+       "openems-source-result?)") result)]))
 
 (define (gzip-bytes/native bytes)
   (and native-gzip
@@ -243,6 +246,11 @@
 
 (define (result-measurements result)
   (cond
+    [(openems-source-result? result)
+     (hash 'sources
+           (list (hash 'name
+                       (format "~a" (openems-source-result-source-name result))))
+           'ports '() 'port_samples '() 's_parameters '())]
     [(openems-sweep-result? result)
      (hash
       'ports

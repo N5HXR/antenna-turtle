@@ -187,3 +187,72 @@
   (check-equal? (impedance-at result 144) 48+2i)
   (check-equal? (measurement-ports result) '("feed"))
   (check-equal? (measurement-frequencies result) '(144)))
+
+(define (constant-pattern theta-values gain-db)
+  (define phi-values '(0 90 180 270))
+  (nec2c-pattern-grid
+   #f theta-values phi-values
+   (for*/list ([phi (in-list phi-values)]
+               [theta (in-list theta-values)])
+     (nec2c-pattern-sample
+      3.55 theta phi (- 90 theta) phi
+      gain-db gain-db gain-db 1 0 'linear 1+0i 0+0i))))
+
+(test-case "absolute power-gain integration produces radiation efficiency"
+  (define isotropic (constant-pattern '(0 90 180) 0))
+  (check-= (pattern-power-gain-integral isotropic) (* 4 pi) 1e-10)
+  (check-= (pattern-air-radiation-efficiency isotropic) 1 1e-10)
+
+  ;; A lossless antenna radiating only into an upper hemisphere has average
+  ;; upper-hemisphere power gain 2, or 3.0103 dBi.
+  (define lossless-grounded
+    (constant-pattern '(0 45 90) (* 10 (/ (log 2) (log 10)))))
+  (check-= (pattern-air-radiation-efficiency lossless-grounded) 1 1e-10)
+
+  ;; Unit gain over only the upper hemisphere radiates half of accepted power.
+  (define half-efficient (constant-pattern '(0 45 90) 0))
+  (check-= (pattern-air-radiation-efficiency half-efficient) 0.5 1e-10))
+
+(test-case "NEC power convenience layer includes mismatch and ground residual"
+  (define half-efficient (constant-pattern '(0 45 90) 0))
+  (define diagnostics
+    (nec2c-diagnostics 3.55 '() (nec2c-power-budget 3.55 0.5 0.47 0.01 0.02 94)))
+  (set-nec2c-diagnostics-feedpoints!
+   diagnostics
+   (list (nec2c-feedpoint-sample
+          'feed 3.55 1 1 1 0.02 50 (/ 50) 0.5)))
+  (set-nec2c-pattern-grid-diagnostics! half-efficient diagnostics)
+  (define metrics (analyze-power half-efficient))
+  (check-= (radiation-efficiency metrics) 0.5 1e-10)
+  (check-= (mismatch-efficiency metrics) 1 1e-10)
+  (check-= (realized-efficiency metrics) 0.5 1e-10)
+  (check-= (power-metrics-air-radiated-power-w metrics) 0.25 1e-10)
+  (check-= (hash-ref (power-loss-breakdown metrics) 'ground-or-unaccounted)
+           0.22 1e-10)
+  (define report (format-power-report metrics))
+  (check-regexp-match #rx"Air radiated" report)
+  (check-regexp-match #rx"Radiation efficiency[ ]+50.00%" report)
+  (check-regexp-match #rx"Ground / unaccounted loss" report)
+  (define out (open-output-string))
+  (power-report metrics #:output out)
+  (check-equal? (get-output-string out) report))
+
+(test-case "OpenEMS power budgets use the common efficiency interface"
+  (define budget
+    (openems-power-budget #f 100 'input
+                          1.0 0.1 0.9
+                          0.0 0.5 0.1 0.05 0.25))
+  (check-= (radiation-efficiency budget) (/ 0.5 0.9) 1e-12)
+  (check-= (mismatch-efficiency budget) 0.9 1e-12)
+  (check-= (realized-efficiency budget) 0.5 1e-12)
+  (check-regexp-match #rx"Conductor / unaccounted loss"
+                      (format-power-report budget))
+  (define directivity-base (constant-pattern '(0 90 180) 0))
+  (define directivity-pattern
+    (nec2c-pattern-grid
+     (hash 'backend 'openems)
+     (nec2c-pattern-grid-theta-values directivity-base)
+     (nec2c-pattern-grid-phi-values directivity-base)
+     (nec2c-pattern-grid-samples directivity-base)))
+  (check-exn #rx"directivity, not accepted-power gain"
+             (lambda () (radiation-efficiency directivity-pattern))))

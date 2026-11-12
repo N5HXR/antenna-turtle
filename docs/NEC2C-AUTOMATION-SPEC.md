@@ -429,7 +429,7 @@ colorized Pict3D/OpenGL presentation viewer.
 (show-radiation-cut pattern [#:floor-db -40] [#:normalize? #t] ...)
 (show-radiation-pattern-3d grid [#:floor-db -40] [#:normalize? #t] ...)
 (show-radiation-pattern-opengl grid [#:floor-db -40] [#:normalize? #t]
-                                  [#:scale 'arrl] [#:palette 'mmana] ...)
+                                  [#:scale 'arrl] [#:palette 'magma] ...)
 ```
 
 ### 10.1 Match and impedance

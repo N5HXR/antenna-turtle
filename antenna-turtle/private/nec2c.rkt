@@ -156,6 +156,7 @@
   #:transparent)
 (struct nec2c-diagnostics
   (frequency-mhz segments power-budget
+                 [feedpoints #:auto #:mutable]
                  [surface-currents #:auto #:mutable]
                  [volume-currents #:auto #:mutable])
   #:auto-value '()
@@ -1570,6 +1571,13 @@
                (* wavelength (parsed-nec2c-surface-current-z-wavelengths sample)))
        (parsed-nec2c-surface-current-current-density sample))))
   (define diagnostics (nec2c-diagnostics actual-frequency segments budget))
+  (set-nec2c-diagnostics-feedpoints!
+   diagnostics
+   (for/list ([sample (in-list (parsed-nec2c-report-feeds report))]
+              #:when (approximately=?
+                      actual-frequency
+                      (parsed-nec2c-feed-frequency-mhz sample)))
+     (enrich-feed sample)))
   (set-nec2c-diagnostics-surface-currents! diagnostics surface-currents)
   (set-nec2c-diagnostics-volume-currents!
    diagnostics

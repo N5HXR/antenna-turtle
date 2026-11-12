@@ -314,6 +314,7 @@ REPORT
     (define diagnostics (nec2c-pattern-grid-diagnostics grid))
     (check-true (nec2c-diagnostics? diagnostics))
     (check-true (pair? (nec2c-diagnostics-segments diagnostics)))
+    (check-true (pair? (nec2c-diagnostics-feedpoints diagnostics)))
     (check-not-false
      (andmap nec2c-segment-sample-charge-density
              (nec2c-diagnostics-segments diagnostics)))

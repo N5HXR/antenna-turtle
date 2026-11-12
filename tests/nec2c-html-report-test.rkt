@@ -139,6 +139,7 @@
      (check-regexp-match #rx"2D PATTERN" searchable)
      (check-regexp-match #rx"PATTERN OPACITY" searchable)
      (check-regexp-match #rx"3 dB COLOR BANDS" searchable)
+     (check-regexp-match #rx"value=\"magma\" selected" html)
      (check-regexp-match #rx"HIDE CONTROLS" searchable)
      (check-regexp-match #rx"total reference" searchable)
      (check-regexp-match #rx"plot-hover-readout" searchable)

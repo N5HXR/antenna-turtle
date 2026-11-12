@@ -193,3 +193,5 @@ sharing one segment, and validate native sweeps against repeated static-~NT~
 runs. See ~docs/NEC2C-FREQUENCY-DEPENDENT-NETWORK-SPEC.md~. OpenEMS reuse is a
 future postprocessing/layout consideration and is not part of the first
 revision.
+* TODO Play with classic dipole simulation vs wire dipole distribution
+Question is how different the signal pattern, etc., for two concentrated point charges 180-degrees out of phase changing sinusoidally with the same charge magnitude as the endpoints of the wire dipole; compare to wire dipole.

@@ -183,14 +183,28 @@
               #:color "red" #:fill-color "red"
               #:size 7 #:sym 'fulltriangle))))
 
+(define (source-renderers source)
+  (define start (impressed-source-start source))
+  (define stop (impressed-source-stop source))
+  (list
+   (lines3d (map point->vector (list start stop))
+            #:color "magenta" #:width 5
+            #:label (format "source: ~a" (impressed-source-name source)))
+   (points3d (list (point->vector stop))
+             #:color "magenta" #:fill-color "magenta"
+             #:size 8 #:sym 'fulltriangle)))
+
 (define (solid-model->plot-renderers)
   (validate-solid-scene!)
-  (when (and (null? (model-bodies)) (null? (model-sheets)))
-    (error 'show-solid-model "cannot display a scene without bodies or sheets"))
+  (when (and (null? (model-bodies)) (null? (model-sheets))
+             (null? (model-sources)))
+    (error 'show-solid-model
+           "cannot display a scene without bodies, sheets, or sources"))
   (append
    (solid-scene-geometry-renderers)
    (append* (map port-renderers (model-ports)))
-   (append* (map component-renderers (model-components)))))
+   (append* (map component-renderers (model-components)))
+   (append* (map source-renderers (model-sources)))))
 
 (define (solid-model-cubic-bounds)
   (define extrema
@@ -200,7 +214,11 @@
       (for/list ([port (in-list (model-ports))])
         (map point->vector (port-corners port)))
       (for/list ([component (in-list (model-components))])
-        (map point->vector (component-corners component))))))
+        (map point->vector (component-corners component)))
+      (for/list ([source (in-list (model-sources))])
+        (map point->vector
+             (list (impressed-source-start source)
+                   (impressed-source-stop source)))))))
   (define (coordinate index) (map (lambda (point) (vector-ref point index)) extrema))
   (define mins (for/list ([index (in-range 3)]) (apply min (coordinate index))))
   (define maxs (for/list ([index (in-range 3)]) (apply max (coordinate index))))
@@ -222,7 +240,11 @@
    (for/list ([component (in-list (model-components))])
      (plot-legend-item
       (format "element: ~a" (lumped-component-name component))
-      "darkviolet" 'solid 'line))))
+      "darkviolet" 'solid 'line))
+   (for/list ([source (in-list (model-sources))])
+     (plot-legend-item
+      (format "source: ~a" (impressed-source-name source))
+      "magenta" 'solid 'line))))
 
 (define (show-solid-model/current width height aspect-ratio legend?)
   (unless (exact-positive-integer? width)

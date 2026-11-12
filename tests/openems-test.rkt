@@ -217,11 +217,82 @@
                (openems-sweep 800 1000 #:progress? 'sometimes)))
   (check-exn #rx"no volume bodies"
              (lambda () (openems-sweep 800 1000)))
-
   (reset-model!)
   (port up)
   (check-exn #rx"no volume bodies"
              (lambda () (openems-sweep 800 1000))))
+
+(test-case "OpenEMS exports a source-only electric dipole without network data"
+  (define directory
+    (make-temporary-file "antenna-turtle-openems-source~a" 'directory))
+  (define mock-octave (build-path directory "mock-octave"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out)
+      (displayln "#!/bin/sh" out)
+      (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (dynamic-wind
+    void
+    (lambda ()
+      (reset-model!)
+      (model title "Ideal source" frequency 900)
+      (electric-dipole-source up
+        name ideal-dipole length (/ wavelength 100) amplitude 2)
+      (define result
+        (openems-sweep 850 950
+                       #:octave mock-octave
+                       #:progress? #f
+                       #:keep-artifacts? #t))
+      (check-true (openems-source-result? result))
+      (check-equal? (openems-source-result-source-name result) 'ideal-dipole)
+      (define run (openems-source-result-run result))
+      (define artifacts (openems-run-info-artifacts run))
+      (define driver (file->string (openems-artifacts-driver-path artifacts)))
+      (check-regexp-match #rx"AddExcitation\\(CSX, 'source_1', 1" driver)
+      (check-regexp-match #rx"AddBox\\(CSX, 'source_1', 1" driver)
+      (check-false (regexp-match? #rx"AddLumpedPort" driver))
+      (define manifest (openems-run-info-manifest run))
+      (check-equal? (hash-ref manifest 'port_count) 0)
+      (check-equal? (hash-ref manifest 'source_count) 1)
+      (check-equal? (hash-ref manifest 'excitation_count) 1)
+      (define source-record (first (hash-ref manifest 'sources)))
+      (check-equal? (hash-ref source-record 'excitation_type) 1)
+      (check-true (hash-ref source-record 'hard))
+      (define simulation-directory
+        (openems-artifacts-simulation-directory artifacts))
+      (make-directory* simulation-directory)
+      (call-with-output-file
+          (build-path simulation-directory
+                      "nf2ff-ideal_dipole_900MHz.csv")
+        #:exists 'truncate/replace
+        (lambda (out)
+          (displayln "0,0,1,0,0,0" out)
+          (displayln "180,0,1,0,0,0" out)))
+      (call-with-output-file
+          (build-path simulation-directory
+                      "nf2ff-ideal_dipole_900MHz-metadata.csv")
+        #:exists 'truncate/replace
+        (lambda (out) (displayln "900000000,1.5,0.25" out)))
+      (define pattern
+        (openems-radiation-grid result
+                                #:frequency 900
+                                #:theta-step 180
+                                #:phi-step 360))
+      (check-equal? (length (nec2c-pattern-grid-samples pattern)) 2)
+      (check-exn #rx"best-match frequency is undefined"
+                 (lambda ()
+                   (openems-radiation-grid result #:frequency 'best-match)))
+      (define loaded
+        (openems-load-artifacts (openems-artifacts-directory artifacts)))
+      (check-true (openems-source-result? loaded))
+      (check-equal? (openems-source-result-source-name loaded) "ideal-dipole")
+      (openems-close! loaded)
+      (openems-close! result))
+    (lambda ()
+      (reset-model!)
+      (when (directory-exists? directory)
+        (delete-directory/files directory)))))
 
 (test-case "OpenEMS network-only runs omit NF2FF recording"
   (reset-model!)

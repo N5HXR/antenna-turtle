@@ -19,19 +19,24 @@
  (struct-out planar-sheet)
  (struct-out lumped-port)
  (struct-out lumped-component)
+ (struct-out impressed-source)
  (struct-out solid-scene)
  current-solid-scene
  model-bodies
  model-sheets
  model-ports
  model-components
+ model-sources
  add-body
  add-sheet
  add-sheet/world-polygons
  add-lumped-port
  add-lumped-element
+ add-electric-dipole-source
  lumped-port-start
  lumped-port-stop
+ impressed-source-start
+ impressed-source-stop
  clear-bodies
  validate-solid-scene!)
 
@@ -66,10 +71,13 @@
   (name impedance center direction transverse-u transverse-v
         gap width depth priority placement-transform)
   #:transparent)
-(struct solid-scene (bodies sheets ports components) #:mutable #:transparent)
+(struct impressed-source
+  (name kind center direction length amplitude placement-transform)
+  #:transparent)
+(struct solid-scene (bodies sheets ports components sources) #:mutable #:transparent)
 
 (define current-solid-scene
-  (make-parameter (solid-scene '() '() '() '())))
+  (make-parameter (solid-scene '() '() '() '() '())))
 
 (define (model-bodies [scene (current-solid-scene)])
   (solid-scene-bodies scene))
@@ -82,6 +90,9 @@
 
 (define (model-components [scene (current-solid-scene)])
   (solid-scene-components scene))
+
+(define (model-sources [scene (current-solid-scene)])
+  (solid-scene-sources scene))
 
 (define identity-transform
   '((1 0 0 0)
@@ -146,7 +157,9 @@
       (for/or ([port (in-list (solid-scene-ports scene))])
         (equal? name (lumped-port-name port)))
       (for/or ([component (in-list (solid-scene-components scene))])
-        (equal? name (lumped-component-name component)))))
+        (equal? name (lumped-component-name component)))
+      (for/or ([source (in-list (solid-scene-sources scene))])
+        (equal? name (impressed-source-name source)))))
 
 (define (fresh-feature-name prefix [scene (current-solid-scene)])
   ;; An omitted name is an identity, not a label. An uninterned symbol cannot
@@ -430,6 +443,58 @@
    scene (append (solid-scene-ports scene) (list port)))
   port)
 
+(define (impressed-source-start source)
+  (point+scaled (impressed-source-center source)
+                (impressed-source-direction source)
+                (- (/ (impressed-source-length source) 2))))
+
+(define (impressed-source-stop source)
+  (point+scaled (impressed-source-center source)
+                (impressed-source-direction source)
+                (/ (impressed-source-length source) 2)))
+
+(define (add-electric-dipole-source direction
+                                    #:name [requested-name #f]
+                                    #:length [length (/ (model-wavelength) 100)]
+                                    #:amplitude [amplitude 1]
+                                    #:anchor [anchor 'center])
+  (define local-direction (hash-ref direction-components direction #f))
+  (unless local-direction
+    (raise-argument-error
+     'add-electric-dipole-source
+     "(or/c 'forward 'forwards 'back 'backward 'backwards 'left 'right 'up 'down)"
+     direction))
+  (when requested-name
+    (geometry-name 'add-electric-dipole-source requested-name))
+  (positive-real 'add-electric-dipole-source length "source length")
+  (unless (and (finite-real? amplitude) (not (zero? amplitude)))
+    (raise-arguments-error
+     'add-electric-dipole-source
+     "amplitude must be a nonzero finite real"
+     "amplitude" amplitude))
+  (unless (memq anchor '(start center end))
+    (raise-argument-error
+     'add-electric-dipole-source "(or/c 'start 'center 'end)" anchor))
+  (define effective-length (* (current-geometry-scale) length))
+  (define placement
+    (current-turtle-affine-transform 'add-electric-dipole-source))
+  (define world-direction (transform-vector placement local-direction))
+  (define center
+    (anchored-feature-center
+     'add-electric-dipole-source anchor
+     (transform-point placement '(0 0 0))
+     world-direction effective-length))
+  (define scene (current-solid-scene))
+  (define name
+    (effective-feature-name
+     'add-electric-dipole-source requested-name 'source scene))
+  (define source
+    (impressed-source name 'electric-dipole center world-direction
+                      effective-length amplitude placement))
+  (set-solid-scene-sources!
+   scene (append (solid-scene-sources scene) (list source)))
+  source)
+
 (define (add-lumped-element direction
                             #:name [requested-name #f]
                             #:resistance [resistance #f]
@@ -615,7 +680,7 @@
     (define solid (solid-body-solid body))
     (unless (m:solid-closed? solid) (m:solid-close! solid)))
   ;; Ports and sheets are subordinate to the physical bodies they touch.
-  (current-solid-scene (solid-scene '() '() '() '()))
+  (current-solid-scene (solid-scene '() '() '() '() '()))
   (clear-model-cuboids)
   (clear-mesh-constraints)
   (void))
