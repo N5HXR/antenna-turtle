@@ -8,6 +8,7 @@
          racket/class
          racket/format
          racket/gui/base
+         racket/list
          racket/math
          "measurement-radiation.rkt"
          "nec2c.rkt"
@@ -16,13 +17,122 @@
 
 (provide show-polarization-surface-poc
          surface-point->angles
-         advance-polarization-phase)
+         advance-polarization-phase
+         signed-circularity-color
+         make-polarization-color-at
+         gain->brightness)
 
 (define view-fov-degrees 34)
 (define default-azimuth -42.0)
 (define default-altitude 24.0)
 (define default-zoom 3.1)
 (define phase-degrees-per-second 180.0)
+
+;; Gain owns brightness while polarization owns hue. This is an exposure
+;; scale rather than darkening alone: high-gain colors are boosted above their
+;; authored RGB anchors, while the floor keeps weak lobes visible. The strong
+;; exponent opens up contrast within the larger lobes.
+(define polarization-brightness-floor 0.1)
+(define polarization-brightness-ceiling 1.25)
+(define polarization-brightness-exponent 1.2)
+
+;; Frozen M3 palette. Each anchor contains the same three channel levels in a
+;; different order, preserving vivid transitions without passing through gray.
+(define lhcp-color '(255 32 128))
+(define linear-color '(128 255 32))
+(define rhcp-color '(32 128 255))
+(define undefined-polarization-color '(20 20 26))
+
+(define (interpolate-rgb left right fraction)
+  (for/list ([a (in-list left)] [b (in-list right)])
+    (+ a (* fraction (- b a)))))
+
+(define (signed-circularity-color circularity)
+  (unless (or (not circularity)
+              (and (real? circularity) (<= -1 circularity 1)))
+    (raise-argument-error
+     'signed-circularity-color "(or/c #f (real-in -1 1))" circularity))
+  (cond
+    [(not circularity) undefined-polarization-color]
+    [(negative? circularity)
+     (interpolate-rgb lhcp-color linear-color (+ circularity 1.0))]
+    [else
+     (interpolate-rgb linear-color rhcp-color circularity)]))
+
+(define (gain->brightness gain minimum-gain maximum-gain)
+  (unless (andmap real? (list gain minimum-gain maximum-gain))
+    (raise-arguments-error
+     'gain->brightness "gain bounds must be real"
+     "gain" gain "minimum gain" minimum-gain "maximum gain" maximum-gain))
+  (when (> minimum-gain maximum-gain)
+    (raise-arguments-error
+     'gain->brightness "minimum gain exceeds maximum gain"
+     "minimum gain" minimum-gain "maximum gain" maximum-gain))
+  (if (= minimum-gain maximum-gain)
+      1.0
+      (let* ([normalized
+              (max 0.0
+                   (min 1.0
+                        (/ (- gain minimum-gain)
+                           (- maximum-gain minimum-gain))))]
+             [curved (expt normalized polarization-brightness-exponent)])
+        (+ polarization-brightness-floor
+           (* (- polarization-brightness-ceiling
+                 polarization-brightness-floor)
+              curved)))))
+
+(define (finite-real? value)
+  (and (real? value) (< -inf.0 value +inf.0)))
+
+(define (total-gain-range grid)
+  (define gains
+    (filter finite-real?
+            (map nec2c-pattern-sample-total-gain-db
+                 (nec2c-pattern-grid-samples grid))))
+  (if (null? gains)
+      (values 0.0 0.0)
+      (values (apply min gains) (apply max gains))))
+
+(define (scale-rgb rgb brightness)
+  (map (lambda (channel) (min 255.0 (* channel brightness))) rgb))
+
+(define (polarization-angle-key theta phi)
+  (define normalized-phi
+    (- phi (* 360.0 (floor (/ phi 360.0)))))
+  (cons (inexact->exact (round (* theta 1000000)))
+        (inexact->exact (round (* normalized-phi 1000000)))))
+
+(define (make-polarization-color-at grid)
+  (unless (nec2c-pattern-grid? grid)
+    (raise-argument-error
+     'make-polarization-color-at "nec2c-pattern-grid?" grid))
+  ;; The surface constructor visits only sampled angular vertices. Analyze
+  ;; each solver sample once so polarization coloring remains linear in grid
+  ;; size instead of repeatedly searching the grid during triangulation.
+  (define colors (make-hash))
+  (define-values (minimum-gain maximum-gain) (total-gain-range grid))
+  (for ([sample (in-list (nec2c-pattern-grid-samples grid))])
+    (define state
+      (with-handlers ([exn:fail? (lambda (_failure) #f)])
+        (analyze-polarization (nec2c-pattern-sample-e-theta sample)
+                              (nec2c-pattern-sample-e-phi sample))))
+    (hash-set!
+     colors
+     (polarization-angle-key
+      (nec2c-pattern-sample-theta-deg sample)
+      (nec2c-pattern-sample-phi-deg sample))
+     (scale-rgb
+      (signed-circularity-color
+       (and state (polarization-state-signed-circularity state)))
+      (gain->brightness
+       (let ([gain (nec2c-pattern-sample-total-gain-db sample)])
+         (if (finite-real? gain) gain minimum-gain))
+       minimum-gain maximum-gain))))
+  (lambda (theta phi)
+    (if (and (real? theta) (real? phi))
+        (hash-ref colors (polarization-angle-key theta phi)
+                  undefined-polarization-color)
+        undefined-polarization-color)))
 
 (define (normalize-degrees degrees)
   (- degrees (* 360.0 (floor (/ degrees 360.0)))))
@@ -90,9 +200,50 @@
 (define (format-tilt tilt)
   (if tilt (format-number tilt 1 " degrees") "undefined"))
 
+(define circularity-legend-canvas%
+  (class canvas%
+    (super-new [min-width 276] [min-height 86]
+               [stretchable-width #t] [stretchable-height #f])
+    (define/override (on-paint)
+      (define dc (send this get-dc))
+      (define-values (width height) (send this get-client-size))
+      (define left 8)
+      (define right (max (+ left 1) (- width 8)))
+      (define top 24)
+      (define bar-height 18)
+      (send dc set-pen "transparent" 0 'transparent)
+      (for ([x (in-range left right)])
+        (define circularity
+          (- (* 2.0 (/ (- x left) (max 1 (- right left 1)))) 1.0))
+        (define rgb (signed-circularity-color circularity))
+        (send dc set-brush
+              (make-object color%
+                           (exact-round (first rgb))
+                           (exact-round (second rgb))
+                           (exact-round (third rgb)))
+              'solid)
+        (send dc draw-rectangle x top 1 bar-height))
+      (send dc set-text-foreground "black")
+      (send dc draw-text "LHCP" left 2)
+      (define linear-label "LINEAR")
+      (define-values (linear-width _h _d _s)
+        (send dc get-text-extent linear-label))
+      (send dc draw-text linear-label (- (/ width 2) (/ linear-width 2)) 2)
+      (define right-label "RHCP")
+      (define-values (right-width _rh _rd _rs)
+        (send dc get-text-extent right-label))
+      (send dc draw-text right-label (- right right-width) 2)
+      (send dc draw-text "-1" left (+ top bar-height 4))
+      (send dc draw-text "0" (- (/ width 2) 4) (+ top bar-height 4))
+      (define plus-one "+1")
+      (define-values (plus-width _ph _pd _ps)
+        (send dc get-text-extent plus-one))
+      (send dc draw-text plus-one (- right plus-width) (+ top bar-height 4)))))
+
 (define polarization-poc-canvas%
   (class pict3d-canvas%
-    (init-field surface view-center radius selection-callback status-label)
+    (init-field surface view-center radius selection-callback
+                selection-cleared-callback status-label)
     (define azimuth default-azimuth)
     (define altitude default-altitude)
     (define zoom default-zoom)
@@ -124,6 +275,12 @@
               (camera-scene display-surface view-center radius
                             azimuth altitude zoom))))
 
+    (define/private (clear-selection!)
+      (set! selection-marker empty-pict3d)
+      (set! display-surface surface)
+      (selection-cleared-callback)
+      (update-view!))
+
     (define/private (select-at! x y)
       (define-values (width height) (send this get-client-size))
       (when (and (> width 0) (> height 0))
@@ -136,19 +293,20 @@
            x y))
         ;; Trace only the data surface, never the selection marker.
         (define hit (trace surface (affine-origin camera) ray-direction))
-        (when hit
-          (with-handlers ([exn:fail:contract? (lambda (_failure) (void))])
-            (define-values (selected-azimuth selected-elevation)
-              (surface-point->angles (pos-x hit) (pos-y hit) (pos-z hit)))
-            (set! selection-marker
-                  (freeze
-                   (with-color (rgba 1.0 1.0 1.0 1.0)
-                     (with-emitted (emitted 1.0 1.0 1.0 1.0)
-                       (sphere hit (* radius 0.022))))))
-            (set! display-surface
-                  (freeze (combine surface selection-marker)))
-            (selection-callback selected-azimuth selected-elevation)
-            (update-view!)))))
+        (if hit
+            (with-handlers ([exn:fail:contract? (lambda (_failure) (void))])
+              (define-values (selected-azimuth selected-elevation)
+                (surface-point->angles (pos-x hit) (pos-y hit) (pos-z hit)))
+              (set! selection-marker
+                    (freeze
+                     (with-color (rgba 1.0 1.0 1.0 1.0)
+                       (with-emitted (emitted 1.0 1.0 1.0 1.0)
+                         (sphere hit (* radius 0.022))))))
+              (set! display-surface
+                    (freeze (combine surface selection-marker)))
+              (selection-callback selected-azimuth selected-elevation)
+              (update-view!))
+            (clear-selection!))))
 
     (define/public (replace-surface! new-surface new-center new-radius)
       (set! surface new-surface)
@@ -222,9 +380,11 @@
                           "positive-real?" mesh-step))
 
   (define current-grid grid)
-  (define-values (surface radius view-center peak-gain)
+  (define initial-color-at (make-polarization-color-at grid))
+  (define-values (minimum-gain maximum-gain) (total-gain-range grid))
+  (define-values (surface radius view-center _peak-gain)
     (build-radiation-pict3d
-     grid #:scale 'arrl #:palette 'magma #:mesh-step mesh-step))
+     grid #:scale 'arrl #:mesh-step mesh-step #:color-at initial-color-at))
   (define frame
     (new frame%
          [label (format "~a polarization workbench PoC"
@@ -259,10 +419,20 @@
   (define surface-summary
     (new message%
          [parent rail]
-         [label (format "POWER SURFACE\nARRL radial scale / magma\npeak ~a"
-                        (format-number peak-gain 2 " dBi"))]
+         [label (format
+                 "POLARIZATION SURFACE\nARRL radius from total gain\nbrightness ~a to ~a"
+                 (format-number minimum-gain 2 " dBi")
+                 (format-number maximum-gain 2 " dBi"))]
          [auto-resize #t]
          [stretchable-width #t]))
+  (new circularity-legend-canvas% [parent rail])
+  (new message%
+       [parent rail]
+       [label (string-append
+               "Sense is viewed from behind the antenna,\n"
+               "looking outward along propagation.\n"
+               "Clockwise field rotation is RHCP.")]
+       [stretchable-width #t])
   (new message% [parent rail] [label "SELECTED DIRECTION"])
   (define selection-summary
     (new message%
@@ -270,6 +440,10 @@
          [label "Click the pattern surface\nto inspect an exact direction."]
          [auto-resize #t]
          [stretchable-width #t]))
+
+  (define (clear-selection!)
+    (send selection-summary set-label
+          "Click the pattern surface\nto inspect an exact direction."))
 
   (define phase 0.0)
   (define speed 1.0)
@@ -322,7 +496,7 @@
                 (format "speed ~ax" (~r speed #:precision 2))))])
   (new message%
        [parent rail]
-       [label "M2 SHELL\nPolarization color and glyphs\narrive in later milestones."]
+       [label "M3 SIGNED-CIRCULARITY SURFACE\nPolarization glyphs arrive\nin later milestones."]
        [stretchable-width #t])
 
   (define canvas #f)
@@ -359,6 +533,7 @@
                [view-center view-center]
                [radius radius]
                [selection-callback select-direction!]
+               [selection-cleared-callback clear-selection!]
                [status-label status])))
   (send canvas set-async-updates? #t)
 
@@ -387,16 +562,22 @@
      (unless (nec2c-pattern-grid? new-grid)
        (raise-argument-error
         'visualization-update! "nec2c-pattern-grid?" new-grid))
-     (define-values (new-surface new-radius new-center new-peak)
+     (define new-color-at (make-polarization-color-at new-grid))
+     (define-values (new-minimum-gain new-maximum-gain)
+       (total-gain-range new-grid))
+     (define-values (new-surface new-radius new-center _new-peak)
        (build-radiation-pict3d
-        new-grid #:scale 'arrl #:palette 'magma #:mesh-step mesh-step))
+        new-grid #:scale 'arrl #:mesh-step mesh-step
+        #:color-at new-color-at))
      (set! current-grid new-grid)
      (parameterize ([current-eventspace eventspace])
        (queue-callback
         (lambda ()
           (send surface-summary set-label
-                (format "POWER SURFACE\nARRL radial scale / magma\npeak ~a"
-                        (format-number new-peak 2 " dBi")))
+                (format
+                 "POLARIZATION SURFACE\nARRL radius from total gain\nbrightness ~a to ~a"
+                 (format-number new-minimum-gain 2 " dBi")
+                 (format-number new-maximum-gain 2 " dBi")))
           (send selection-summary set-label
                 "Click the pattern surface\nto inspect an exact direction.")
           (send canvas replace-surface! new-surface new-center new-radius))

@@ -18,8 +18,9 @@ branch may be squashed when the completed feature is merged.
 - Pattern geometry uses the existing ARRL radial scale by default.
 - One opaque total-gain surface carries polarization information; there is no
   transparent or X-ray mode.
-- Signed circularity uses a fixed hot-to-cold direction: LHCP is red, linear
-  is green, and RHCP is blue.  Milestone 4 compares spectral interpolations.
+- Signed circularity uses a fixed vivid pink-red / yellow-green / blue ramp:
+  LHCP is `(255, 32, 128)`, linear is `(128, 255, 32)`, and RHCP is
+  `(32, 128, 255)`.
 - Polarization glyphs use stable angular placement and similar apparent size.
   Shape shows axial ratio, orientation shows tilt, and a globally coherent
   animated needle shows instantaneous field direction.
@@ -90,13 +91,14 @@ elliptical, LHCP, and RHCP regions must remain visible and distinct.  Depth
 testing occludes back-side content, and the legend must state the propagation
 viewpoint convention.
 
-### M4 — Palette and low-gain experiments
+### M4 — Surface metrics and low-gain experiments
 
-Compare at least a full red-yellow-green-cyan-blue spectrum and a simpler
-red-green-blue interpolation.  Add a relative-gain threshold slider spanning
-`SHOW ALL` through roughly -40 to -3 dB, defaulting near -20 dB.  Settle
-undefined/weak-field treatment and the persistent three-line inspector by
-human review.
+Retain the frozen M3 circularity ramp and add an experimental selectable axial
+ratio surface mode for locating near-circular regions. Add a relative-gain
+threshold slider spanning `SHOW ALL` through roughly -40 to -3 dB, defaulting
+near -20 dB. Settle axial-ratio coloration, undefined/weak-field treatment,
+and the persistent three-line inspector by human review. Signed circularity
+remains the default surface mode.
 
 ### M5 — Static far-field ellipse glyphs
 
