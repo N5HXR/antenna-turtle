@@ -19,6 +19,7 @@
          surface-point->angles
          advance-polarization-phase
          signed-circularity-color
+         axial-ratio-color
          make-polarization-color-at
          gain->brightness)
 
@@ -42,6 +43,9 @@
 (define linear-color '(128 255 32))
 (define rhcp-color '(32 128 255))
 (define undefined-polarization-color '(20 20 26))
+(define linear-axial-ratio-color '(48 24 128))
+(define circular-axial-ratio-color '(255 240 48))
+(define polarization-surface-modes '(signed-circularity axial-ratio))
 
 (define (interpolate-rgb left right fraction)
   (for/list ([a (in-list left)] [b (in-list right)])
@@ -58,6 +62,17 @@
      (interpolate-rgb lhcp-color linear-color (+ circularity 1.0))]
     [else
      (interpolate-rgb linear-color rhcp-color circularity)]))
+
+(define (axial-ratio-color ratio)
+  (unless (or (not ratio)
+              (and (real? ratio) (>= ratio 1)))
+    (raise-argument-error
+     'axial-ratio-color "(or/c #f (real-in 1 +inf.0))" ratio))
+  (if (not ratio)
+      undefined-polarization-color
+      (interpolate-rgb
+       linear-axial-ratio-color circular-axial-ratio-color
+       (if (infinite? ratio) 0.0 (/ 1.0 ratio)))))
 
 (define (gain->brightness gain minimum-gain maximum-gain)
   (unless (andmap real? (list gain minimum-gain maximum-gain))
@@ -102,10 +117,15 @@
   (cons (inexact->exact (round (* theta 1000000)))
         (inexact->exact (round (* normalized-phi 1000000)))))
 
-(define (make-polarization-color-at grid)
+(define (make-polarization-color-at grid
+                                    #:mode [mode 'signed-circularity])
   (unless (nec2c-pattern-grid? grid)
     (raise-argument-error
      'make-polarization-color-at "nec2c-pattern-grid?" grid))
+  (unless (memq mode polarization-surface-modes)
+    (raise-argument-error
+     'make-polarization-color-at
+     "(or/c 'signed-circularity 'axial-ratio)" mode))
   ;; The surface constructor visits only sampled angular vertices. Analyze
   ;; each solver sample once so polarization coloring remains linear in grid
   ;; size instead of repeatedly searching the grid during triangulation.
@@ -116,18 +136,24 @@
       (with-handlers ([exn:fail? (lambda (_failure) #f)])
         (analyze-polarization (nec2c-pattern-sample-e-theta sample)
                               (nec2c-pattern-sample-e-phi sample))))
+    (define gain
+      (let ([sample-gain (nec2c-pattern-sample-total-gain-db sample)])
+        (if (finite-real? sample-gain) sample-gain minimum-gain)))
+    (define hue
+      (cond
+        [(eq? mode 'signed-circularity)
+         (signed-circularity-color
+          (and state (polarization-state-signed-circularity state)))]
+        [else
+         (axial-ratio-color
+          (and state (polarization-state-axial-ratio state)))]))
     (hash-set!
      colors
      (polarization-angle-key
       (nec2c-pattern-sample-theta-deg sample)
       (nec2c-pattern-sample-phi-deg sample))
-     (scale-rgb
-      (signed-circularity-color
-       (and state (polarization-state-signed-circularity state)))
-      (gain->brightness
-       (let ([gain (nec2c-pattern-sample-total-gain-db sample)])
-         (if (finite-real? gain) gain minimum-gain))
-       minimum-gain maximum-gain))))
+     (scale-rgb hue
+                (gain->brightness gain minimum-gain maximum-gain))))
   (lambda (theta phi)
     (if (and (real? theta) (real? phi))
         (hash-ref colors (polarization-angle-key theta phi)
@@ -200,10 +226,14 @@
 (define (format-tilt tilt)
   (if tilt (format-number tilt 1 " degrees") "undefined"))
 
-(define circularity-legend-canvas%
+(define polarization-legend-canvas%
   (class canvas%
+    (init-field [mode 'signed-circularity])
     (super-new [min-width 276] [min-height 86]
                [stretchable-width #t] [stretchable-height #f])
+    (define/public (set-mode new-mode)
+      (set! mode new-mode)
+      (send this refresh))
     (define/override (on-paint)
       (define dc (send this get-dc))
       (define-values (width height) (send this get-client-size))
@@ -213,9 +243,12 @@
       (define bar-height 18)
       (send dc set-pen "transparent" 0 'transparent)
       (for ([x (in-range left right)])
-        (define circularity
-          (- (* 2.0 (/ (- x left) (max 1 (- right left 1)))) 1.0))
-        (define rgb (signed-circularity-color circularity))
+        (define fraction (/ (- x left) (max 1 (- right left 1))))
+        (define rgb
+          (if (eq? mode 'signed-circularity)
+              (signed-circularity-color (- (* 2.0 fraction) 1.0))
+              (axial-ratio-color
+               (if (zero? fraction) +inf.0 (/ 1.0 fraction)))))
         (send dc set-brush
               (make-object color%
                            (exact-round (first rgb))
@@ -224,21 +257,33 @@
               'solid)
         (send dc draw-rectangle x top 1 bar-height))
       (send dc set-text-foreground "black")
-      (send dc draw-text "LHCP" left 2)
-      (define linear-label "LINEAR")
-      (define-values (linear-width _h _d _s)
-        (send dc get-text-extent linear-label))
-      (send dc draw-text linear-label (- (/ width 2) (/ linear-width 2)) 2)
-      (define right-label "RHCP")
+      (define left-label
+        (if (eq? mode 'signed-circularity) "LHCP" "LINEAR"))
+      (define center-label
+        (if (eq? mode 'signed-circularity) "LINEAR" "ELLIPTICAL"))
+      (define right-label
+        (if (eq? mode 'signed-circularity) "RHCP" "CIRCULAR"))
+      (send dc draw-text left-label left 2)
+      (define-values (center-width _h _d _s)
+        (send dc get-text-extent center-label))
+      (send dc draw-text center-label (- (/ width 2) (/ center-width 2)) 2)
       (define-values (right-width _rh _rd _rs)
         (send dc get-text-extent right-label))
       (send dc draw-text right-label (- right right-width) 2)
-      (send dc draw-text "-1" left (+ top bar-height 4))
-      (send dc draw-text "0" (- (/ width 2) 4) (+ top bar-height 4))
-      (define plus-one "+1")
-      (define-values (plus-width _ph _pd _ps)
-        (send dc get-text-extent plus-one))
-      (send dc draw-text plus-one (- right plus-width) (+ top bar-height 4)))))
+      (define left-value
+        (if (eq? mode 'signed-circularity) "-1" "infinite:1"))
+      (define center-value (if (eq? mode 'signed-circularity) "0" "2:1"))
+      (define right-value (if (eq? mode 'signed-circularity) "+1" "1:1"))
+      (send dc draw-text left-value left (+ top bar-height 4))
+      (define-values (center-value-width _cvh _cvd _cvs)
+        (send dc get-text-extent center-value))
+      (send dc draw-text center-value
+            (- (/ width 2) (/ center-value-width 2))
+            (+ top bar-height 4))
+      (define-values (right-value-width _rvh _rvd _rvs)
+        (send dc get-text-extent right-value))
+      (send dc draw-text right-value (- right right-value-width)
+            (+ top bar-height 4)))))
 
 (define polarization-poc-canvas%
   (class pict3d-canvas%
@@ -266,7 +311,7 @@
     (define/private (update-view!)
       (send status-label set-label
             (format
-             "drag to orbit  |  wheel to zoom  |  click to inspect  |  azimuth ~a degrees  elevation ~a degrees"
+             "drag to orbit  |  wheel to zoom  |  click surface to inspect  |  click background to clear  |  azimuth ~a degrees  elevation ~a degrees"
              (exact-round azimuth) (exact-round altitude)))
       (parameterize ([current-pict3d-background (rgba "black")]
                      [current-pict3d-ambient (emitted "white" 1.0)]
@@ -380,7 +425,9 @@
                           "positive-real?" mesh-step))
 
   (define current-grid grid)
-  (define initial-color-at (make-polarization-color-at grid))
+  (define current-surface-mode 'signed-circularity)
+  (define initial-color-at
+    (make-polarization-color-at grid #:mode current-surface-mode))
   (define-values (minimum-gain maximum-gain) (total-gain-range grid))
   (define-values (surface radius view-center _peak-gain)
     (build-radiation-pict3d
@@ -412,20 +459,51 @@
   (define status
     (new message%
          [parent footer]
-         [label "drag to orbit  |  wheel to zoom  |  click to inspect"]
+         [label "drag to orbit  |  wheel to zoom  |  click surface to inspect  |  click background to clear"]
          [stretchable-width #t]))
+
+  (define (surface-mode-title)
+    (if (eq? current-surface-mode 'signed-circularity)
+        "SIGNED CIRCULARITY"
+        "AXIAL RATIO"))
+
+  (define (surface-summary-text minimum maximum)
+    (format
+     "~a SURFACE\nARRL radius from total gain\nbrightness ~a to ~a"
+     (surface-mode-title)
+     (format-number minimum 2 " dBi")
+     (format-number maximum 2 " dBi")))
 
   (new message% [parent rail] [label "POLARIZATION WORKBENCH"])
   (define surface-summary
     (new message%
          [parent rail]
-         [label (format
-                 "POLARIZATION SURFACE\nARRL radius from total gain\nbrightness ~a to ~a"
-                 (format-number minimum-gain 2 " dBi")
-                 (format-number maximum-gain 2 " dBi"))]
+         [label (surface-summary-text minimum-gain maximum-gain)]
          [auto-resize #t]
          [stretchable-width #t]))
-  (new circularity-legend-canvas% [parent rail])
+  (define canvas #f)
+  (define surface-rebuild-timer #f)
+  (define (schedule-surface-rebuild!)
+    (when surface-rebuild-timer
+      (send surface-rebuild-timer stop)
+      (send surface-rebuild-timer start 120 #t)))
+  (new message% [parent rail] [label "SURFACE"])
+  (new choice%
+       [parent rail]
+       [label #f]
+       [choices '("SIGNED CIRCULARITY" "AXIAL RATIO")]
+       [selection 0]
+       [callback
+        (lambda (choice _event)
+          (set! current-surface-mode
+                (if (zero? (send choice get-selection))
+                    'signed-circularity
+                    'axial-ratio))
+          (schedule-surface-rebuild!))])
+  (define legend
+    (new polarization-legend-canvas%
+         [parent rail]
+         [mode current-surface-mode]))
   (new message%
        [parent rail]
        [label (string-append
@@ -496,10 +574,9 @@
                 (format "speed ~ax" (~r speed #:precision 2))))])
   (new message%
        [parent rail]
-       [label "M3 SIGNED-CIRCULARITY SURFACE\nPolarization glyphs arrive\nin later milestones."]
+       [label "M4 SURFACE METRICS\nSigned circularity and axial ratio\nacross the complete gain range."]
        [stretchable-width #t])
 
-  (define canvas #f)
   (define (select-direction! azimuth elevation)
     (define gain
       (gain-at current-grid #:azimuth azimuth #:elevation elevation))
@@ -509,10 +586,11 @@
                          #:azimuth azimuth #:elevation elevation)))
     (send selection-summary set-label
           (string-append
-           (format "azimuth     ~a\nelevation   ~a\ngain        ~a"
+           (format "azimuth     ~a\nelevation   ~a\ngain        ~a\nrelative    ~a"
                    (format-number azimuth 2 " degrees")
                    (format-number elevation 2 " degrees")
-                   (format-number gain 2 " dBi"))
+                   (format-number gain 2 " dBi")
+                   (format-number (- gain maximum-gain) 2 " dB"))
            (if state
                (format "\nsense       ~a\naxial ratio ~a\ntilt        ~a"
                        (string-upcase
@@ -536,6 +614,22 @@
                [selection-cleared-callback clear-selection!]
                [status-label status])))
   (send canvas set-async-updates? #t)
+
+  (define (rebuild-surface!)
+    (define color-at
+      (make-polarization-color-at current-grid #:mode current-surface-mode))
+    (define-values (new-surface new-radius new-center _new-peak)
+      (build-radiation-pict3d
+       current-grid #:scale 'arrl #:mesh-step mesh-step #:color-at color-at))
+    (send legend set-mode current-surface-mode)
+    (send surface-summary set-label
+          (surface-summary-text minimum-gain maximum-gain))
+    (clear-selection!)
+    (send canvas replace-surface! new-surface new-center new-radius))
+
+  (set! surface-rebuild-timer
+        (new timer%
+             [notify-callback rebuild-surface!]))
 
   (define timer
     (new timer%
@@ -562,7 +656,8 @@
      (unless (nec2c-pattern-grid? new-grid)
        (raise-argument-error
         'visualization-update! "nec2c-pattern-grid?" new-grid))
-     (define new-color-at (make-polarization-color-at new-grid))
+     (define new-color-at
+       (make-polarization-color-at new-grid #:mode current-surface-mode))
      (define-values (new-minimum-gain new-maximum-gain)
        (total-gain-range new-grid))
      (define-values (new-surface new-radius new-center _new-peak)
@@ -570,14 +665,13 @@
         new-grid #:scale 'arrl #:mesh-step mesh-step
         #:color-at new-color-at))
      (set! current-grid new-grid)
+     (set! minimum-gain new-minimum-gain)
+     (set! maximum-gain new-maximum-gain)
      (parameterize ([current-eventspace eventspace])
        (queue-callback
         (lambda ()
           (send surface-summary set-label
-                (format
-                 "POLARIZATION SURFACE\nARRL radius from total gain\nbrightness ~a to ~a"
-                 (format-number new-minimum-gain 2 " dBi")
-                 (format-number new-maximum-gain 2 " dBi")))
+                (surface-summary-text new-minimum-gain new-maximum-gain))
           (send selection-summary set-label
                 "Click the pattern surface\nto inspect an exact direction.")
           (send canvas replace-surface! new-surface new-center new-radius))

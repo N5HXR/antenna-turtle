@@ -91,14 +91,13 @@ elliptical, LHCP, and RHCP regions must remain visible and distinct.  Depth
 testing occludes back-side content, and the legend must state the propagation
 viewpoint convention.
 
-### M4 — Surface metrics and low-gain experiments
+### M4 — Surface metric experiment
 
 Retain the frozen M3 circularity ramp and add an experimental selectable axial
-ratio surface mode for locating near-circular regions. Add a relative-gain
-threshold slider spanning `SHOW ALL` through roughly -40 to -3 dB, defaulting
-near -20 dB. Settle axial-ratio coloration, undefined/weak-field treatment,
-and the persistent three-line inspector by human review. Signed circularity
-remains the default surface mode.
+ratio surface mode for locating near-circular regions. Compare an optional
+low-gain threshold against mapping the complete finite minimum-to-maximum gain
+range. Settle axial-ratio coloration and the persistent inspector by human
+review. Signed circularity remains the default surface mode.
 
 ### M5 — Static far-field ellipse glyphs
 

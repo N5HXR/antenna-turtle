@@ -5,7 +5,8 @@
          racket/math
          "../antenna-turtle/private/nec2c.rkt"
          "../antenna-turtle/private/nec2c-opengl-view.rkt"
-         "../antenna-turtle/private/polarization-poc.rkt")
+         "../antenna-turtle/private/polarization-poc.rkt"
+         "../antenna-turtle/private/visualization-handle.rkt")
 
 (define (check-angle point expected-azimuth expected-elevation)
   (define-values (azimuth elevation)
@@ -50,6 +51,14 @@
   (check-exn exn:fail:contract?
              (lambda () (signed-circularity-color 1.1))))
 
+(test-case "axial-ratio color highlights circular polarization"
+  (check-rgb (axial-ratio-color 1) '(255 240 48))
+  (check-rgb (axial-ratio-color 2) '(151.5 132 88))
+  (check-rgb (axial-ratio-color +inf.0) '(48 24 128))
+  (check-rgb (axial-ratio-color #f) '(20 20 26))
+  (check-exn exn:fail:contract?
+             (lambda () (axial-ratio-color 0.99))))
+
 (test-case "PoC math rejects undefined directions and bad timing"
   (check-exn #rx"RF origin" (lambda () (surface-point->angles 0 0 0)))
   (check-exn exn:fail:contract?
@@ -88,6 +97,14 @@
   (check-rgb (color-at 90 360) '(32 128 255))
   (check-rgb (color-at 45 45) '(20 20 26)))
 
+(test-case "surface color cache can display axial ratio"
+  (define color-at
+    (make-polarization-color-at
+     polarization-color-grid #:mode 'axial-ratio))
+  (check-rgb (color-at 90 0) '(255 240 48))
+  (check-rgb (color-at 90 90) '(48 24 128))
+  (check-rgb (color-at 90 180) '(255 240 48)))
+
 (define gain-brightness-grid
   (nec2c-pattern-grid
    #f '(90) '(0 90 180)
@@ -119,3 +136,11 @@
     (surface-point->angles (pos-x hit) (pos-y hit) (pos-z hit)))
   (check-= azimuth 0.0 1e-10)
   (check-= elevation 0.0 1e-10))
+
+(test-case "M4 PoC viewer opens and closes with native controls"
+  (define handle
+    (show-polarization-surface-poc
+     spherical-grid #:width 640 #:height 480 #:mesh-step 45))
+  (check-true (visualization-handle? handle))
+  (check-true (visualization-open? handle))
+  (visualization-close! handle))
