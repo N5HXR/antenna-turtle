@@ -14,6 +14,11 @@ instantaneous E-field position and direction of rotation.
 - Clearance is curvature-aware rather than a fixed radial offset: perimeter
   probes trace the actual rendered surface and lift the complete ring only as
   far as needed to clear steep gradients and neighboring triangles.
+- A glyph is omitted when the local displayed lobe is smaller than the
+  fixed-size ring, or when surface avoidance would detach it by more than a
+  bounded fraction of the local lobe radius. This relative rule preserves
+  coverage on broad curved lobes while rejecting orphans in deep nulls, where
+  polarization is both numerically fragile and visually misleading.
 - The major and minor axes are constructed in the local spherical
   `E_theta`/`E_phi` tangent basis using the analyzed tilt and axial ratio.
 - Glyph major-axis size is constant in model space. Perspective may change its
@@ -37,8 +42,10 @@ instantaneous E-field position and direction of rotation.
   of packing equal angular samples into a tiny area.
 - The densest end approaches every solver sample; the initial peak-lobe target
   is approximately 10 degrees.
-- Available 0/90/180-degree theta samples and 0/90/180/270-degree phi samples
-  are always included. Duplicate pole glyphs collapse to one stable glyph.
+- Drawable 0/90/180-degree theta samples and 0/90/180/270-degree phi samples
+  are always included. Samples in collapsed nulls may be omitted by the
+  geometric eligibility rule. Duplicate pole glyphs collapse to one stable
+  glyph.
 - Density changes rebuild only the glyph decoration and cached scene. Camera
   motion continues to replace only the camera.
 

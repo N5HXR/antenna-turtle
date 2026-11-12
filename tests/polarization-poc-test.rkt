@@ -145,6 +145,18 @@
    angles
    (polarization-glyph-angles-by-gain area-sampling-grid 15)))
 
+(test-case "fixed-size glyphs are omitted rather than detached from nulls"
+  (check-true (polarization-glyph-hostable? 1.0 0.05 0.01))
+  ;; The displayed lobe itself is smaller than the diagram glyph.
+  (check-false (polarization-glyph-hostable? 0.05 0.05 0.01))
+  ;; Large lobes tolerate proportionally more absolute clearance.
+  (check-true (polarization-glyph-hostable? 1.0 0.05 0.2))
+  ;; The same lift would visibly orphan a glyph on a small lobe.
+  (check-false (polarization-glyph-hostable? 0.2 0.05 0.051))
+  (check-false (polarization-glyph-hostable? 1.0 0.05 0.251))
+  (check-exn exn:fail:contract?
+             (lambda () (polarization-glyph-hostable? 1.0 0.05 -0.01))))
+
 (define polarization-color-grid
   (nec2c-pattern-grid
    #f '(90) '(0 90 180)
@@ -172,6 +184,16 @@
   (check-rgb (color-at 90 0) '(255 240 48))
   (check-rgb (color-at 90 90) '(48 24 128))
   (check-rgb (color-at 90 180) '(255 240 48)))
+
+(test-case "far-field inspector uses operator terms and exact polarization"
+  (define text
+    (polarization-inspector-text polarization-color-grid 0 0 0))
+  (check-regexp-match #rx"total gain  0 dBi" text)
+  (check-regexp-match #rx"relative    0 dB" text)
+  (check-regexp-match #rx"polarization RHCP" text)
+  (check-regexp-match #rx"axial ratio  1:1" text)
+  (check-regexp-match #rx"tilt angle" text)
+  (check-false (regexp-match? #rx"E[_-]?(theta|phi)|Stokes|Jones" text)))
 
 (define gain-brightness-grid
   (nec2c-pattern-grid

@@ -1,8 +1,8 @@
 #lang racket/base
 
 ;; Isolated native proof-of-concept shell for the polarization workbench.
-;; Keep this deliberately independent of the production radiation viewer: the
-;; controls and interaction model will change during M2--M7 experimentation.
+;; Keep this deliberately independent of the production radiation viewer so
+;; the approved far-field UX can be integrated as a coherent unit later.
 
 (require pict3d
          racket/class
@@ -23,9 +23,11 @@
          polarization-glyph-frame-for
          polarization-glyph-angles
          polarization-glyph-angles-by-gain
+         polarization-glyph-hostable?
          (struct-out polarization-glyph-frame)
          make-polarization-color-at
-         gain->brightness)
+         gain->brightness
+         polarization-inspector-text)
 
 (define view-fov-degrees 34)
 (define default-azimuth -42.0)
@@ -467,6 +469,24 @@
            (sqr (pos-y point))
            (sqr (pos-z point)))))
 
+;; A fixed-size pedagogical glyph has no honest placement when its entire
+;; displayed lobe is smaller than the glyph. Clearance is judged relative to
+;; local lobe radius: a large lobe can tolerate more absolute lift without the
+;; glyph appearing detached, while a collapsed lobe cannot.
+(define (polarization-glyph-hostable? base-radius glyph-radius lift)
+  (unless (andmap real? (list base-radius glyph-radius lift))
+    (raise-arguments-error
+     'polarization-glyph-hostable? "radii and lift must be real"
+     "base radius" base-radius "glyph radius" glyph-radius "lift" lift))
+  (unless (and (positive? base-radius) (positive? glyph-radius)
+               (>= lift 0))
+    (raise-arguments-error
+     'polarization-glyph-hostable?
+     "radii must be positive and lift must be nonnegative"
+     "base radius" base-radius "glyph radius" glyph-radius "lift" lift))
+  (and (>= base-radius (* glyph-radius 1.25))
+       (<= lift (max glyph-radius (* base-radius 0.25)))))
+
 (define (surface-radius-in-direction surface point)
   (define radius (pos-radius point))
   (and (> radius 0)
@@ -502,9 +522,10 @@
                  (- (+ surface-radius safety-margin) (pos-radius point)))
             maximum-deficit)))
     (set! lift (+ lift (max 0.0 deficit))))
-  (pos (* (+ base-radius lift) (vector-ref direction 0))
-       (* (+ base-radius lift) (vector-ref direction 1))
-       (* (+ base-radius lift) (vector-ref direction 2))))
+  (and (polarization-glyph-hostable? base-radius glyph-radius lift)
+       (pos (* (+ base-radius lift) (vector-ref direction 0))
+            (* (+ base-radius lift) (vector-ref direction 1))
+            (* (+ base-radius lift) (vector-ref direction 2)))))
 
 (define (make-polarization-glyph-layout grid surface view-radius spacing-deg)
   (define sample-table (grid-sample-table grid))
@@ -537,12 +558,13 @@
                           [center
                            (clearance-adjusted-center
                             surface radius frame glyph-radius)])
-                     (define-values (theta-axis phi-axis)
-                       (spherical-tangent-axes theta phi))
-                     (polarization-glyph-instance
-                      center frame theta-axis phi-axis
-                      (nec2c-pattern-sample-e-theta sample)
-                      (nec2c-pattern-sample-e-phi sample)))))))))
+                     (and center
+                          (let-values ([(theta-axis phi-axis)
+                                        (spherical-tangent-axes theta phi)])
+                            (polarization-glyph-instance
+                             center frame theta-axis phi-axis
+                             (nec2c-pattern-sample-e-theta sample)
+                             (nec2c-pattern-sample-e-phi sample)))))))))))
 
 (define (make-polarization-glyph-rings layout view-radius)
   (define glyph-radius (* view-radius 0.05))
@@ -621,6 +643,34 @@
 
 (define (format-tilt tilt)
   (if tilt (format-number tilt 1 " degrees") "undefined"))
+
+(define (polarization-inspector-text grid azimuth elevation maximum-gain)
+  (unless (nec2c-pattern-grid? grid)
+    (raise-argument-error
+     'polarization-inspector-text "nec2c-pattern-grid?" grid))
+  (unless (andmap real? (list azimuth elevation maximum-gain))
+    (raise-arguments-error
+     'polarization-inspector-text "angles and maximum gain must be real"
+     "azimuth" azimuth "elevation" elevation
+     "maximum gain" maximum-gain))
+  (define gain
+    (gain-at grid #:azimuth azimuth #:elevation elevation))
+  (define state
+    (with-handlers ([exn:fail? (lambda (_failure) #f)])
+      (polarization-at grid #:azimuth azimuth #:elevation elevation)))
+  (string-append
+   (format "azimuth      ~a\nelevation    ~a\ntotal gain  ~a\nrelative    ~a"
+           (format-number azimuth 2 " degrees")
+           (format-number elevation 2 " degrees")
+           (format-number gain 2 " dBi")
+           (format-number (- gain maximum-gain) 2 " dB"))
+   (if state
+       (format "\npolarization ~a\naxial ratio  ~a\ntilt angle   ~a"
+               (string-upcase
+                (symbol->string (polarization-state-sense state)))
+               (format-ratio (polarization-state-axial-ratio state))
+               (format-tilt (polarization-state-tilt-deg state)))
+       "\npolarization unavailable")))
 
 (define polarization-legend-canvas%
   (class canvas%
@@ -755,6 +805,24 @@
       (set! view-center new-center)
       (set! radius new-radius)
       (set! selection-marker empty-pict3d)
+      (selection-cleared-callback)
+      (set! display-base (freeze (combine surface decoration)))
+      (update-view!))
+
+    ;; Surface metric changes recolor the same geometry, so an exact selected
+    ;; direction remains meaningful and its marker should not disappear.
+    (define/public (replace-surface-style! new-surface new-center new-radius)
+      (set! surface new-surface)
+      (set! view-center new-center)
+      (set! radius new-radius)
+      (set! display-base (freeze (combine surface decoration)))
+      (update-view!))
+
+    ;; Glyph visibility and density are overlays on the same data surface.
+    ;; Preserve both the selected marker and its inspector while A/B testing.
+    (define/public (replace-overlay! new-decoration new-animation)
+      (set! decoration new-decoration)
+      (set! animation new-animation)
       (set! display-base (freeze (combine surface decoration)))
       (update-view!))
 
@@ -930,35 +998,47 @@
     (new polarization-legend-canvas%
          [parent rail]
          [mode current-surface-mode]))
+  (define glyph-spacing-slider #f)
+  (define phase-slider #f)
+  (define play-button #f)
+  (define speed-slider #f)
+  (define (enable-glyph-controls! enabled?)
+    (for ([control (in-list
+                    (filter values
+                            (list glyph-spacing-slider phase-slider
+                                  play-button speed-slider)))])
+      (send control enable enabled?)))
   (new check-box%
        [parent rail]
-       [label "SHOW GLYPHS"]
+       [label "SHOW POLARIZATION GLYPHS"]
        [value #f]
        [callback
         (lambda (control _event)
           (set! glyphs-visible? (send control get-value))
+          (enable-glyph-controls! glyphs-visible?)
           (schedule-glyph-rebuild!))])
   (define glyph-spacing-label
     (new message%
          [parent rail]
          [label
-          (format "TARGET GLYPH SPACING  ~a degrees at peak"
+          (format "GLYPH SPACING  ~a degrees at peak gain"
                   (current-glyph-spacing))]
          [auto-resize #t]
          [stretchable-width #t]))
-  (new slider%
-       [parent rail]
-       [label #f]
-       [min-value 1]
-       [max-value maximum-glyph-stride]
-       [init-value current-glyph-stride]
-       [callback
-        (lambda (control _event)
-          (set! current-glyph-stride (send control get-value))
-          (send glyph-spacing-label set-label
-                (format "TARGET GLYPH SPACING  ~a degrees at peak"
-                        (current-glyph-spacing)))
-          (schedule-glyph-rebuild!))])
+  (set! glyph-spacing-slider
+        (new slider%
+             [parent rail]
+             [label #f]
+             [min-value 1]
+             [max-value maximum-glyph-stride]
+             [init-value current-glyph-stride]
+             [callback
+              (lambda (control _event)
+                (set! current-glyph-stride (send control get-value))
+                (send glyph-spacing-label set-label
+                      (format "GLYPH SPACING  ~a degrees at peak gain"
+                              (current-glyph-spacing)))
+                (schedule-glyph-rebuild!))]))
   (new message%
        [parent rail]
        [label (string-append
@@ -982,7 +1062,6 @@
   (define phase-label
     (new message% [parent rail] [label "0 degrees"]
          [auto-resize #t] [stretchable-width #t]))
-  (define phase-slider #f)
   (set! phase-slider
         (new slider%
              [parent rail]
@@ -1007,7 +1086,6 @@
          [parent rail]
          [stretchable-height #f]
          [alignment '(left center)]))
-  (define play-button #f)
   (set! play-button
         (new button%
              [parent playback-row]
@@ -1019,45 +1097,28 @@
                 (send button set-label (if playing? "PAUSE" "PLAY")))]))
   (define speed-label
     (new message% [parent playback-row] [label "speed 1.00x"]))
-  (new slider%
-       [parent rail]
-       [label #f]
-       [min-value 10]
-       [max-value 400]
-       [init-value 100]
-       [callback
-        (lambda (control _event)
-          (set! speed (/ (send control get-value) 100.0))
-          (send speed-label set-label
-                (format "speed ~ax" (~r speed #:precision 2))))])
+  (set! speed-slider
+        (new slider%
+             [parent rail]
+             [label #f]
+             [min-value 10]
+             [max-value 400]
+             [init-value 100]
+             [callback
+              (lambda (control _event)
+                (set! speed (/ (send control get-value) 100.0))
+                (send speed-label set-label
+                      (format "speed ~ax" (~r speed #:precision 2))))]))
   (new message%
        [parent rail]
-       [label "M5 POLARIZATION TRAJECTORIES\nRing shape is axial ratio.\nOrientation is polarization tilt.\nBead motion is instantaneous E-field phase."]
+       [label "POLARIZATION GLYPHS\nRing shape shows axial ratio.\nRing angle shows polarization tilt.\nBead motion shows instantaneous E-field phase."]
        [stretchable-width #t])
+  (enable-glyph-controls! #f)
 
   (define (select-direction! azimuth elevation)
-    (define gain
-      (gain-at current-grid #:azimuth azimuth #:elevation elevation))
-    (define state
-      (with-handlers ([exn:fail? (lambda (_failure) #f)])
-        (polarization-at current-grid
-                         #:azimuth azimuth #:elevation elevation)))
     (send selection-summary set-label
-          (string-append
-           (format "azimuth     ~a\nelevation   ~a\ngain        ~a\nrelative    ~a"
-                   (format-number azimuth 2 " degrees")
-                   (format-number elevation 2 " degrees")
-                   (format-number gain 2 " dBi")
-                   (format-number (- gain maximum-gain) 2 " dB"))
-           (if state
-               (format "\nsense       ~a\naxial ratio ~a\ntilt        ~a"
-                       (string-upcase
-                        (symbol->string (polarization-state-sense state)))
-                       (format-ratio
-                        (polarization-state-axial-ratio state))
-                       (format-tilt
-                        (polarization-state-tilt-deg state)))
-               "\npolarization unavailable"))))
+          (polarization-inspector-text
+           current-grid azimuth elevation maximum-gain)))
 
   (parameterize ([current-pict3d-background (rgba "black")]
                  [current-pict3d-ambient (emitted "white" 1.0)]
@@ -1087,8 +1148,7 @@
     (send legend set-mode current-surface-mode)
     (send surface-summary set-label
           (surface-summary-text minimum-gain maximum-gain))
-    (clear-selection!)
-    (send canvas replace-scene! surface decoration view-center radius))
+    (send canvas replace-surface-style! surface view-center radius))
 
   (define (rebuild-glyphs!)
     (set! glyph-layout
@@ -1104,9 +1164,7 @@
           (if glyphs-visible?
               (make-polarization-glyph-beads glyph-layout radius phase)
               empty-pict3d))
-    (clear-selection!)
-    (send canvas replace-scene! surface decoration view-center radius)
-    (send canvas replace-animation! animation))
+    (send canvas replace-overlay! decoration animation))
 
   (set! surface-rebuild-timer
         (new timer%
@@ -1180,8 +1238,6 @@
         (lambda ()
           (send surface-summary set-label
                 (surface-summary-text new-minimum-gain new-maximum-gain))
-          (send selection-summary set-label
-                "Click the pattern surface\nto inspect an exact direction.")
           (send canvas replace-scene!
                 new-surface new-decoration new-center new-radius)
           (send canvas replace-animation! new-animation))

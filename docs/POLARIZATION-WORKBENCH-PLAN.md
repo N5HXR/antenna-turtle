@@ -21,11 +21,12 @@ branch may be squashed when the completed feature is merged.
 - Signed circularity uses a fixed vivid pink-red / yellow-green / blue ramp:
   LHCP is `(255, 32, 128)`, linear is `(128, 255, 32)`, and RHCP is
   `(32, 128, 255)`.
-- Polarization glyphs use stable angular placement and similar apparent size.
-  Shape shows axial ratio, orientation shows tilt, and a globally coherent
-  animated needle shows instantaneous field direction.
-- Glyphs have a white foreground, constant-width black screen-space outline,
-  and a minimum edge-on thickness without turning toward the camera.
+- Polarization glyphs use stable, surface-area-aware placement and similar
+  apparent size. Shape shows axial ratio, orientation shows tilt, and a
+  globally coherent animated bead shows instantaneous field position.
+- Glyphs are unfilled white extruded rings with minimum edge-on thickness;
+  they remain fixed in their physical tangent planes rather than turning
+  toward the camera.
 - Back-side glyphs are naturally occluded by the opaque pattern surface.
 - Animation plays by default and provides pause, phase, and speed controls.
 - Click selection interpolates the exact selected direction rather than
@@ -105,22 +106,30 @@ Place fixed-scale tangent ellipses on stable angular samples.  Density choices
 must be multiples of the underlying pattern steps and must include available
 axial and cardinal directions.  Lines, circles, axis ratios, and tilt must
 match exact fixtures.  Screen-space outlines and minimum edge-on thickness
-must preserve readability over all surface colors.
+must preserve readability over all surface colors. During iterative review,
+M5 expanded to settle the final unfilled ring, animated bead, globally
+coherent phase, playback controls, surface-area-aware density, and
+curvature-aware clearance.
 
 ### M6 — Animated knob glyph and inspector
 
-Combine a faint full ellipse with a bright center-to-perimeter needle and an
-experimental endpoint bead or arrow.  Use one global RF phase, automatic
-playback, pause, scrub, and speed controls.  Circular states rotate,
-elliptical states follow an oval dial, and linear states oscillate.  Human
-review chooses the final needle/bead/arrow treatment.
+Subsumed by M5. Iteration on the static glyphs naturally required the animated
+motion cue to judge their value. Human review selected an unfilled white ring
+with a spherical endpoint bead, one global RF phase, automatic playback,
+pause, scrub, and speed controls. Circular states rotate, elliptical states
+follow an oval path, and linear states oscillate. No separate M6 development
+cycle or commit is required.
 
 ### M7 — Far-field PoC UX approval
 
 Consolidate the signed surface, glyphs, animation, exact selection, and compact
 inspector.  The view must communicate polarization to a learner without first
-requiring complex-component terminology.  User approval freezes the native
-far-field UX before production integration.
+requiring complex-component terminology. Glyph-only controls are visibly
+inactive while the optional overlay is off; toggling or changing the overlay
+must preserve camera, phase, and exact selection. Milestone labels and
+experimental terminology are removed from the interface. Automated tests and
+manual review cover the linear dipole, quadrature crossed dipoles, and helix.
+User approval freezes the native far-field UX before production integration.
 
 ### M8 — Near-field selected-point ellipse
 
