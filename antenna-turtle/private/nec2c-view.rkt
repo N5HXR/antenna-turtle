@@ -31,6 +31,7 @@
  show-radiation-cut
  show-radiation-pattern-3d
  show-radiation-pattern-opengl
+ show-polarization-surface-poc
  show-near-field-poynting-particles
  show-radiation-palette-lab
  show-radiation-comparison
@@ -76,6 +77,7 @@
 
 (define-runtime-path proportional-plot3d-path "proportional-plot3d.rkt")
 (define-runtime-path opengl-view-path "nec2c-opengl-view.rkt")
+(define-runtime-path polarization-poc-path "polarization-poc.rkt")
 (define-runtime-path interactive-plot-path "interactive-plot.rkt")
 
 (define (color-at index)
@@ -1129,6 +1131,21 @@
                #:antenna? antenna?
                #:width width
                #:height height))
+
+(define (show-polarization-surface-poc grid
+                                       #:width [width 1180]
+                                       #:height [height 780]
+                                       #:mesh-step [mesh-step 2])
+  (define show-poc
+    (with-handlers ([exn:fail?
+                     (lambda (failure)
+                       (raise-user-error
+                        'show-polarization-surface-poc
+                        "could not start the polarization PoC viewer: ~a"
+                        (exn-message failure)))])
+      (dynamic-require polarization-poc-path
+                       'show-polarization-surface-poc)))
+  (show-poc grid #:width width #:height height #:mesh-step mesh-step))
 
 (define (show-near-field-poynting-particles
          result

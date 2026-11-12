@@ -13,4 +13,4 @@
 (show-model)
 
 (define pattern (nec2c-radiation-grid))
-(show-radiation-pattern-opengl pattern)
+(show-polarization-surface-poc pattern)

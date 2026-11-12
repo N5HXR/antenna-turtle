@@ -34,7 +34,7 @@
    (helix 0.18 {0.95 * wavelength / pi / 2})
    (show-model)
    (define pattern (nec2c-radiation-grid))
-   (show-radiation-pattern-opengl pattern)]
+   (show-polarization-surface-poc pattern)]
 
   ;; optimizing pitch
   [(eq? view 'opt-pitch)
