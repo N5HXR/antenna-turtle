@@ -20,6 +20,10 @@
          advance-polarization-phase
          signed-circularity-color
          axial-ratio-color
+         polarization-glyph-frame-for
+         polarization-glyph-angles
+         polarization-glyph-angles-by-gain
+         (struct-out polarization-glyph-frame)
          make-polarization-color-at
          gain->brightness)
 
@@ -47,6 +51,14 @@
 (define circular-axial-ratio-color '(255 240 48))
 (define polarization-surface-modes '(signed-circularity axial-ratio))
 
+(struct polarization-glyph-frame
+  (direction major-axis minor-axis minor/major)
+  #:transparent)
+
+(struct polarization-glyph-instance
+  (center frame theta-axis phi-axis e-theta e-phi)
+  #:transparent)
+
 (define (interpolate-rgb left right fraction)
   (for/list ([a (in-list left)] [b (in-list right)])
     (+ a (* fraction (- b a)))))
@@ -73,6 +85,75 @@
       (interpolate-rgb
        linear-axial-ratio-color circular-axial-ratio-color
        (if (infinite? ratio) 0.0 (/ 1.0 ratio)))))
+
+(define (polarization-glyph-frame-for theta-deg phi-deg axial-ratio tilt-deg)
+  (unless (and (real? theta-deg) (real? phi-deg))
+    (raise-arguments-error
+     'polarization-glyph-frame-for "angles must be real"
+     "theta" theta-deg "phi" phi-deg))
+  (unless (and (real? axial-ratio) (>= axial-ratio 1))
+    (raise-argument-error
+     'polarization-glyph-frame-for "(real-in 1 +inf.0)" axial-ratio))
+  (unless (or (not tilt-deg) (real? tilt-deg))
+    (raise-argument-error
+     'polarization-glyph-frame-for "(or/c #f real?)" tilt-deg))
+  (define theta (degrees->radians theta-deg))
+  (define phi (degrees->radians phi-deg))
+  (define tilt (degrees->radians (or tilt-deg 0.0)))
+  (define direction
+    (vector (* (sin theta) (cos phi))
+            (* (sin theta) (sin phi))
+            (cos theta)))
+  (define e-theta
+    (vector (* (cos theta) (cos phi))
+            (* (cos theta) (sin phi))
+            (- (sin theta))))
+  (define e-phi (vector (- (sin phi)) (cos phi) 0.0))
+  (define (combine-basis theta-weight phi-weight)
+    (for/vector ([theta-component (in-vector e-theta)]
+                 [phi-component (in-vector e-phi)])
+      (+ (* theta-weight theta-component)
+         (* phi-weight phi-component))))
+  (polarization-glyph-frame
+   direction
+   (combine-basis (cos tilt) (sin tilt))
+   (combine-basis (- (sin tilt)) (cos tilt))
+   (if (infinite? axial-ratio) 0.0 (/ 1.0 axial-ratio))))
+
+(define (angle-near? left right)
+  (< (abs (- left right)) 1e-7))
+
+(define (stride-angle-values values stride forced-values)
+  (remove-duplicates
+   (sort
+    (append
+     (for/list ([value (in-list values)] [index (in-naturals)]
+                #:when (zero? (modulo index stride)))
+       value)
+     (for*/list ([forced (in-list forced-values)]
+                 [value (in-list values)]
+                 #:when (angle-near? value forced))
+       value))
+    <)))
+
+(define (polarization-glyph-angles grid stride)
+  (unless (nec2c-pattern-grid? grid)
+    (raise-argument-error
+     'polarization-glyph-angles "nec2c-pattern-grid?" grid))
+  (unless (and (exact-integer? stride) (positive? stride))
+    (raise-argument-error
+     'polarization-glyph-angles "exact-positive-integer?" stride))
+  (define thetas
+    (stride-angle-values
+     (nec2c-pattern-grid-theta-values grid) stride '(0 90 180)))
+  (define phis
+    (stride-angle-values
+     (nec2c-pattern-grid-phi-values grid) stride '(0 90 180 270)))
+  (append*
+   (for/list ([theta (in-list thetas)])
+     (if (or (angle-near? theta 0) (angle-near? theta 180))
+         (list (cons theta (first phis)))
+         (for/list ([phi (in-list phis)]) (cons theta phi))))))
 
 (define (gain->brightness gain minimum-gain maximum-gain)
   (unless (andmap real? (list gain minimum-gain maximum-gain))
@@ -207,6 +288,321 @@
            (basis 'camera
                   (camera-affine view-center radius azimuth altitude zoom))))
 
+(define (arrl-radius-for-gain gain peak-gain)
+  (expt 0.89 (/ (- (max -100 (- gain peak-gain))) 2)))
+
+(define (offset-pos center first-axis first-scale second-axis second-scale)
+  (pos (+ (pos-x center)
+          (* first-scale (vector-ref first-axis 0))
+          (* second-scale (vector-ref second-axis 0)))
+       (+ (pos-y center)
+          (* first-scale (vector-ref first-axis 1))
+          (* second-scale (vector-ref second-axis 1)))
+       (+ (pos-z center)
+          (* first-scale (vector-ref first-axis 2))
+          (* second-scale (vector-ref second-axis 2)))))
+
+(define glyph-material
+  (material #:ambient 1.0
+            #:diffuse 0.0
+            #:specular 0.0
+            #:roughness 1.0))
+
+(define (grid-sample-table grid)
+  (for/hash ([sample (in-list (nec2c-pattern-grid-samples grid))])
+    (values
+     (polarization-angle-key
+      (nec2c-pattern-sample-theta-deg sample)
+      (nec2c-pattern-sample-phi-deg sample))
+     sample)))
+
+(define (axis-glyph-angle? angle)
+  (define theta (car angle))
+  (define phi (cdr angle))
+  (or (angle-near? theta 0)
+      (angle-near? theta 180)
+      (and (angle-near? theta 90)
+           (ormap (lambda (cardinal) (angle-near? phi cardinal))
+                  '(0 90 180 270)))))
+
+(define (sample-surface-position sample peak-gain)
+  (define theta
+    (degrees->radians (nec2c-pattern-sample-theta-deg sample)))
+  (define phi
+    (degrees->radians (nec2c-pattern-sample-phi-deg sample)))
+  (define radius
+    (arrl-radius-for-gain
+     (nec2c-pattern-sample-total-gain-db sample) peak-gain))
+  (pos (* radius (sin theta) (cos phi))
+       (* radius (sin theta) (sin phi))
+       (* radius (cos theta))))
+
+;; Greedy surface-space sampling makes glyph density follow displayed lobe
+;; area. Large lobes receive more glyphs while shriveled lobes no longer pack
+;; many angular samples into the same small patch.
+(define (polarization-glyph-angles-by-gain grid spacing-deg)
+  (unless (nec2c-pattern-grid? grid)
+    (raise-argument-error
+     'polarization-glyph-angles-by-gain "nec2c-pattern-grid?" grid))
+  (unless (and (real? spacing-deg) (positive? spacing-deg))
+    (raise-argument-error
+     'polarization-glyph-angles-by-gain "positive-real?" spacing-deg))
+  (define table (grid-sample-table grid))
+  (define-values (_minimum-gain peak-gain) (total-gain-range grid))
+  (define all-angles (polarization-glyph-angles grid 1))
+  (define (sample-for angle)
+    (hash-ref table (polarization-angle-key (car angle) (cdr angle)) #f))
+  (define usable-angles
+    (filter
+     (lambda (angle)
+       (define sample (sample-for angle))
+       (and sample
+            (finite-real? (nec2c-pattern-sample-total-gain-db sample))))
+     all-angles))
+  (define forced (filter axis-glyph-angle? usable-angles))
+  (define remaining
+    (sort (filter (lambda (angle) (not (member angle forced))) usable-angles)
+          >
+          #:key (lambda (angle)
+                  (nec2c-pattern-sample-total-gain-db (sample-for angle)))))
+  (define minimum-distance
+    (* 2.0 (sin (/ (degrees->radians (min spacing-deg 179.0)) 2.0))))
+  (define selected forced)
+  (define selected-positions
+    (for/list ([angle (in-list forced)])
+      (sample-surface-position (sample-for angle) peak-gain)))
+  (for ([angle (in-list remaining)])
+    (define point (sample-surface-position (sample-for angle) peak-gain))
+    (when (for/and ([selected-point (in-list selected-positions)])
+            (>= (pos-dist point selected-point) minimum-distance))
+      (set! selected (cons angle selected))
+      (set! selected-positions (cons point selected-positions))))
+  (sort selected
+        (lambda (left right)
+          (or (< (car left) (car right))
+              (and (= (car left) (car right)) (< (cdr left) (cdr right)))))))
+
+(define (glyph-ring center frame glyph-radius [scale 1.0])
+  (define major (polarization-glyph-frame-major-axis frame))
+  (define minor (polarization-glyph-frame-minor-axis frame))
+  ;; A truly linear state is a zero-width ellipse. Give it a small diagrammatic
+  ;; width so it remains a visible blade rather than disappearing edge-on.
+  (define minor/major
+    (max 0.07 (polarization-glyph-frame-minor/major frame)))
+  (for/list ([index (in-range 32)])
+    (define angle (* 2 pi (/ index 32.0)))
+    (offset-pos center
+                major (* glyph-radius scale (cos angle))
+                minor (* glyph-radius scale minor/major (sin angle)))))
+
+(define (glyph-vertex point normal color)
+  (vertex point
+          #:normal (apply dir (vector->list normal))
+          #:color (apply rgba color)
+          #:material glyph-material))
+
+(define (glyph-annulus outer-ring inner-ring normal color)
+  (define outer-vertices
+    (for/list ([point (in-list outer-ring)])
+      (glyph-vertex point normal color)))
+  (define inner-vertices
+    (for/list ([point (in-list inner-ring)])
+      (glyph-vertex point normal color)))
+  (define next-outer
+    (append (rest outer-vertices) (list (first outer-vertices))))
+  (define next-inner
+    (append (rest inner-vertices) (list (first inner-vertices))))
+  (combine
+   (append*
+    (for/list ([outer-a (in-list outer-vertices)]
+               [outer-b (in-list next-outer)]
+               [inner-a (in-list inner-vertices)]
+               [inner-b (in-list next-inner)])
+      (list (triangle outer-a inner-b inner-a)
+            (triangle outer-a outer-b inner-b))))))
+
+(define (glyph-sides back-ring front-ring normal color)
+  (define back-vertices
+    (for/list ([point (in-list back-ring)])
+      (glyph-vertex point normal color)))
+  (define front-vertices
+    (for/list ([point (in-list front-ring)])
+      (glyph-vertex point normal color)))
+  (define next-back (append (rest back-vertices) (list (first back-vertices))))
+  (define next-front
+    (append (rest front-vertices) (list (first front-vertices))))
+  (combine
+   (append*
+    (for/list ([back-a (in-list back-vertices)]
+               [back-b (in-list next-back)]
+               [front-a (in-list front-vertices)]
+               [front-b (in-list next-front)])
+      (list (triangle back-a front-a front-b)
+            (triangle back-a front-b back-b))))))
+
+(define (render-polarization-ring instance glyph-radius)
+  (define center (polarization-glyph-instance-center instance))
+  (define frame (polarization-glyph-instance-frame instance))
+  (define direction (polarization-glyph-frame-direction frame))
+  (define front-center
+    (offset-pos center direction (* glyph-radius 0.08) direction 0))
+  (define outer-back (glyph-ring center frame glyph-radius))
+  (define outer-front (glyph-ring front-center frame glyph-radius))
+  (define inner-front (glyph-ring front-center frame glyph-radius 0.74))
+  (combine
+   (glyph-sides outer-back outer-front direction '(1.0 1.0 1.0 1.0))
+   (glyph-annulus outer-front inner-front direction '(1.0 1.0 1.0 1.0))))
+
+(define (spherical-tangent-axes theta-deg phi-deg)
+  (define theta (degrees->radians theta-deg))
+  (define phi (degrees->radians phi-deg))
+  (values
+   (vector (* (cos theta) (cos phi))
+           (* (cos theta) (sin phi))
+           (- (sin theta)))
+   (vector (- (sin phi)) (cos phi) 0.0)))
+
+(define (pos-radius point)
+  (sqrt (+ (sqr (pos-x point))
+           (sqr (pos-y point))
+           (sqr (pos-z point)))))
+
+(define (surface-radius-in-direction surface point)
+  (define radius (pos-radius point))
+  (and (> radius 0)
+       (let* ([x (/ (pos-x point) radius)]
+              [y (/ (pos-y point) radius)]
+              [z (/ (pos-z point) radius)]
+              [hit (trace surface
+                          (pos (* 3.0 x) (* 3.0 y) (* 3.0 z))
+                          (dir (- x) (- y) (- z)))])
+         (and hit (pos-radius hit)))))
+
+(define (clearance-adjusted-center surface base-radius frame glyph-radius)
+  (define direction (polarization-glyph-frame-direction frame))
+  (define safety-margin (* glyph-radius 0.14))
+  (define lift safety-margin)
+  ;; The ellipse lives in a tangent plane, so on a steep lobe shoulder one
+  ;; edge may intersect neighboring surface triangles even when its center is
+  ;; clear. Probe the actual rendered surface and iteratively lift the complete
+  ;; glyph until every sampled perimeter point clears it.
+  (for ([_iteration (in-range 4)])
+    (define center
+      (pos (* (+ base-radius lift) (vector-ref direction 0))
+           (* (+ base-radius lift) (vector-ref direction 1))
+           (* (+ base-radius lift) (vector-ref direction 2))))
+    (define deficit
+      (for/fold ([maximum-deficit 0.0])
+                ([point (in-list (glyph-ring center frame glyph-radius))]
+                 [index (in-naturals)]
+                 #:when (even? index))
+        (define surface-radius (surface-radius-in-direction surface point))
+        (if surface-radius
+            (max maximum-deficit
+                 (- (+ surface-radius safety-margin) (pos-radius point)))
+            maximum-deficit)))
+    (set! lift (+ lift (max 0.0 deficit))))
+  (pos (* (+ base-radius lift) (vector-ref direction 0))
+       (* (+ base-radius lift) (vector-ref direction 1))
+       (* (+ base-radius lift) (vector-ref direction 2))))
+
+(define (make-polarization-glyph-layout grid surface view-radius spacing-deg)
+  (define sample-table (grid-sample-table grid))
+  (define-values (_minimum-gain maximum-gain) (total-gain-range grid))
+  (define glyph-radius (* view-radius 0.05))
+  (filter
+   values
+   (for/list ([angle (in-list
+                      (polarization-glyph-angles-by-gain grid spacing-deg))])
+       (define theta (car angle))
+       (define phi (cdr angle))
+       (define sample
+         (hash-ref sample-table (polarization-angle-key theta phi) #f))
+       (and sample
+            (let* ([gain (nec2c-pattern-sample-total-gain-db sample)]
+                   [state
+                    (with-handlers ([exn:fail? (lambda (_failure) #f)])
+                      (analyze-polarization
+                       (nec2c-pattern-sample-e-theta sample)
+                       (nec2c-pattern-sample-e-phi sample)))])
+              (and (finite-real? gain)
+                   state
+                   (polarization-state-axial-ratio state)
+                   (let* ([frame
+                           (polarization-glyph-frame-for
+                            theta phi
+                            (polarization-state-axial-ratio state)
+                            (polarization-state-tilt-deg state))]
+                          [radius (arrl-radius-for-gain gain maximum-gain)]
+                          [center
+                           (clearance-adjusted-center
+                            surface radius frame glyph-radius)])
+                     (define-values (theta-axis phi-axis)
+                       (spherical-tangent-axes theta phi))
+                     (polarization-glyph-instance
+                      center frame theta-axis phi-axis
+                      (nec2c-pattern-sample-e-theta sample)
+                      (nec2c-pattern-sample-e-phi sample)))))))))
+
+(define (make-polarization-glyph-rings layout view-radius)
+  (define glyph-radius (* view-radius 0.05))
+  (freeze
+   (combine
+    (for/list ([instance (in-list layout)])
+      (render-polarization-ring instance glyph-radius)))))
+
+(define (complex-instantaneous component phase-radians)
+  (- (* (real-part component) (cos phase-radians))
+     (* (imag-part component) (sin phase-radians))))
+
+(define (jones-major-amplitude e-theta e-phi)
+  (define theta-power (sqr (magnitude e-theta)))
+  (define phi-power (sqr (magnitude e-phi)))
+  (define cross
+    (real-part (* e-theta (conjugate e-phi))))
+  (sqrt
+   (/ (+ theta-power phi-power
+         (sqrt (+ (sqr (- theta-power phi-power))
+                  (* 4 (sqr cross)))))
+      2.0)))
+
+(define (make-polarization-glyph-beads layout view-radius phase-deg)
+  (define glyph-radius (* view-radius 0.05))
+  (define bead-radius (* glyph-radius 0.16))
+  (define phase-radians (degrees->radians phase-deg))
+  (combine
+   (filter
+    values
+    (for/list ([instance (in-list layout)])
+      (define e-theta (polarization-glyph-instance-e-theta instance))
+      (define e-phi (polarization-glyph-instance-e-phi instance))
+      (define major-amplitude (jones-major-amplitude e-theta e-phi))
+      (and (> major-amplitude 0)
+           (let* ([theta-value
+                   (/ (complex-instantaneous e-theta phase-radians)
+                      major-amplitude)]
+                  [phi-value
+                   (/ (complex-instantaneous e-phi phase-radians)
+                      major-amplitude)]
+                  [orbit-center
+                   (offset-pos
+                    (polarization-glyph-instance-center instance)
+                    (polarization-glyph-frame-direction
+                     (polarization-glyph-instance-frame instance))
+                    (* glyph-radius 0.10)
+                    (polarization-glyph-instance-theta-axis instance)
+                    0)]
+                  [point
+                   (offset-pos
+                    orbit-center
+                    (polarization-glyph-instance-theta-axis instance)
+                    (* glyph-radius theta-value)
+                    (polarization-glyph-instance-phi-axis instance)
+                    (* glyph-radius phi-value))])
+             (with-color (rgba 1.0 1.0 1.0 1.0)
+               (with-emitted (emitted 1.0 1.0 1.0 1.0)
+                 (sphere point bead-radius)))))))))
+
 (define (backend-title grid)
   (define run (nec2c-pattern-grid-run grid))
   (if (and (hash? run) (eq? (hash-ref run 'backend #f) 'openems))
@@ -287,7 +683,7 @@
 
 (define polarization-poc-canvas%
   (class pict3d-canvas%
-    (init-field surface view-center radius selection-callback
+    (init-field surface decoration animation view-center radius selection-callback
                 selection-cleared-callback status-label)
     (define azimuth default-azimuth)
     (define altitude default-altitude)
@@ -303,9 +699,11 @@
     ;; freezing is substantially more expensive than replacing the camera
     ;; basis, and doing it for every queued mouse-motion event makes an orbit
     ;; continue long after the button is released.
-    (define display-surface surface)
+    (define display-base (freeze (combine surface decoration)))
+    (define (display-scene)
+      (combine display-base animation selection-marker))
     (super-new
-     [pict3d (camera-scene display-surface view-center
+     [pict3d (camera-scene (display-scene) view-center
                            radius azimuth altitude zoom)])
 
     (define/private (update-view!)
@@ -317,12 +715,11 @@
                      [current-pict3d-ambient (emitted "white" 1.0)]
                      [current-pict3d-fov view-fov-degrees])
         (send this set-pict3d
-              (camera-scene display-surface view-center radius
+              (camera-scene (display-scene) view-center radius
                             azimuth altitude zoom))))
 
     (define/private (clear-selection!)
       (set! selection-marker empty-pict3d)
-      (set! display-surface surface)
       (selection-cleared-callback)
       (update-view!))
 
@@ -347,18 +744,22 @@
                      (with-color (rgba 1.0 1.0 1.0 1.0)
                        (with-emitted (emitted 1.0 1.0 1.0 1.0)
                          (sphere hit (* radius 0.022))))))
-              (set! display-surface
-                    (freeze (combine surface selection-marker)))
               (selection-callback selected-azimuth selected-elevation)
               (update-view!))
             (clear-selection!))))
 
-    (define/public (replace-surface! new-surface new-center new-radius)
+    (define/public (replace-scene! new-surface new-decoration
+                                   new-center new-radius)
       (set! surface new-surface)
+      (set! decoration new-decoration)
       (set! view-center new-center)
       (set! radius new-radius)
       (set! selection-marker empty-pict3d)
-      (set! display-surface surface)
+      (set! display-base (freeze (combine surface decoration)))
+      (update-view!))
+
+    (define/public (replace-animation! new-animation)
+      (set! animation new-animation)
       (update-view!))
 
     (define/override (on-event event)
@@ -426,12 +827,32 @@
 
   (define current-grid grid)
   (define current-surface-mode 'signed-circularity)
+  (define phase 0.0)
+  (define speed 1.0)
+  (define playing? #t)
+  (define last-tick (current-inexact-milliseconds))
   (define initial-color-at
     (make-polarization-color-at grid #:mode current-surface-mode))
   (define-values (minimum-gain maximum-gain) (total-gain-range grid))
   (define-values (surface radius view-center _peak-gain)
     (build-radiation-pict3d
      grid #:scale 'arrl #:mesh-step mesh-step #:color-at initial-color-at))
+  (define angular-resolution (pattern-angular-resolution grid))
+  (define azimuth-step (or (first angular-resolution) 1.0))
+  (define elevation-step (or (second angular-resolution) 1.0))
+  (define glyph-base-step (max azimuth-step elevation-step))
+  (define maximum-glyph-stride
+    (max 1 (inexact->exact (floor (/ 60.0 glyph-base-step)))))
+  (define current-glyph-stride
+    (max 1
+         (min maximum-glyph-stride
+              (inexact->exact (round (/ 10.0 glyph-base-step))))))
+  (define glyphs-visible? #f)
+  (define (current-glyph-spacing)
+    (* current-glyph-stride glyph-base-step))
+  (define glyph-layout '())
+  (define decoration empty-pict3d)
+  (define animation empty-pict3d)
   (define frame
     (new frame%
          [label (format "~a polarization workbench PoC"
@@ -483,10 +904,15 @@
          [stretchable-width #t]))
   (define canvas #f)
   (define surface-rebuild-timer #f)
+  (define glyph-rebuild-timer #f)
   (define (schedule-surface-rebuild!)
     (when surface-rebuild-timer
       (send surface-rebuild-timer stop)
       (send surface-rebuild-timer start 120 #t)))
+  (define (schedule-glyph-rebuild!)
+    (when glyph-rebuild-timer
+      (send glyph-rebuild-timer stop)
+      (send glyph-rebuild-timer start 160 #t)))
   (new message% [parent rail] [label "SURFACE"])
   (new choice%
        [parent rail]
@@ -504,6 +930,35 @@
     (new polarization-legend-canvas%
          [parent rail]
          [mode current-surface-mode]))
+  (new check-box%
+       [parent rail]
+       [label "SHOW GLYPHS"]
+       [value #f]
+       [callback
+        (lambda (control _event)
+          (set! glyphs-visible? (send control get-value))
+          (schedule-glyph-rebuild!))])
+  (define glyph-spacing-label
+    (new message%
+         [parent rail]
+         [label
+          (format "TARGET GLYPH SPACING  ~a degrees at peak"
+                  (current-glyph-spacing))]
+         [auto-resize #t]
+         [stretchable-width #t]))
+  (new slider%
+       [parent rail]
+       [label #f]
+       [min-value 1]
+       [max-value maximum-glyph-stride]
+       [init-value current-glyph-stride]
+       [callback
+        (lambda (control _event)
+          (set! current-glyph-stride (send control get-value))
+          (send glyph-spacing-label set-label
+                (format "TARGET GLYPH SPACING  ~a degrees at peak"
+                        (current-glyph-spacing)))
+          (schedule-glyph-rebuild!))])
   (new message%
        [parent rail]
        [label (string-append
@@ -523,10 +978,6 @@
     (send selection-summary set-label
           "Click the pattern surface\nto inspect an exact direction."))
 
-  (define phase 0.0)
-  (define speed 1.0)
-  (define playing? #t)
-  (define last-tick (current-inexact-milliseconds))
   (new message% [parent rail] [label "RF PHASE"])
   (define phase-label
     (new message% [parent rail] [label "0 degrees"]
@@ -543,7 +994,14 @@
               (lambda (control _event)
                 (set! phase (send control get-value))
                 (send phase-label set-label
-                      (format "~a degrees" (exact-round phase))))]))
+                      (format "~a degrees" (exact-round phase)))
+                (when canvas
+                  (set! animation
+                        (if glyphs-visible?
+                            (make-polarization-glyph-beads
+                             glyph-layout radius phase)
+                            empty-pict3d))
+                  (send canvas replace-animation! animation)))]))
   (define playback-row
     (new horizontal-panel%
          [parent rail]
@@ -574,7 +1032,7 @@
                 (format "speed ~ax" (~r speed #:precision 2))))])
   (new message%
        [parent rail]
-       [label "M4 SURFACE METRICS\nSigned circularity and axial ratio\nacross the complete gain range."]
+       [label "M5 POLARIZATION TRAJECTORIES\nRing shape is axial ratio.\nOrientation is polarization tilt.\nBead motion is instantaneous E-field phase."]
        [stretchable-width #t])
 
   (define (select-direction! azimuth elevation)
@@ -608,6 +1066,8 @@
           (new polarization-poc-canvas%
                [parent viewport]
                [surface surface]
+               [decoration decoration]
+               [animation animation]
                [view-center view-center]
                [radius radius]
                [selection-callback select-direction!]
@@ -621,15 +1081,39 @@
     (define-values (new-surface new-radius new-center _new-peak)
       (build-radiation-pict3d
        current-grid #:scale 'arrl #:mesh-step mesh-step #:color-at color-at))
+    (set! surface new-surface)
+    (set! radius new-radius)
+    (set! view-center new-center)
     (send legend set-mode current-surface-mode)
     (send surface-summary set-label
           (surface-summary-text minimum-gain maximum-gain))
     (clear-selection!)
-    (send canvas replace-surface! new-surface new-center new-radius))
+    (send canvas replace-scene! surface decoration view-center radius))
+
+  (define (rebuild-glyphs!)
+    (set! glyph-layout
+          (if glyphs-visible?
+              (make-polarization-glyph-layout
+               current-grid surface radius (current-glyph-spacing))
+              '()))
+    (set! decoration
+          (if glyphs-visible?
+              (make-polarization-glyph-rings glyph-layout radius)
+              empty-pict3d))
+    (set! animation
+          (if glyphs-visible?
+              (make-polarization-glyph-beads glyph-layout radius phase)
+              empty-pict3d))
+    (clear-selection!)
+    (send canvas replace-scene! surface decoration view-center radius)
+    (send canvas replace-animation! animation))
 
   (set! surface-rebuild-timer
         (new timer%
              [notify-callback rebuild-surface!]))
+  (set! glyph-rebuild-timer
+        (new timer%
+             [notify-callback rebuild-glyphs!]))
 
   (define timer
     (new timer%
@@ -648,7 +1132,12 @@
                  (define displayed (modulo (exact-round phase) 360))
                  (send phase-slider set-value displayed)
                  (send phase-label set-label
-                       (format "~a degrees" displayed)))]))]))
+                       (format "~a degrees" displayed))
+                 (when glyphs-visible?
+                   (set! animation
+                         (make-polarization-glyph-beads
+                          glyph-layout radius phase))
+                   (send canvas replace-animation! animation)))]))]))
 
   (send frame show #t)
   (make-visualization-handle
@@ -664,7 +1153,26 @@
        (build-radiation-pict3d
         new-grid #:scale 'arrl #:mesh-step mesh-step
         #:color-at new-color-at))
+     (define new-layout
+       (if glyphs-visible?
+           (make-polarization-glyph-layout
+            new-grid new-surface new-radius (current-glyph-spacing))
+           '()))
+     (define new-decoration
+       (if glyphs-visible?
+           (make-polarization-glyph-rings new-layout new-radius)
+           empty-pict3d))
+     (define new-animation
+       (if glyphs-visible?
+           (make-polarization-glyph-beads new-layout new-radius phase)
+           empty-pict3d))
      (set! current-grid new-grid)
+     (set! surface new-surface)
+     (set! glyph-layout new-layout)
+     (set! decoration new-decoration)
+     (set! animation new-animation)
+     (set! radius new-radius)
+     (set! view-center new-center)
      (set! minimum-gain new-minimum-gain)
      (set! maximum-gain new-maximum-gain)
      (parameterize ([current-eventspace eventspace])
@@ -674,7 +1182,9 @@
                 (surface-summary-text new-minimum-gain new-maximum-gain))
           (send selection-summary set-label
                 "Click the pattern surface\nto inspect an exact direction.")
-          (send canvas replace-surface! new-surface new-center new-radius))
+          (send canvas replace-scene!
+                new-surface new-decoration new-center new-radius)
+          (send canvas replace-animation! new-animation))
         #f)))
    (lambda ()
      (parameterize ([current-eventspace eventspace])

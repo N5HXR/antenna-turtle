@@ -2,6 +2,7 @@
 
 (require pict3d
          rackunit
+         racket/list
          racket/math
          "../antenna-turtle/private/nec2c.rkt"
          "../antenna-turtle/private/nec2c-opengl-view.rkt"
@@ -59,6 +60,39 @@
   (check-exn exn:fail:contract?
              (lambda () (axial-ratio-color 0.99))))
 
+(define (vector-dot left right)
+  (for/sum ([a (in-vector left)] [b (in-vector right)]) (* a b)))
+
+(define (vector-length value)
+  (sqrt (vector-dot value value)))
+
+(test-case "polarization glyph frames are tangent and encode tilt and ratio"
+  (define linear-frame
+    (polarization-glyph-frame-for 90 0 +inf.0 0))
+  (check-rgb (vector->list (polarization-glyph-frame-direction linear-frame))
+             '(1 0 0))
+  (check-rgb (vector->list (polarization-glyph-frame-major-axis linear-frame))
+             '(0 0 -1))
+  (check-rgb (vector->list (polarization-glyph-frame-minor-axis linear-frame))
+             '(0 1 0))
+  (check-= (polarization-glyph-frame-minor/major linear-frame) 0 1e-12)
+  (define ellipse-frame
+    (polarization-glyph-frame-for 90 0 2 45))
+  (check-= (polarization-glyph-frame-minor/major ellipse-frame) 0.5 1e-12)
+  (check-= (vector-length (polarization-glyph-frame-major-axis ellipse-frame))
+           1 1e-12)
+  (check-= (vector-length (polarization-glyph-frame-minor-axis ellipse-frame))
+           1 1e-12)
+  (check-= (vector-dot (polarization-glyph-frame-direction ellipse-frame)
+                       (polarization-glyph-frame-major-axis ellipse-frame))
+           0 1e-12)
+  (check-= (vector-dot (polarization-glyph-frame-major-axis ellipse-frame)
+                       (polarization-glyph-frame-minor-axis ellipse-frame))
+           0 1e-12)
+  (define circle-frame
+    (polarization-glyph-frame-for 45 90 1 #f))
+  (check-= (polarization-glyph-frame-minor/major circle-frame) 1 1e-12))
+
 (test-case "PoC math rejects undefined directions and bad timing"
   (check-exn #rx"RF origin" (lambda () (surface-point->angles 0 0 0)))
   (check-exn exn:fail:contract?
@@ -76,6 +110,40 @@
      (nec2c-pattern-sample
       435 theta phi (- 90 theta) phi
       0 0 0 +inf.0 0 'linear 1+0i 0+0i))))
+
+(test-case "glyph sampling preserves cardinals and deduplicates poles"
+  (define angles (polarization-glyph-angles spherical-grid 3))
+  (check-equal? (count (lambda (angle) (= (car angle) 0)) angles) 1)
+  (check-equal? (count (lambda (angle) (= (car angle) 180)) angles) 1)
+  (for ([angle (in-list '((90 . 0) (90 . 90) (90 . 180) (90 . 270)))])
+    (check-not-false (member angle angles)))
+  (check-equal? angles (polarization-glyph-angles spherical-grid 3)))
+
+(define area-sampling-thetas (range 0 181 15))
+(define area-sampling-phis (range 0 360 15))
+(define area-sampling-grid
+  (nec2c-pattern-grid
+   #f area-sampling-thetas area-sampling-phis
+   (for*/list ([theta (in-list area-sampling-thetas)]
+               [phi (in-list area-sampling-phis)])
+     (define gain (if (<= theta 75) 0 -30))
+     (nec2c-pattern-sample
+      435 theta phi (- 90 theta) phi
+      0 0 gain 1 #f 'rhcp 1+0i 0-1i))))
+
+(test-case "gain-aware glyph sampling follows displayed lobe area"
+  (define angles
+    (polarization-glyph-angles-by-gain area-sampling-grid 15))
+  (define north-count
+    (count (lambda (angle) (<= (car angle) 60)) angles))
+  (define south-count
+    (count (lambda (angle) (>= (car angle) 120)) angles))
+  (check-true (> north-count south-count))
+  (for ([angle (in-list '((90 . 0) (90 . 90) (90 . 180) (90 . 270)))])
+    (check-not-false (member angle angles)))
+  (check-equal?
+   angles
+   (polarization-glyph-angles-by-gain area-sampling-grid 15)))
 
 (define polarization-color-grid
   (nec2c-pattern-grid
@@ -137,7 +205,7 @@
   (check-= azimuth 0.0 1e-10)
   (check-= elevation 0.0 1e-10))
 
-(test-case "M4 PoC viewer opens and closes with native controls"
+(test-case "M5 PoC viewer opens and closes with native glyph controls"
   (define handle
     (show-polarization-surface-poc
      spherical-grid #:width 640 #:height 480 #:mesh-step 45))
