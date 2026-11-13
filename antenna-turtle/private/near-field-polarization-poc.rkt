@@ -758,9 +758,18 @@
   (define glyph-layout '())
   (define glyph-density-slider #f)
   (define glyph-density-label #f)
+  (define phase-slider #f)
+  (define rf-phase-heading #f)
+  (define phase-label #f)
+  (define play-button #f)
+  (define speed-slider #f)
+  (define speed-label #f)
+  (define instantaneous-flow-label #f)
+  (define mode-help #f)
+  (define timer #f)
 
   (define frame
-    (new frame% [label "Near-field polarization point PoC"]
+    (new frame% [label "Near-field polarization workbench"]
          [width width] [height height]))
   (define eventspace (current-eventspace))
   (define root (new vertical-panel% [parent frame]))
@@ -778,8 +787,7 @@
          [stretchable-width #t]))
 
   (new message% [parent rail] [label "NEAR-FIELD POLARIZATION"])
-  (define field-context-label
-    (new message%
+  (new message%
        [parent rail]
        [label
         (format "~a plane · ~a-normal at ~a m\n~a MHz · section ~a"
@@ -791,7 +799,7 @@
                 (format-real (nec2c-near-field-section-position section))
                 (format-real (nec2c-near-field-result-frequency-mhz result) 5)
                 section-index)]
-       [stretchable-width #t]))
+       [stretchable-width #t])
   (define (update-field-context-label!)
     (send field-context-label set-label
           (case background-quantity
@@ -821,6 +829,9 @@
                       "model: cyan (~a wires) · feed: magenta")
                      (format-real field-peak)
                      (length edges))])))
+  (define field-context-label
+    (new message% [parent rail] [label ""]
+         [auto-resize #t] [stretchable-width #t]))
   (update-field-context-label!)
   (define background-selector
     (new radio-box% [parent rail] [label "BACKGROUND"]
@@ -837,19 +848,6 @@
             (set! field-peak new-peak)
             (update-field-context-label!)
             (when canvas (send canvas set-reference-grid! (reference-scene))))]))
-  (new message%
-       [parent rail]
-       [label
-        (format (string-append
-                 "FIELD CONTEXT\n"
-                 "magma |E|: ~a dB to p98 ~a V/m\n"
-                 "model: cyan (~a wires) · feed: magenta\n"
-                 "faint XYZ axes · faint range\n"
-                 "orange ghost: Pavg · bright yellow: S(t)")
-                (exact-round field-floor-db)
-                (format-real field-peak)
-                (length edges))]
-       [stretchable-width #t])
   (define (glyphs-across-short-side)
     (length
      (near-field-glyph-sample-indices
@@ -859,6 +857,47 @@
       (send glyph-density-label set-label
             (format "sample stride ~a · about ~a across short side"
                     glyph-stride (glyphs-across-short-side)))))
+  (define (animated-view?)
+    (memq view-mode '(point ellipses)))
+  (define (sync-animation-timer!)
+    (when timer
+      (if (and playing? (animated-view?) (send frame is-shown?))
+          (begin
+            (set! last-tick (current-inexact-milliseconds))
+            (send timer start 33))
+          (send timer stop))))
+  (define (update-mode-help!)
+    (when mode-help
+      (send mode-help set-label
+            (case view-mode
+              [(point)
+               (string-append
+                "White: complete 3D E-field trajectory.\n"
+                "Orange: cycle-average Pavg. Yellow: instantaneous S(t).")]
+              [(ellipses)
+               (string-append
+                "White rings: local 3D E-field trajectories.\n"
+                "Beads share one global RF phase; size is diagrammatic.")]
+              [(spin)
+               (string-append
+                "Cyan: normalized electric polarization spin.\n"
+                "Direction gives rotation axis; length gives circularity.")]
+              [else
+               (string-append
+                "Gold: cycle-average Poynting direction.\n"
+                "Equal arrow lengths separate direction from magnitude.")]))))
+  (define (update-mode-controls!)
+    (define animated? (and (animated-view?) #t))
+    (for ([control (in-list
+                    (filter values
+                            (list phase-slider phase-label play-button
+                                  speed-slider speed-label rf-phase-heading
+                                  instantaneous-flow-label)))])
+      (send control enable animated?))
+    (when glyph-density-slider
+      (send glyph-density-slider enable (not (eq? view-mode 'point))))
+    (update-mode-help!)
+    (sync-animation-timer!))
   (define (current-glyph-beads)
     (if (eq? view-mode 'ellipses)
         (make-near-field-glyph-beads glyph-layout scene-radius phase)
@@ -908,7 +947,7 @@
             (set! view-mode
                   (vector-ref #(point ellipses spin power-vectors)
                               (send control get-selection)))
-            (send glyph-density-slider enable (not (eq? view-mode 'point)))
+            (update-mode-controls!)
             (rebuild-glyphs!)
             ;; These are mutually exclusive views: the grid replaces the
             ;; selected trajectory and both Poynting arrows.  The selection is
@@ -933,13 +972,11 @@
   (define inspector
     (new message% [parent rail] [label "Click the capture plane."]
          [auto-resize #t] [stretchable-width #t]))
-  (new message% [parent rail] [label "RF PHASE"])
-  (define phase-label
-    (new message% [parent rail] [label "0 degrees"]
-         [auto-resize #t] [stretchable-width #t]))
-  (define phase-slider #f)
-  (define play-button #f)
-  (define instantaneous-flow-label #f)
+  (set! rf-phase-heading
+        (new message% [parent rail] [label "RF PHASE"]))
+  (set! phase-label
+        (new message% [parent rail] [label "0 degrees"]
+             [auto-resize #t] [stretchable-width #t]))
 
   (define (current-instantaneous-poynting)
     (and selected-center
@@ -1071,54 +1108,53 @@
               (lambda (button _event)
                 (set! playing? (not playing?))
                 (set! last-tick (current-inexact-milliseconds))
-                (send button set-label (if playing? "PAUSE" "PLAY")))]))
-  (define speed-label
-    (new message% [parent playback-row] [label "speed 1.00x"]))
-  (new slider% [parent rail] [label #f]
-       [min-value 10] [max-value 400] [init-value 100]
-       [callback
-        (lambda (control _event)
-          (set! speed (/ (send control get-value) 100.0))
-          (send speed-label set-label
-                (format "speed ~ax" (~r speed #:precision 2))))])
-  (new message%
-       [parent rail]
-       [label (string-append
-               "The white path is the complete 3D E-field trajectory.\n"
-               "Its display size is normalized; amplitudes above are physical.\n"
-               "Orange is cycle-average Pavg; yellow is instantaneous S(t).")]
-       [stretchable-width #t])
+                (send button set-label (if playing? "PAUSE" "PLAY"))
+                (sync-animation-timer!))]))
+  (set! speed-label
+        (new message% [parent playback-row] [label "speed 1.00x"]))
+  (set! speed-slider
+        (new slider% [parent rail] [label #f]
+             [min-value 10] [max-value 400] [init-value 100]
+             [callback
+              (lambda (control _event)
+                (set! speed (/ (send control get-value) 100.0))
+                (send speed-label set-label
+                      (format "speed ~ax" (~r speed #:precision 2))))]))
+  (set! mode-help
+        (new message% [parent rail] [label ""]
+             [auto-resize #t] [stretchable-width #t]))
+  (update-mode-controls!)
 
   ;; Start at the exact geometric center so the purpose of the PoC is visible
   ;; immediately, while all later clicks use exact plane intersections.
   (select-hit! view-center)
 
-  (define timer #f)
   (set! timer
         (new timer%
-             [interval 33]
              [notify-callback
               (lambda ()
                 (cond
-                  [(not (send frame is-shown?)) (send timer stop)]
+                  [(or (not (send frame is-shown?))
+                       (not playing?)
+                       (not (animated-view?)))
+                   (send timer stop)]
                   [else
                    (define now (current-inexact-milliseconds))
                    (define elapsed (/ (- now last-tick) 1000.0))
                    (set! last-tick now)
-                   (when playing?
-                     (set! phase
-                           (normalize-degrees
-                            (+ phase (* phase-degrees-per-second
-                                        elapsed speed))))
-                     (define displayed (modulo (exact-round phase) 360))
-                     (send phase-slider set-value displayed)
-                     (send phase-label set-label
-                           (format "~a degrees" displayed))
-                     (send canvas set-dynamic-scenes!
-                           (current-dynamic-scene) (current-glyph-beads))
-                     (update-instantaneous-flow-label!))]))]))
+                   (set! phase
+                         (normalize-degrees
+                          (+ phase (* phase-degrees-per-second elapsed speed))))
+                   (define displayed (modulo (exact-round phase) 360))
+                   (send phase-slider set-value displayed)
+                   (send phase-label set-label
+                         (format "~a degrees" displayed))
+                   (send canvas set-dynamic-scenes!
+                         (current-dynamic-scene) (current-glyph-beads))
+                   (update-instantaneous-flow-label!)]))]))
 
   (send frame show #t)
+  (sync-animation-timer!)
   (make-visualization-handle
    (lambda (new-result)
      (unless (nec2c-near-field-result? new-result)
@@ -1131,9 +1167,8 @@
      (parameterize ([current-eventspace eventspace])
        (queue-callback
         (lambda ()
-          (set! last-tick (current-inexact-milliseconds))
           (send frame show #t)
-          (send timer start 33)) #f)))
+          (sync-animation-timer!)) #f)))
    (lambda ()
      (parameterize ([current-eventspace eventspace])
        (queue-callback (lambda () (send timer stop) (send frame show #f)) #f)))
