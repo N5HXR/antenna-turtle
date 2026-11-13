@@ -7,6 +7,7 @@
 (provide (struct-out near-field-flow-field)
          (struct-out near-field-flow-state)
          make-near-field-flow-field
+         near-field-flow-electric
          near-field-flow-sample
          near-field-flow-seed-weights
          near-field-plane-point)
@@ -94,6 +95,18 @@
           (lerp cv dv u-fraction)
           v-fraction)))
 
+(define (near-field-flow-electric field u v)
+  (unless (near-field-flow-field? field)
+    (raise-argument-error
+     'near-field-flow-electric "near-field-flow-field?" field))
+  (define u-location (interval-at (near-field-flow-field-u-values field) u))
+  (define v-location (interval-at (near-field-flow-field-v-values field) v))
+  (and u-location v-location
+       (bilinear-vector field
+                        (car u-location) (car v-location)
+                        (cdr u-location) (cdr v-location)
+                        nec2c-near-field-sample-electric)))
+
 (define (instantaneous phasor phase)
   (define cosine (cos phase))
   (define sine (sin phase))
@@ -124,8 +137,7 @@
        (let* ([u-index (car u-location)] [u-fraction (cdr u-location)]
               [v-index (car v-location)] [v-fraction (cdr v-location)]
               [electric
-               (bilinear-vector field u-index v-index u-fraction v-fraction
-                                nec2c-near-field-sample-electric)]
+               (near-field-flow-electric field u v)]
               [magnetic
                (bilinear-vector field u-index v-index u-fraction v-fraction
                                 nec2c-near-field-sample-magnetic)]

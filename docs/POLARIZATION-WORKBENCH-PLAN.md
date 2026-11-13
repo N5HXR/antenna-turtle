@@ -135,8 +135,10 @@ User approval freezes the native far-field UX before production integration.
 
 Animate the full Cartesian complex electric-field ellipse at an exactly
 selected near-field point without assuming a transverse plane wave.  Exact
-synthetic phasors validate linear, circular, elliptical, and longitudinal
-behavior.
+synthetic phasors validate linear, circular, elliptical, arbitrarily tilted,
+and longitudinal behavior. Complex Cartesian components are interpolated
+before analysis. The glyph is diagrammatic while its inspector reports
+physical field amplitudes.
 
 ### M9 — Near-field ellipse plane
 
