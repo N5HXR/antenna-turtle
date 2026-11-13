@@ -7,6 +7,7 @@
 (provide (struct-out near-field-polarization-ellipse)
          analyze-near-field-polarization
          near-field-polarization-at
+         near-field-electric-spin
          near-field-instantaneous-electric)
 
 ;; The phasor uses Antenna Turtle's e^(+jwt) convention, so the instantaneous
@@ -51,6 +52,19 @@
   (for/list ([value (in-list electric)])
     (- (* (real-part value) cosine)
        (* (imag-part value) sine))))
+
+;; Dimensionless electric spin.  With Antenna Turtle's e^(+jwt) convention,
+;; opposite rotations reverse the vector.  Its magnitude is zero for linear
+;; motion and one for an ideal circle, making it useful as a diagrammatic
+;; direction/circularity glyph without introducing an arbitrary field scale.
+(define (near-field-electric-spin electric)
+  (validate-electric 'near-field-electric-spin electric)
+  (define energy
+    (for/sum ([value (in-list electric)]) (sqr (magnitude value))))
+  (if (<= energy 1e-28)
+      '(0.0 0.0 0.0)
+      (map (lambda (value) (/ (imag-part value) energy))
+           (vector3-cross (map conjugate electric) electric))))
 
 (define (principal-coefficients aa bb ab eigenvalue)
   (define raw

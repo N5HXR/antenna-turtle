@@ -40,6 +40,13 @@
     (near-field-polarization-ellipse-electric negative) (/ pi 2))
    '(0 1 0)))
 
+(test-case "normalized electric spin distinguishes linear and circular fields"
+  (check-vector (near-field-electric-spin '(2+0i 0 0)) '(0 0 0))
+  (check-vector (near-field-electric-spin '(1+0i 0+1i 0)) '(0 0 1))
+  (check-vector (near-field-electric-spin '(1+0i 0-1i 0)) '(0 0 -1))
+  (define elliptical (near-field-electric-spin '(2+0i 0+1i 0)))
+  (check-true (< 0 (absolute-dot elliptical '(0 0 1)) 1)))
+
 (test-case "unequal quadrature components retain physical axial ratio"
   (define ellipse (analyze-near-field-polarization '(2+0i 0+1i 0)))
   (check-= (near-field-polarization-ellipse-major-amplitude ellipse) 2 1e-12)
@@ -113,4 +120,8 @@
   (check-vector
    (near-field-flow-state-poynting
     (near-field-flow-sample field 0.5 0.5 0.0 'average))
-   '(0 0 1)))
+   '(0 0 1))
+  (check-vector (near-field-flow-average-poynting field 0.5 0.5)
+                '(0 0 1))
+  (check-= (near-field-flow-signed-normal-power field 0.5 0.5)
+           1.0 1e-12))

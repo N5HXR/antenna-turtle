@@ -80,6 +80,16 @@
          (append (map (lambda (channel) (/ channel 255.0)) color)
                  (list alpha))))
 
+(define (vector3-dot a b)
+  (for/sum ([x (in-list a)] [y (in-list b)]) (* x y)))
+
+(define (signed-power-color normalized)
+  (define bounded (max -1.0 (min 1.0 normalized)))
+  (define zero '(24 12 34))
+  (if (negative? bounded)
+      (interpolate-list zero '(38 190 255) (- bounded))
+      (interpolate-list zero '(255 190 45) bounded)))
+
 ;; Pict3D's `pipe` occupies an axis-aligned bounding box; its two positional
 ;; arguments do not describe a general line segment. Build an exactly sized
 ;; +Z cylinder, then rotate and translate it onto the requested segment.
@@ -98,10 +108,47 @@
                  (dir (* 2.0 radius) (* 2.0 radius) length))
        (point-at start end))))
 
+(define (cone-between base tip radius)
+  (define displacement (pos- tip base))
+  (define length
+    (sqrt (+ (sqr (dir-dx displacement))
+             (sqr (dir-dy displacement))
+             (sqr (dir-dz displacement)))))
+  (if (<= length 1e-15)
+      empty-pict3d
+      (transform
+       (cone (pos 0 0 (/ length 2.0))
+             (dir radius radius (/ length 2.0)))
+       (point-at base tip))))
+
+(define (diagram-arrow start displacement scene-radius)
+  (define length (vector3-magnitude displacement))
+  (if (<= length (* scene-radius 0.002))
+      empty-pict3d
+      (let* ([head-length (* length 0.34)]
+             [shaft-fraction (/ (- length head-length) length)]
+             [end (pos (+ (pos-x start) (first displacement))
+                       (+ (pos-y start) (second displacement))
+                       (+ (pos-z start) (third displacement)))]
+             [head-base
+              (pos (+ (pos-x start) (* shaft-fraction (first displacement)))
+                   (+ (pos-y start) (* shaft-fraction (second displacement)))
+                   (+ (pos-z start) (* shaft-fraction (third displacement))))]
+             [width-scale
+              (min 1.0 (/ length (* scene-radius 0.050)))]
+             [shaft-radius (* scene-radius 0.0017 width-scale)]
+             [head-radius (* scene-radius 0.0068 width-scale)])
+        (combine (tube-between start head-base shaft-radius)
+                 (cone-between head-base end head-radius)))))
+
 (define heatmap-material
   (material #:ambient 0.90 #:diffuse 0.10 #:specular 0.0 #:roughness 1.0))
 
-(define (make-field-map field scene-radius)
+(define (make-field-map field scene-radius [quantity 'electric])
+  (unless (memq quantity '(electric average-power signed-normal-power))
+    (raise-argument-error
+     'make-field-map
+     "(or/c 'electric 'average-power 'signed-normal-power)" quantity))
   (define section (near-field-flow-field-section field))
   (define u-values (nec2c-near-field-section-u-values section))
   (define v-values (nec2c-near-field-section-v-values section))
@@ -109,34 +156,70 @@
   (define u-max (last u-values))
   (define v-min (first v-values))
   (define v-max (last v-values))
-  (define magnitudes
+  (define normal-list
+    (case (nec2c-near-field-section-normal-axis section)
+      [(x) '(1.0 0.0 0.0)]
+      [(y) '(0.0 1.0 0.0)]
+      [(z) '(0.0 0.0 1.0)]))
+  (define (quantity-value u v)
+    (case quantity
+      [(electric) (electric-magnitude (near-field-flow-electric field u v))]
+      [else
+       (define poynting
+         (or (near-field-flow-average-poynting field u v) '(0.0 0.0 0.0)))
+       (if (eq? quantity 'average-power)
+           (vector3-magnitude poynting)
+           (vector3-dot poynting normal-list))]))
+  (define quantity-values
     (sort
      (for/list ([sample (in-list
                          (nec2c-near-field-section-samples section))])
-       (electric-magnitude (nec2c-near-field-sample-electric sample)))
+       (define electric (nec2c-near-field-sample-electric sample))
+       (define magnetic (nec2c-near-field-sample-magnetic sample))
+       (define value
+         (case quantity
+           [(electric) (electric-magnitude electric)]
+           [else
+            (define poynting
+              (map (lambda (component) (* 0.5 (real-part component)))
+                   (list (- (* (second electric) (conjugate (third magnetic)))
+                            (* (third electric) (conjugate (second magnetic))))
+                         (- (* (third electric) (conjugate (first magnetic)))
+                            (* (first electric) (conjugate (third magnetic))))
+                         (- (* (first electric) (conjugate (second magnetic)))
+                            (* (second electric) (conjugate (first magnetic)))))))
+            (if (eq? quantity 'average-power)
+                (vector3-magnitude poynting)
+                (vector3-dot poynting normal-list))]))
+       (if (eq? quantity 'signed-normal-power) (abs value) value))
      <))
   ;; A conductor-adjacent sample can be orders of magnitude above the rest of
   ;; the plane. A p98 display reference preserves the surrounding structure
   ;; while allowing the hottest two percent to saturate harmlessly.
   (define peak
-    (if (null? magnitudes)
+    (if (null? quantity-values)
         0.0
-        (list-ref magnitudes
+        (list-ref quantity-values
                   (inexact->exact
-                   (floor (* 0.98 (sub1 (length magnitudes))))))))
+                   (floor (* 0.98 (sub1 (length quantity-values))))))))
   (define sampled-u (sampled-values u-values 45))
   (define sampled-v (sampled-values v-values 45))
   (define offset (* scene-radius 0.0012))
   (define normal
     (axis-direction (nec2c-near-field-section-normal-axis section)))
   (define (heat-vertex u v normal-direction)
-      (define magnitude
-        (electric-magnitude (near-field-flow-electric field u v)))
-      (define relative-db
-        (if (and (positive? peak) (positive? magnitude))
-            (* 20.0 (/ (log (/ magnitude peak)) (log 10.0)))
-            field-floor-db))
-      (define color (magma-color relative-db))
+      (define value (quantity-value u v))
+      (define color
+        (cond
+          [(eq? quantity 'signed-normal-power)
+           (signed-power-color (if (positive? peak) (/ value peak) 0.0))]
+          [else
+           (define relative-db
+             (if (and (positive? peak) (positive? value))
+                 (* (if (eq? quantity 'electric) 20.0 10.0)
+                    (/ (log (/ value peak)) (log 10.0)))
+                 field-floor-db))
+           (magma-color relative-db)]))
       (vertex (section-point section u v offset)
               #:normal normal-direction
               #:color (color->rgba color 0.58)
@@ -338,7 +421,7 @@
             (list (quotient (sub1 count) 2) (sub1 count))))
    <))
 
-(struct near-field-glyph-instance (center ellipse) #:transparent)
+(struct near-field-glyph-instance (center ellipse u v) #:transparent)
 
 (define (make-near-field-glyph-layout field stride)
   (define section (near-field-flow-field-section field))
@@ -357,7 +440,7 @@
      (define ellipse (near-field-polarization-at field u v))
      (and ellipse
           (near-field-glyph-instance
-           (section-point section u v) ellipse)))))
+           (section-point section u v) ellipse u v)))))
 
 (define (glyph-electric-point instance glyph-radius phase-radians)
   (define ellipse (near-field-glyph-instance-ellipse instance))
@@ -409,6 +492,48 @@
        (for/list ([instance (in-list layout)])
          (sphere (glyph-electric-point instance glyph-radius phase-radians)
                  bead-radius))))))
+
+(define (make-near-field-spin-arrows layout scene-radius)
+  (define scale (* scene-radius 0.050))
+  ;; Magma spends most of its range in purple, magenta, orange, and yellow.
+  ;; Luminous cyan stays legible across both its dark and bright regions.
+  (with-color (rgba 0.02 0.96 1.0 0.98)
+    (with-emitted (emitted 0.02 0.78 0.88 0.98)
+      (combine
+       (for/list ([instance (in-list layout)])
+         (define spin
+           (near-field-electric-spin
+            (near-field-polarization-ellipse-electric
+             (near-field-glyph-instance-ellipse instance))))
+         (if (> (vector3-magnitude spin) 1e-5)
+             (diagram-arrow
+              (near-field-glyph-instance-center instance)
+              (map (lambda (x) (* scale x)) spin)
+              scene-radius)
+             empty-pict3d))))))
+
+(define (make-near-field-power-arrows layout field scene-radius)
+  ;; Pict3D's arrow head is a fixed fraction of total length.  The shorter M10
+  ;; prototype therefore read as a round rivet, especially when viewed nearly
+  ;; along Pavg.  A longer glyph restores a recognizable shaft/head silhouette.
+  (define length (* scene-radius 0.095))
+  (with-color (rgba 1.0 0.82 0.08 0.96)
+    (with-emitted (emitted 0.78 0.52 0.02 0.96)
+      (combine
+       (for/list ([instance (in-list layout)])
+         (define poynting
+           (or (near-field-flow-average-poynting
+                field
+                (near-field-glyph-instance-u instance)
+                (near-field-glyph-instance-v instance))
+               '(0.0 0.0 0.0)))
+         (define magnitude (vector3-magnitude poynting))
+         (if (> magnitude 1e-30)
+             (diagram-arrow
+              (near-field-glyph-instance-center instance)
+              (map (lambda (x) (* length (/ x magnitude))) poynting)
+              scene-radius)
+             empty-pict3d))))))
 
 (define (make-marker center scene-radius)
   (with-color (rgba 1 0.2 0.75 1)
@@ -520,6 +645,12 @@
             (freeze (combine grid glyph-rings trajectory marker)))
       (refresh!))
 
+    (define/public (set-reference-grid! new-grid)
+      (set! grid new-grid)
+      (set! display-base
+            (freeze (combine grid glyph-rings trajectory marker)))
+      (refresh!))
+
     (define/override (on-event event)
       (define type (send event get-event-type))
       (define x (send event get-x))
@@ -586,15 +717,17 @@
      section (nec2c-near-field-result-frequency-mhz result)))
   (define-values (view-center scene-radius) (scene-dimensions section))
   (define edges (if antenna? (model-edges) '()))
+  (define background-quantity 'electric)
   (define-values (field-map field-peak)
-    (make-field-map field scene-radius))
-  (define reference-scene
+    (make-field-map field scene-radius background-quantity))
+  (define context-scene
     (freeze
-     (combine field-map
-              (make-coordinate-reference scene-radius)
+     (combine (make-coordinate-reference scene-radius)
               (if (null? edges)
                   empty-pict3d
                   (make-antenna-reference edges scene-radius)))))
+  (define (reference-scene)
+    (freeze (combine field-map context-scene)))
   (define hit-plane (make-hit-plane section))
   (define phase 0.0)
   (define speed 1.0)
@@ -621,7 +754,7 @@
     (max minimum-glyph-stride
          (min maximum-glyph-stride
               (inexact->exact (round (/ short-interval-count 10.0))))))
-  (define glyphs-visible? #f)
+  (define view-mode 'point)
   (define glyph-layout '())
   (define glyph-density-slider #f)
   (define glyph-density-label #f)
@@ -645,7 +778,8 @@
          [stretchable-width #t]))
 
   (new message% [parent rail] [label "NEAR-FIELD POLARIZATION"])
-  (new message%
+  (define field-context-label
+    (new message%
        [parent rail]
        [label
         (format "~a plane · ~a-normal at ~a m\n~a MHz · section ~a"
@@ -657,7 +791,52 @@
                 (format-real (nec2c-near-field-section-position section))
                 (format-real (nec2c-near-field-result-frequency-mhz result) 5)
                 section-index)]
-       [stretchable-width #t])
+       [stretchable-width #t]))
+  (define (update-field-context-label!)
+    (send field-context-label set-label
+          (case background-quantity
+            [(electric)
+             (format (string-append
+                      "FIELD CONTEXT\n"
+                      "magma |E|: ~a dB to p98 ~a V/m\n"
+                      "model: cyan (~a wires) · feed: magenta\n"
+                      "faint XYZ axes · faint range")
+                     (exact-round field-floor-db)
+                     (format-real field-peak)
+                     (length edges))]
+            [(average-power)
+             (format (string-append
+                      "FIELD CONTEXT\n"
+                      "magma |Pavg|: ~a dB to p98 ~a W/m²\n"
+                      "model: cyan (~a wires) · feed: magenta\n"
+                      "faint XYZ axes · faint range")
+                     (exact-round field-floor-db)
+                     (format-real field-peak)
+                     (length edges))]
+            [else
+             (format (string-append
+                      "FIELD CONTEXT\n"
+                      "cyan inward · dark zero · gold outward\n"
+                      "signed normal Pavg: ±p98 ~a W/m²\n"
+                      "model: cyan (~a wires) · feed: magenta")
+                     (format-real field-peak)
+                     (length edges))])))
+  (update-field-context-label!)
+  (define background-selector
+    (new radio-box% [parent rail] [label "BACKGROUND"]
+         [choices '("|E|" "|PAVG|" "SIGNED NORMAL PAVG")]
+         [selection 0]
+         [callback
+          (lambda (control _event)
+            (set! background-quantity
+                  (vector-ref #(electric average-power signed-normal-power)
+                              (send control get-selection)))
+            (define-values (new-map new-peak)
+              (make-field-map field scene-radius background-quantity))
+            (set! field-map new-map)
+            (set! field-peak new-peak)
+            (update-field-context-label!)
+            (when canvas (send canvas set-reference-grid! (reference-scene))))]))
   (new message%
        [parent rail]
        [label
@@ -681,15 +860,15 @@
             (format "sample stride ~a · about ~a across short side"
                     glyph-stride (glyphs-across-short-side)))))
   (define (current-glyph-beads)
-    (if glyphs-visible?
+    (if (eq? view-mode 'ellipses)
         (make-near-field-glyph-beads glyph-layout scene-radius phase)
         empty-pict3d))
   (define (current-selection-trajectory)
-    (if (and (not glyphs-visible?) selected-center)
+    (if (and (eq? view-mode 'point) selected-center)
         (make-trajectory selected-center selected-ellipse scene-radius)
         empty-pict3d))
   (define (current-selection-marker)
-    (if (and (not glyphs-visible?) selected-center)
+    (if (and (eq? view-mode 'point) selected-center)
         (combine (make-marker selected-center scene-radius)
                  (make-origin-guide selected-center scene-radius)
                  (if selected-poynting
@@ -705,23 +884,31 @@
             (current-dynamic-scene))))
   (define (rebuild-glyphs!)
     (set! glyph-layout
-          (if glyphs-visible?
+          (if (eq? view-mode 'point)
+              '()
               (make-near-field-glyph-layout field glyph-stride)
-              '()))
+              ))
     (when canvas
       (send canvas set-glyph-scenes!
-            (if glyphs-visible?
-                (make-near-field-glyph-rings glyph-layout scene-radius)
-                empty-pict3d)
+            (case view-mode
+              [(ellipses)
+               (make-near-field-glyph-rings glyph-layout scene-radius)]
+              [(spin)
+               (make-near-field-spin-arrows glyph-layout scene-radius)]
+              [(power-vectors)
+               (make-near-field-power-arrows glyph-layout field scene-radius)]
+              [else empty-pict3d])
             (current-glyph-beads))))
   (define glyph-view-selector
     (new radio-box% [parent rail] [label "VIEW"]
-         [choices '("SINGLE POINT + VECTORS" "ELLIPSE GRID")]
+         [choices '("POINT + VECTORS" "ELLIPSES" "SPIN" "POWER VECTORS")]
          [selection 0]
          [callback
           (lambda (control _event)
-            (set! glyphs-visible? (= (send control get-selection) 1))
-            (send glyph-density-slider enable glyphs-visible?)
+            (set! view-mode
+                  (vector-ref #(point ellipses spin power-vectors)
+                              (send control get-selection)))
+            (send glyph-density-slider enable (not (eq? view-mode 'point)))
             (rebuild-glyphs!)
             ;; These are mutually exclusive views: the grid replaces the
             ;; selected trajectory and both Poynting arrows.  The selection is
@@ -775,7 +962,7 @@
                 "S(t) unavailable"))))
 
   (define (current-dynamic-scene)
-    (if (and (not glyphs-visible?) selected-center)
+    (if (and (eq? view-mode 'point) selected-center)
         (let ([instantaneous-poynting (current-instantaneous-poynting)])
           (combine
            (make-bead selected-center selected-ellipse scene-radius phase)
@@ -855,7 +1042,7 @@
                  [current-pict3d-fov view-fov-degrees])
     (set! canvas
           (new near-field-point-canvas%
-               [parent viewport] [grid reference-scene] [hit-plane hit-plane]
+               [parent viewport] [grid (reference-scene)] [hit-plane hit-plane]
                [center view-center] [radius scene-radius]
                [selection-callback select-hit!]
                [selection-cleared-callback clear-selection!]

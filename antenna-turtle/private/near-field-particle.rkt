@@ -9,6 +9,8 @@
          make-near-field-flow-field
          near-field-flow-electric
          near-field-flow-sample
+         near-field-flow-average-poynting
+         near-field-flow-signed-normal-power
          near-field-flow-seed-weights
          near-field-plane-point)
 
@@ -165,6 +167,22 @@
                    '(0.0 0.0 0.0))])
          (near-field-flow-state velocity poynting
                                 electric-energy magnetic-energy))))
+
+(define (near-field-flow-average-poynting field u v)
+  (define state (near-field-flow-sample field u v 0.0 'average))
+  (and state (near-field-flow-state-poynting state)))
+
+(define (near-field-flow-signed-normal-power field u v)
+  (unless (near-field-flow-field? field)
+    (raise-argument-error
+     'near-field-flow-signed-normal-power "near-field-flow-field?" field))
+  (define poynting (near-field-flow-average-poynting field u v))
+  (and poynting
+       (case (nec2c-near-field-section-normal-axis
+              (near-field-flow-field-section field))
+         [(x) (first poynting)]
+         [(y) (second poynting)]
+         [(z) (third poynting)])))
 
 (define (near-field-flow-seed-weights field)
   (for/list ([sample (in-vector (near-field-flow-field-samples field))])
