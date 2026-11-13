@@ -142,10 +142,13 @@ physical field amplitudes.
 
 ### M9 — Near-field ellipse plane
 
-Overlay a stable sparse glyph grid on a near-field plane.  Density lands on
+Switch exclusively between the M8 selected-point/vector view and a stable
+sparse glyph grid on a near-field plane. Density lands on
 actual samples and defaults to roughly 10–15 glyphs across the shorter plane
-dimension.  Glyph visibility is controlled by an electric-field threshold,
-not by background power, so strong stored fields remain visible.
+dimension. M4 review rejected adjustable threshold controls as confusing, so
+M9 keeps glyph visibility independent of background power and exposes only an
+on/off control plus sample-quantized density. The selected-point ellipse and
+the plane glyphs share one globally coherent RF phase.
 
 ### M10 — Power backgrounds and spin mode
 

@@ -15,7 +15,8 @@
          "nec2c.rkt"
          "visualization-handle.rkt")
 
-(provide show-near-field-polarization-point-poc)
+(provide show-near-field-polarization-point-poc
+         near-field-glyph-sample-indices)
 
 (define view-fov-degrees 34)
 (define phase-degrees-per-second 180.0)
@@ -324,6 +325,91 @@
           (with-emitted (emitted 1 1 1 1)
             (sphere point (* scene-radius 0.014)))))))
 
+(define (near-field-glyph-sample-indices count stride)
+  (unless (and (exact-integer? count) (positive? count))
+    (raise-argument-error
+     'near-field-glyph-sample-indices "exact-positive-integer?" count))
+  (unless (and (exact-integer? stride) (positive? stride))
+    (raise-argument-error
+     'near-field-glyph-sample-indices "exact-positive-integer?" stride))
+  (sort
+   (remove-duplicates
+    (append (for/list ([index (in-range 0 count stride)]) index)
+            (list (quotient (sub1 count) 2) (sub1 count))))
+   <))
+
+(struct near-field-glyph-instance (center ellipse) #:transparent)
+
+(define (make-near-field-glyph-layout field stride)
+  (define section (near-field-flow-field-section field))
+  (define u-values (nec2c-near-field-section-u-values section))
+  (define v-values (nec2c-near-field-section-v-values section))
+  (define u-indices
+    (near-field-glyph-sample-indices (length u-values) stride))
+  (define v-indices
+    (near-field-glyph-sample-indices (length v-values) stride))
+  (filter
+   values
+   (for*/list ([v-index (in-list v-indices)]
+               [u-index (in-list u-indices)])
+     (define u (list-ref u-values u-index))
+     (define v (list-ref v-values v-index))
+     (define ellipse (near-field-polarization-at field u v))
+     (and ellipse
+          (near-field-glyph-instance
+           (section-point section u v) ellipse)))))
+
+(define (glyph-electric-point instance glyph-radius phase-radians)
+  (define ellipse (near-field-glyph-instance-ellipse instance))
+  (define scale
+    (/ glyph-radius
+       (near-field-polarization-ellipse-major-amplitude ellipse)))
+  (electric-offset
+   (near-field-glyph-instance-center instance)
+   (near-field-instantaneous-electric
+    (near-field-polarization-ellipse-electric ellipse) phase-radians)
+   scale))
+
+(define (make-near-field-glyph-ring instance scene-radius)
+  (define ellipse (near-field-glyph-instance-ellipse instance))
+  (define glyph-radius (* scene-radius 0.026))
+  (define line-radius (* scene-radius 0.00115))
+  (define linear?
+    (<= (near-field-polarization-ellipse-minor-amplitude ellipse)
+        (* (near-field-polarization-ellipse-major-amplitude ellipse) 1e-4)))
+  (with-color (rgba 1.0 1.0 1.0 0.80)
+    (with-emitted (emitted 0.68 0.68 0.68 0.80)
+      (if linear?
+          (tube-between
+           (glyph-electric-point instance glyph-radius 0.0)
+           (glyph-electric-point instance glyph-radius pi)
+           line-radius)
+          (combine
+           (for/list ([index (in-range 24)])
+             (define phase0 (* 2.0 pi (/ index 24.0)))
+             (define phase1 (* 2.0 pi (/ (add1 index) 24.0)))
+             (tube-between
+              (glyph-electric-point instance glyph-radius phase0)
+              (glyph-electric-point instance glyph-radius phase1)
+              line-radius)))))))
+
+(define (make-near-field-glyph-rings layout scene-radius)
+  (freeze
+   (combine
+    (for/list ([instance (in-list layout)])
+      (make-near-field-glyph-ring instance scene-radius)))))
+
+(define (make-near-field-glyph-beads layout scene-radius phase-degrees)
+  (define glyph-radius (* scene-radius 0.026))
+  (define bead-radius (* scene-radius 0.0038))
+  (define phase-radians (degrees->radians phase-degrees))
+  (with-color (rgba 1.0 1.0 1.0 0.95)
+    (with-emitted (emitted 0.90 0.90 0.90 0.95)
+      (combine
+       (for/list ([instance (in-list layout)])
+         (sphere (glyph-electric-point instance glyph-radius phase-radians)
+                 bead-radius))))))
+
 (define (make-marker center scene-radius)
   (with-color (rgba 1 0.2 0.75 1)
     (with-emitted (emitted 1 0.15 0.7 1)
@@ -382,8 +468,11 @@
     (define trajectory empty-pict3d)
     (define marker empty-pict3d)
     (define dynamic-scene empty-pict3d)
+    (define glyph-rings empty-pict3d)
+    (define glyph-beads empty-pict3d)
     (define display-base (freeze grid))
-    (define (display-scene) (combine display-base dynamic-scene))
+    (define (display-scene)
+      (combine display-base dynamic-scene glyph-beads))
     (super-new
      [pict3d (camera-scene (display-scene) center radius
                            azimuth altitude zoom)])
@@ -415,11 +504,20 @@
       (set! trajectory new-trajectory)
       (set! marker new-marker)
       (set! dynamic-scene new-dynamic)
-      (set! display-base (freeze (combine grid trajectory marker)))
+      (set! display-base
+            (freeze (combine grid glyph-rings trajectory marker)))
       (refresh!))
 
-    (define/public (set-dynamic-scene! new-dynamic)
+    (define/public (set-dynamic-scenes! new-dynamic new-glyph-beads)
       (set! dynamic-scene new-dynamic)
+      (set! glyph-beads new-glyph-beads)
+      (refresh!))
+
+    (define/public (set-glyph-scenes! new-rings new-beads)
+      (set! glyph-rings new-rings)
+      (set! glyph-beads new-beads)
+      (set! display-base
+            (freeze (combine grid glyph-rings trajectory marker)))
       (refresh!))
 
     (define/override (on-event event)
@@ -508,6 +606,25 @@
   (define selected-ellipse #f)
   (define selected-poynting #f)
   (define canvas #f)
+  (define u-sample-count
+    (length (nec2c-near-field-section-u-values section)))
+  (define v-sample-count
+    (length (nec2c-near-field-section-v-values section)))
+  (define short-interval-count
+    (max 1 (sub1 (min u-sample-count v-sample-count))))
+  (define minimum-glyph-stride
+    (max 1 (inexact->exact (ceiling (/ short-interval-count 24.0)))))
+  (define maximum-glyph-stride
+    (max minimum-glyph-stride
+         (inexact->exact (ceiling (/ short-interval-count 3.0)))))
+  (define glyph-stride
+    (max minimum-glyph-stride
+         (min maximum-glyph-stride
+              (inexact->exact (round (/ short-interval-count 10.0))))))
+  (define glyphs-visible? #f)
+  (define glyph-layout '())
+  (define glyph-density-slider #f)
+  (define glyph-density-label #f)
 
   (define frame
     (new frame% [label "Near-field polarization point PoC"]
@@ -554,6 +671,77 @@
                 (format-real field-peak)
                 (length edges))]
        [stretchable-width #t])
+  (define (glyphs-across-short-side)
+    (length
+     (near-field-glyph-sample-indices
+      (add1 short-interval-count) glyph-stride)))
+  (define (update-glyph-density-label!)
+    (when glyph-density-label
+      (send glyph-density-label set-label
+            (format "sample stride ~a · about ~a across short side"
+                    glyph-stride (glyphs-across-short-side)))))
+  (define (current-glyph-beads)
+    (if glyphs-visible?
+        (make-near-field-glyph-beads glyph-layout scene-radius phase)
+        empty-pict3d))
+  (define (current-selection-trajectory)
+    (if (and (not glyphs-visible?) selected-center)
+        (make-trajectory selected-center selected-ellipse scene-radius)
+        empty-pict3d))
+  (define (current-selection-marker)
+    (if (and (not glyphs-visible?) selected-center)
+        (combine (make-marker selected-center scene-radius)
+                 (make-origin-guide selected-center scene-radius)
+                 (if selected-poynting
+                     (make-poynting-arrow selected-center selected-poynting
+                                          scene-radius 'average)
+                     empty-pict3d))
+        empty-pict3d))
+  (define (refresh-view-scenes!)
+    (when canvas
+      (send canvas set-selection-scenes!
+            (current-selection-trajectory)
+            (current-selection-marker)
+            (current-dynamic-scene))))
+  (define (rebuild-glyphs!)
+    (set! glyph-layout
+          (if glyphs-visible?
+              (make-near-field-glyph-layout field glyph-stride)
+              '()))
+    (when canvas
+      (send canvas set-glyph-scenes!
+            (if glyphs-visible?
+                (make-near-field-glyph-rings glyph-layout scene-radius)
+                empty-pict3d)
+            (current-glyph-beads))))
+  (define glyph-view-selector
+    (new radio-box% [parent rail] [label "VIEW"]
+         [choices '("SINGLE POINT + VECTORS" "ELLIPSE GRID")]
+         [selection 0]
+         [callback
+          (lambda (control _event)
+            (set! glyphs-visible? (= (send control get-selection) 1))
+            (send glyph-density-slider enable glyphs-visible?)
+            (rebuild-glyphs!)
+            ;; These are mutually exclusive views: the grid replaces the
+            ;; selected trajectory and both Poynting arrows.  The selection is
+            ;; retained so switching back restores it without another click.
+            (refresh-view-scenes!))]))
+  (set! glyph-density-label
+        (new message% [parent rail] [label "sample stride"]
+             [auto-resize #t] [stretchable-width #t]))
+  (set! glyph-density-slider
+        (new slider% [parent rail] [label #f]
+             [min-value minimum-glyph-stride]
+             [max-value maximum-glyph-stride]
+             [init-value glyph-stride]
+             [callback
+              (lambda (control _event)
+                (set! glyph-stride (send control get-value))
+                (update-glyph-density-label!)
+                (rebuild-glyphs!))]))
+  (send glyph-density-slider enable #f)
+  (update-glyph-density-label!)
   (new message% [parent rail] [label "SELECTED POINT"])
   (define inspector
     (new message% [parent rail] [label "Click the capture plane."]
@@ -587,7 +775,7 @@
                 "S(t) unavailable"))))
 
   (define (current-dynamic-scene)
-    (if selected-center
+    (if (and (not glyphs-visible?) selected-center)
         (let ([instantaneous-poynting (current-instantaneous-poynting)])
           (combine
            (make-bead selected-center selected-ellipse scene-radius phase)
@@ -647,15 +835,7 @@
     (set! selected-poynting
           (and average-state (near-field-flow-state-poynting average-state)))
     (update-inspector!)
-    (send canvas set-selection-scenes!
-          (make-trajectory selected-center selected-ellipse scene-radius)
-          (combine (make-marker selected-center scene-radius)
-                   (make-origin-guide selected-center scene-radius)
-                   (if selected-poynting
-                       (make-poynting-arrow selected-center selected-poynting
-                                            scene-radius 'average)
-                       empty-pict3d))
-          (current-dynamic-scene))
+    (refresh-view-scenes!)
     (update-instantaneous-flow-label!))
 
   (define (clear-selection!)
@@ -689,7 +869,8 @@
                 (set! phase (send control get-value))
                 (send phase-label set-label
                       (format "~a degrees" (exact-round phase)))
-                (send canvas set-dynamic-scene! (current-dynamic-scene))
+                (send canvas set-dynamic-scenes!
+                      (current-dynamic-scene) (current-glyph-beads))
                 (update-instantaneous-flow-label!))]))
   (set! instantaneous-flow-label
         (new message% [parent rail] [label "S(t) unavailable"]
@@ -746,8 +927,8 @@
                      (send phase-slider set-value displayed)
                      (send phase-label set-label
                            (format "~a degrees" displayed))
-                     (send canvas set-dynamic-scene!
-                           (current-dynamic-scene))
+                     (send canvas set-dynamic-scenes!
+                           (current-dynamic-scene) (current-glyph-beads))
                      (update-instantaneous-flow-label!))]))]))
 
   (send frame show #t)

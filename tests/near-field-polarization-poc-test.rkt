@@ -1,9 +1,21 @@
 #lang racket/base
 
 (require rackunit
+         racket/list
          "../antenna-turtle/private/nec2c.rkt"
          "../antenna-turtle/private/nec2c-view.rkt"
+         (only-in "../antenna-turtle/private/near-field-polarization-poc.rkt"
+                  near-field-glyph-sample-indices)
          "../antenna-turtle/private/visualization-handle.rkt")
+
+(test-case "near-field glyph samples are stable source indices"
+  (define indices (near-field-glyph-sample-indices 101 8))
+  (check-equal? (first indices) 0)
+  (check-equal? (last indices) 100)
+  (check-not-false (member 50 indices))
+  (check-true (andmap exact-nonnegative-integer? indices))
+  (check-true (<= 10 (length indices) 15))
+  (check-equal? indices (near-field-glyph-sample-indices 101 8)))
 
 (define section
   (nec2c-near-field-section
