@@ -112,11 +112,12 @@
              (lambda () (s-parameter-at multiport 100))))
 
 (define (pattern-sample azimuth elevation total-gain
-                        [axial-ratio 1.0] [tilt 0.0] [sense 'linear])
+                        [axial-ratio +inf.0] [tilt 0.0] [sense 'linear]
+                        [e-theta 1+0i] [e-phi 0+0i])
   (nec2c-pattern-sample
    435 0 azimuth elevation azimuth
    (- total-gain 3) (- total-gain 3) total-gain
-   axial-ratio tilt sense 1+0i 0+1i))
+   axial-ratio tilt sense e-theta e-phi))
 
 (define grid
   (nec2c-pattern-grid
@@ -143,17 +144,36 @@
   (check-equal? (maximum-gain-direction grid) '(0 0))
   (check-= (front-to-back-ratio grid) 10 1e-10)
   (check-= (front-to-side-ratio grid) 20 1e-10)
-  (check-equal? (axial-ratio-at grid #:azimuth 90 #:elevation 0) 1.0)
-  (check-equal? (polarization-tilt-at grid #:azimuth 90 #:elevation 0) 0.0)
+  (check-true (infinite? (axial-ratio-at grid #:azimuth 90 #:elevation 0)))
+  (check-= (polarization-tilt-at grid #:azimuth 90 #:elevation 0) 0.0 1e-12)
   (check-equal? (polarization-sense-at grid #:azimuth 90 #:elevation 0)
                 'linear)
   (define-values (e-theta e-phi)
     (e-field-at grid #:azimuth 90 #:elevation 0))
   (check-equal? e-theta 1)
-  (check-equal? e-phi 0+1i)
+  (check-equal? e-phi 0)
   (check-equal? (pattern-angular-resolution grid) '(90.0 90))
   (check-equal? (measurement-frequencies grid) '(435))
   (check-equal? (measurement-frequency-range grid) '(435 435)))
+
+(test-case "polarization is derived after complex field interpolation"
+  (define component (/ 1.0 (sqrt 2.0)))
+  (define cut
+    (nec2c-pattern
+     #f 'azimuth 0
+     (list
+      (pattern-sample 0 0 0 1 #f 'right
+                      component (* 0-1i component))
+      (pattern-sample 90 0 0 1 #f 'left
+                      component (* 0+1i component)))))
+  (check-eq? (polarization-sense-at cut #:azimuth 0 #:elevation 0) 'rhcp)
+  (check-eq? (polarization-sense-at cut #:azimuth 90 #:elevation 0) 'lhcp)
+  ;; Interpolating the categorical endpoints would be meaningless. Their
+  ;; complex midpoint instead has E_phi = 0 and is correctly linear.
+  (define midpoint
+    (polarization-at cut #:azimuth 45 #:elevation 0))
+  (check-eq? (polarization-state-sense midpoint) 'linear)
+  (check-true (infinite? (polarization-state-axial-ratio midpoint))))
 
 (test-case "measurement discovery reports frequencies and ports"
   (check-equal? (measurement-frequencies network) '(100 200))

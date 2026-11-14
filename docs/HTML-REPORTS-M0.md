@@ -216,8 +216,8 @@ served viewer for very large captures, without changing the portable default.
 
 ## Size controls
 
-`#:max-samples` causes the backend to choose a uniform openEMS dump
-subsampling stride. The viewer additionally limits diagnostic vector counts and
+`#:max-samples` causes the backend to choose balanced per-axis openEMS dump
+subsampling strides. The viewer additionally limits diagnostic vector counts and
 coalesces planar heatmap cells to roughly ten thousand display cells when a
 capture is unusually dense. Geometry and float arrays are gzip-compressed.
 

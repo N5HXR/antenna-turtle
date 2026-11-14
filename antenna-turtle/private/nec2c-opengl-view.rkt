@@ -26,7 +26,10 @@
          show-near-field-poynting-particles
          show-radiation-palette-lab
          show-radiation-comparison
-         radiation-grid->pict3d)
+         radiation-grid->pict3d
+         ;; Experimental viewers reuse the production surface construction
+         ;; without sharing its increasingly specialized window layout.
+         build-radiation-pict3d)
 
 ;; MMANA retains its conventional nonlinear stop distribution. The other
 ;; ramps share a gentler perceptual curve: fine resolution through the first

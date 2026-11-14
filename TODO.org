@@ -161,6 +161,15 @@ when convenient, retain or summarize their results, and rerun the ordinary
 test suite.  These long solver runs are release evidence rather than routine
 unit tests.
 
+** TODO Establish wire-model parity before adding OpenEMS polarization reports
+Work through a controlled wire-antenna case in NEC2C and OpenEMS. Validate the
+derived capsule geometry, feed gap and terminals, impedance, accepted power,
+current distribution, and radiated pattern before interpreting OpenEMS
+polarization. Once the reference case agrees, revisit near-field report
+polarization and decide whether to add complex angular NF2FF components for a
+far-field view. Do not increase the FDTD mesh or field-capture budget merely to
+enable polarization presentation.
+
 ** TODO Review soak-period findings and decide whether to merge
 Fix Revision 1 defects found during hands-on modeling, rerun the relevant
 tests, verify the branch is clean and documented, and then merge only if no

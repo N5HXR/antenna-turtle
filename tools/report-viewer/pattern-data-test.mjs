@@ -48,9 +48,10 @@ const polarization = interpolatedPolarization(pattern, table, 45, 45);
 assert.ok(Math.abs(polarization.eTheta.real - 0.5) < 1e-12);
 assert.ok(Math.abs(polarization.eTheta.imaginary - 0.5) < 1e-12);
 assert.ok(Math.abs(polarization.phaseDifferenceDegrees) < 1e-12);
-assert.equal(polarization.axialRatio, 2);
-assert.equal(polarization.tiltDegrees, 30);
-assert.equal(polarization.sense, "right");
+assert.equal(polarization.axialRatio, Infinity);
+assert.ok(Math.abs(polarization.tiltDegrees - 71.56505117707799) < 1e-12);
+assert.equal(polarization.signedCircularity, 0);
+assert.equal(polarization.sense, "linear");
 
 const thetaAtHorizon = {
   theta_deg: 90, phi_deg: 0, total_gain_db: 7,

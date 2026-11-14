@@ -1651,6 +1651,22 @@ camera, drag-to-orbit navigation, and wheel zoom. Its display mesh defaults to
 asymmetric main lobe does not waste zoom room on the opposite side of the RF
 origin.
 
+Pass `#:view 'polarization` to use the same measured radiation surface as a
+polarization workbench:
+
+```racket
+(show-radiation-pattern-opengl pattern #:view 'polarization)
+```
+
+The default color surface maps LHCP through linear to RHCP while retaining
+gain-derived brightness and ARRL gain-derived radius. The right panel can
+instead select axial ratio or axial tilt. Click the surface for exact complex
+field, axial-ratio, tilt, sense, and gain values; click the black background to
+clear the selection. Optional white ellipse glyphs display the local electric
+trajectory and a globally coherent phase bead. They are off by default. The
+polarization convention and detailed control reference are in
+`POLARIZATION.md`.
+
 Select the color ramp with `#:palette`. The choices are `'magma` (the default,
 also named `'sdr`) for a dark-purple through orange SDR-waterfall style,
 `'mmana` for the bright conventional antenna-plot palette,
@@ -1761,6 +1777,17 @@ instantaneous power vectors can be overlaid on the plane; all heat maps support
 linear and logarithmic scales. Instantaneous vectors may reverse locally where
 reactive energy moves back and forth, while the average vectors show net power
 transport.
+
+The approved native polarization workbench is available directly from the DSL
+without generating a report:
+
+```racket
+(show-near-field fields #:view 'polarization)
+```
+
+This general entry point intentionally requires `#:view`. Polarization is its
+first native view; the report's E, H, power, vector, streamline, and volume
+displays can be promoted under the same interface in later work.
 
 For a faster experimental loop, the native OpenGL particle workbench reuses an
 already-computed near-field result without generating or navigating an HTML
