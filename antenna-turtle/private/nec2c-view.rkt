@@ -31,6 +31,7 @@
  show-radiation-cut
  show-radiation-pattern-3d
  show-radiation-pattern-opengl
+ show-near-field
  show-polarization-surface-poc
  show-near-field-polarization-point-poc
  show-near-field-poynting-particles
@@ -1102,6 +1103,7 @@
                                     #:mesh-step mesh-step))))
 
 (define (show-radiation-pattern-opengl grid
+                                        #:view [view 'gain]
                                         #:component [component 'total]
                                         #:floor-db [floor-db -40]
                                         #:normalize? [normalize? #t]
@@ -1113,42 +1115,83 @@
                                         #:antenna? [antenna? #t]
                                         #:width [width 1000]
                                         #:height [height 760])
-  (define show-opengl
-    (with-handlers ([exn:fail?
-                     (lambda (failure)
-                       (raise-user-error
-                        'show-radiation-pattern-opengl
-                        "could not start the OpenGL viewer: ~a"
-                        (exn-message failure)))])
-      (dynamic-require opengl-view-path
-                       'show-radiation-pattern-opengl)))
-  (show-opengl grid
-               #:component component
-               #:floor-db floor-db
-               #:normalize? normalize?
-               #:scale radial-scale
-               #:palette palette
-               #:color-step color-step
-               #:mesh-step mesh-step
-               #:axes? axes?
-               #:antenna? antenna?
-               #:width width
-               #:height height))
+  (unless (memq view '(gain polarization))
+    (raise-argument-error
+     'show-radiation-pattern-opengl
+     "(or/c 'gain 'polarization)" view))
+  (case view
+    [(gain)
+     (define show-opengl
+       (with-handlers ([exn:fail?
+                        (lambda (failure)
+                          (raise-user-error
+                           'show-radiation-pattern-opengl
+                           "could not start the OpenGL viewer: ~a"
+                           (exn-message failure)))])
+         (dynamic-require opengl-view-path
+                          'show-radiation-pattern-opengl)))
+     (show-opengl grid
+                  #:component component
+                  #:floor-db floor-db
+                  #:normalize? normalize?
+                  #:scale radial-scale
+                  #:palette palette
+                  #:color-step color-step
+                  #:mesh-step mesh-step
+                  #:axes? axes?
+                  #:antenna? antenna?
+                  #:width width
+                  #:height height)]
+    [(polarization)
+     (define show-polarization
+       (with-handlers ([exn:fail?
+                        (lambda (failure)
+                          (raise-user-error
+                           'show-radiation-pattern-opengl
+                           "could not start the polarization viewer: ~a"
+                           (exn-message failure)))])
+         (dynamic-require polarization-poc-path
+                          'show-polarization-pattern)))
+     (show-polarization grid
+                        #:mesh-step mesh-step
+                        #:width width
+                        #:height height)]))
 
 (define (show-polarization-surface-poc grid
                                        #:width [width 1180]
                                        #:height [height 780]
                                        #:mesh-step [mesh-step 2])
-  (define show-poc
+  (define show-polarization
     (with-handlers ([exn:fail?
                      (lambda (failure)
                        (raise-user-error
                         'show-polarization-surface-poc
-                        "could not start the polarization PoC viewer: ~a"
+                        "could not start the polarization viewer: ~a"
                         (exn-message failure)))])
       (dynamic-require polarization-poc-path
-                       'show-polarization-surface-poc)))
-  (show-poc grid #:width width #:height height #:mesh-step mesh-step))
+                       'show-polarization-pattern)))
+  (show-polarization grid #:width width #:height height
+                     #:mesh-step mesh-step))
+
+(define (show-near-field result
+                         #:view view
+                         #:section [section 0]
+                         #:antenna? [antenna? #t]
+                         #:width [width 1180]
+                         #:height [height 780])
+  (unless (memq view '(polarization))
+    (raise-argument-error 'show-near-field "'polarization" view))
+  (define show-view
+    (with-handlers ([exn:fail?
+                     (lambda (failure)
+                       (raise-user-error
+                        'show-near-field
+                        "could not start the ~a viewer: ~a"
+                        view (exn-message failure)))])
+      (dynamic-require near-field-polarization-poc-path
+                       'show-near-field-polarization)))
+  (show-view result #:section section #:antenna? antenna?
+             #:width width #:height height))
 
 (define (show-near-field-polarization-point-poc
          result
@@ -1156,17 +1199,17 @@
          #:antenna? [antenna? #t]
          #:width [width 1180]
          #:height [height 780])
-  (define show-poc
+  (define show-polarization
     (with-handlers ([exn:fail?
                      (lambda (failure)
                        (raise-user-error
                         'show-near-field-polarization-point-poc
-                        "could not start the near-field polarization PoC: ~a"
+                        "could not start the near-field polarization viewer: ~a"
                         (exn-message failure)))])
       (dynamic-require near-field-polarization-poc-path
-                       'show-near-field-polarization-point-poc)))
-  (show-poc result #:section section #:antenna? antenna?
-            #:width width #:height height))
+                       'show-near-field-polarization)))
+  (show-polarization result #:section section #:antenna? antenna?
+                     #:width width #:height height))
 
 (define (show-near-field-poynting-particles
          result

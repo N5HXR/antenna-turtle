@@ -1,7 +1,9 @@
 #lang racket/base
 
 (require rackunit
+         racket/class
          racket/list
+         racket/gui/base
          "../antenna-turtle/private/nec2c.rkt"
          "../antenna-turtle/private/nec2c-view.rkt"
          (only-in "../antenna-turtle/private/near-field-polarization-poc.rkt"
@@ -36,4 +38,23 @@
      result #:width 720 #:height 520))
   (check-true (visualization-handle? handle))
   (check-true (visualization-open? handle))
+  (visualization-close! handle))
+
+(test-case "general near-field entry dispatches to polarization"
+  (define requested-height 700)
+  (define handle
+    (show-near-field result #:view 'polarization
+                     #:width 720 #:height requested-height))
+  (check-true (visualization-handle? handle))
+  (check-true (visualization-open? handle))
+  (define viewer-frame
+    (for/first ([window (in-list (get-top-level-windows))]
+                #:when (equal? (send window get-label)
+                               "Near-field polarization workbench"))
+      window))
+  (check-not-false viewer-frame)
+  (define-values (_display-width display-height) (get-display-size))
+  (check-true
+   (<= (send viewer-frame get-height)
+       (min requested-height (max 240 (- display-height 80)))))
   (visualization-close! handle))

@@ -3025,6 +3025,21 @@ and H consumes twice the spatial point count.
                              #:fields '(electric)))))
 ```
 
+### `(show-near-field ...)`
+
+The general native near-field entry point begins with the polarization view:
+
+```racket
+(show-near-field fields #:view 'polarization [#:section 0])
+```
+
+It opens the selected-point and plane-wide polarization workbench, including
+electric-field trajectories, average and instantaneous Poynting vectors,
+ellipse grids, normalized spin, and selectable power backgrounds. `#:view` is
+required so future electric, magnetic, power, vector-field, field-line, and
+volume displays can be added to the same API without introducing unrelated
+top-level functions.
+
 ### `(show-near-field-poynting-particles ...)` — experimental
 
 ```racket
@@ -3391,6 +3406,7 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
                            [#:aspect-ratio 1]
                            [#:legend? #f])
 (show-radiation-pattern-opengl grid
+                               [#:view 'gain]
                                [#:component 'total]
                                [#:floor-db -40]
                                [#:normalize? #t]
@@ -3402,6 +3418,12 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
                                [#:antenna? #t]
                                [#:width 1000]
                                [#:height 760])
+(show-near-field result
+                 #:view view
+                 [#:section 0]
+                 [#:antenna? #t]
+                 [#:width 1180]
+                 [#:height 780])
 (show-radiation-palette-lab grid
                             [#:component 'total]
                             [#:floor-db -40]
@@ -3547,8 +3569,16 @@ wider than its physically proportional projection.
 constructor deliberately use one steel-blue surface. Its geometry is
 precomputed once, making it the portable and responsive Plot3D baseline.
 
-`show-radiation-pattern-opengl` uses Pict3D's OpenGL renderer. It uploads and
-freezes a triangle mesh with smoothly interpolated per-vertex colors, then
+`show-radiation-pattern-opengl` uses Pict3D's OpenGL renderer. Its additive
+`#:view` selector defaults to `'gain`, preserving the established viewer and
+all of its options. `#:view 'polarization` opens the native polarization
+workbench with signed-circularity and axial-ratio surfaces, exact inspection,
+and optional animated ellipse glyphs. Gain styling options remain accepted for
+source compatibility, but the polarization view uses its approved ARRL radius
+and polarization colors.
+
+The ordinary gain view uploads and freezes a triangle mesh with smoothly
+interpolated per-vertex colors, then
 moves only the camera during interaction. Drag to orbit and use the mouse
 wheel to zoom. The camera orbits the center of the radiation surface's 3-D
 bounds rather than the RF origin, allowing asymmetric patterns to use the

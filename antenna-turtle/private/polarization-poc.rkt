@@ -1,8 +1,7 @@
 #lang racket/base
 
-;; Isolated native proof-of-concept shell for the polarization workbench.
-;; Keep this deliberately independent of the production radiation viewer so
-;; the approved far-field UX can be integrated as a coherent unit later.
+;; Native far-field polarization workbench. The production radiation entry
+;; point dispatches here when #:view 'polarization is requested.
 
 (require pict3d
          racket/class
@@ -13,9 +12,11 @@
          "measurement-radiation.rkt"
          "nec2c.rkt"
          "nec2c-opengl-view.rkt"
+         "rf-phase-clock.rkt"
          "visualization-handle.rkt")
 
-(provide show-polarization-surface-poc
+(provide show-polarization-pattern
+         show-polarization-surface-poc
          surface-point->angles
          advance-polarization-phase
          signed-circularity-color
@@ -33,7 +34,6 @@
 (define default-azimuth -42.0)
 (define default-altitude 24.0)
 (define default-zoom 3.1)
-(define phase-degrees-per-second 180.0)
 
 ;; Gain owns brightness while polarization owns hue. This is an exposure
 ;; scale rather than darkening alone: high-gain colors are boosted above their
@@ -243,19 +243,8 @@
                   undefined-polarization-color)
         undefined-polarization-color)))
 
-(define (normalize-degrees degrees)
-  (- degrees (* 360.0 (floor (/ degrees 360.0)))))
-
-(define (advance-polarization-phase phase elapsed-seconds speed)
-  (unless (real? phase)
-    (raise-argument-error 'advance-polarization-phase "real?" phase))
-  (unless (and (real? elapsed-seconds) (>= elapsed-seconds 0))
-    (raise-argument-error
-     'advance-polarization-phase "nonnegative-real?" elapsed-seconds))
-  (unless (and (real? speed) (positive? speed))
-    (raise-argument-error 'advance-polarization-phase "positive-real?" speed))
-  (normalize-degrees
-   (+ phase (* phase-degrees-per-second elapsed-seconds speed))))
+(define normalize-degrees normalize-rf-phase)
+(define advance-polarization-phase advance-rf-phase)
 
 ;; Radiation surfaces are radial about the RF origin even though the camera is
 ;; framed around the surface bounds. Convert an exact traced surface point to
@@ -876,29 +865,26 @@
          (update-view!)]
         [else (void)]))))
 
-(define (show-polarization-surface-poc grid
-                                       #:width [width 1180]
-                                       #:height [height 780]
-                                       #:mesh-step [mesh-step 2])
+(define (show-polarization-pattern grid
+                                   #:width [width 1180]
+                                   #:height [height 780]
+                                   #:mesh-step [mesh-step 2])
   (unless (nec2c-pattern-grid? grid)
     (raise-argument-error
-     'show-polarization-surface-poc "nec2c-pattern-grid?" grid))
+     'show-polarization-pattern "nec2c-pattern-grid?" grid))
   (unless (and (exact-integer? width) (positive? width))
     (raise-argument-error
-     'show-polarization-surface-poc "exact-positive-integer?" width))
+     'show-polarization-pattern "exact-positive-integer?" width))
   (unless (and (exact-integer? height) (positive? height))
     (raise-argument-error
-     'show-polarization-surface-poc "exact-positive-integer?" height))
+     'show-polarization-pattern "exact-positive-integer?" height))
   (unless (and (real? mesh-step) (positive? mesh-step))
-    (raise-argument-error 'show-polarization-surface-poc
+    (raise-argument-error 'show-polarization-pattern
                           "positive-real?" mesh-step))
 
   (define current-grid grid)
   (define current-surface-mode 'signed-circularity)
-  (define phase 0.0)
-  (define speed 1.0)
-  (define playing? #t)
-  (define last-tick (current-inexact-milliseconds))
+  (define phase-clock (make-rf-phase-clock))
   (define initial-color-at
     (make-polarization-color-at grid #:mode current-surface-mode))
   (define-values (minimum-gain maximum-gain) (total-gain-range grid))
@@ -921,12 +907,18 @@
   (define glyph-layout '())
   (define decoration empty-pict3d)
   (define animation empty-pict3d)
+  ;; Leave room for the window manager and desktop chrome on shorter screens.
+  ;; The scrollable control rail below prevents its children from increasing
+  ;; the frame's minimum height beyond this display-aware bound.
+  (define-values (_display-width display-height) (get-display-size))
+  (define window-height
+    (min height (max 240 (- display-height 80))))
   (define frame
     (new frame%
-         [label (format "~a polarization workbench PoC"
+         [label (format "~a polarization workbench"
                         (backend-title grid))]
          [width width]
-         [height height]))
+         [height window-height]))
   (define eventspace (current-eventspace))
   (define root (new vertical-panel% [parent frame]))
   (define body (new horizontal-panel% [parent root]))
@@ -935,6 +927,7 @@
     (new vertical-panel%
          [parent body]
          [min-width 300]
+         [style '(auto-vscroll)]
          [stretchable-width #f]
          [alignment '(left top)]
          [vert-margin 12]
@@ -973,6 +966,16 @@
   (define canvas #f)
   (define surface-rebuild-timer #f)
   (define glyph-rebuild-timer #f)
+  (define timer #f)
+  (define (sync-animation-timer!)
+    (when timer
+      (if (and glyphs-visible?
+               (rf-phase-clock-running? phase-clock)
+               (send frame is-shown?))
+          (begin
+            (rf-phase-clock-start! phase-clock)
+            (send timer start 33))
+          (send timer stop))))
   (define (schedule-surface-rebuild!)
     (when surface-rebuild-timer
       (send surface-rebuild-timer stop)
@@ -1016,7 +1019,8 @@
         (lambda (control _event)
           (set! glyphs-visible? (send control get-value))
           (enable-glyph-controls! glyphs-visible?)
-          (schedule-glyph-rebuild!))])
+          (schedule-glyph-rebuild!)
+          (sync-animation-timer!))])
   (define glyph-spacing-label
     (new message%
          [parent rail]
@@ -1071,14 +1075,18 @@
              [init-value 0]
              [callback
               (lambda (control _event)
-                (set! phase (send control get-value))
+                (rf-phase-clock-set-phase!
+                 phase-clock (send control get-value))
                 (send phase-label set-label
-                      (format "~a degrees" (exact-round phase)))
+                      (format "~a degrees"
+                              (exact-round
+                               (rf-phase-clock-phase phase-clock))))
                 (when canvas
                   (set! animation
                         (if glyphs-visible?
                             (make-polarization-glyph-beads
-                             glyph-layout radius phase)
+                             glyph-layout radius
+                             (rf-phase-clock-phase phase-clock))
                             empty-pict3d))
                   (send canvas replace-animation! animation)))]))
   (define playback-row
@@ -1092,9 +1100,13 @@
              [label "PAUSE"]
              [callback
               (lambda (button _event)
-                (set! playing? (not playing?))
-                (set! last-tick (current-inexact-milliseconds))
-                (send button set-label (if playing? "PAUSE" "PLAY")))]))
+                (if (rf-phase-clock-running? phase-clock)
+                    (rf-phase-clock-stop! phase-clock)
+                    (rf-phase-clock-start! phase-clock))
+                (send button set-label
+                      (if (rf-phase-clock-running? phase-clock)
+                          "PAUSE" "PLAY"))
+                (sync-animation-timer!))]))
   (define speed-label
     (new message% [parent playback-row] [label "speed 1.00x"]))
   (set! speed-slider
@@ -1106,9 +1118,12 @@
              [init-value 100]
              [callback
               (lambda (control _event)
-                (set! speed (/ (send control get-value) 100.0))
+                (rf-phase-clock-set-speed!
+                 phase-clock (/ (send control get-value) 100.0))
                 (send speed-label set-label
-                      (format "speed ~ax" (~r speed #:precision 2))))]))
+                      (format "speed ~ax"
+                              (~r (rf-phase-clock-speed phase-clock)
+                                  #:precision 2))))]))
   (new message%
        [parent rail]
        [label "POLARIZATION GLYPHS\nRing shape shows axial ratio.\nRing angle shows polarization tilt.\nBead motion shows instantaneous E-field phase."]
@@ -1162,7 +1177,8 @@
               empty-pict3d))
     (set! animation
           (if glyphs-visible?
-              (make-polarization-glyph-beads glyph-layout radius phase)
+              (make-polarization-glyph-beads
+               glyph-layout radius (rf-phase-clock-phase phase-clock))
               empty-pict3d))
     (send canvas replace-overlay! decoration animation))
 
@@ -1173,31 +1189,28 @@
         (new timer%
              [notify-callback rebuild-glyphs!]))
 
-  (define timer
-    (new timer%
-         [interval 33]
+  (set! timer
+        (new timer%
          [notify-callback
           (lambda ()
             (cond
-              [(not (send frame is-shown?)) (send timer stop)]
+              [(or (not (send frame is-shown?))
+                   (not glyphs-visible?)
+                   (not (rf-phase-clock-running? phase-clock)))
+               (send timer stop)]
               [else
-               (define now (current-inexact-milliseconds))
-               (define elapsed (/ (- now last-tick) 1000.0))
-               (set! last-tick now)
-               (when playing?
-                 (set! phase
-                       (advance-polarization-phase phase elapsed speed))
-                 (define displayed (modulo (exact-round phase) 360))
-                 (send phase-slider set-value displayed)
-                 (send phase-label set-label
-                       (format "~a degrees" displayed))
-                 (when glyphs-visible?
-                   (set! animation
-                         (make-polarization-glyph-beads
-                          glyph-layout radius phase))
-                   (send canvas replace-animation! animation)))]))]))
+               (define phase (rf-phase-clock-tick! phase-clock))
+               (define displayed (modulo (exact-round phase) 360))
+               (send phase-slider set-value displayed)
+               (send phase-label set-label
+                     (format "~a degrees" displayed))
+               (set! animation
+                     (make-polarization-glyph-beads
+                      glyph-layout radius phase))
+               (send canvas replace-animation! animation)]))]))
 
   (send frame show #t)
+  (sync-animation-timer!)
   (make-visualization-handle
    (lambda (new-grid)
      (unless (nec2c-pattern-grid? new-grid)
@@ -1222,7 +1235,8 @@
            empty-pict3d))
      (define new-animation
        (if glyphs-visible?
-           (make-polarization-glyph-beads new-layout new-radius phase)
+           (make-polarization-glyph-beads
+            new-layout new-radius (rf-phase-clock-phase phase-clock))
            empty-pict3d))
      (set! current-grid new-grid)
      (set! surface new-surface)
@@ -1245,9 +1259,8 @@
    (lambda ()
      (parameterize ([current-eventspace eventspace])
        (queue-callback (lambda ()
-                         (set! last-tick (current-inexact-milliseconds))
                          (send frame show #t)
-                         (send timer start 33))
+                         (sync-animation-timer!))
                        #f)))
    (lambda ()
      (parameterize ([current-eventspace eventspace])
@@ -1256,3 +1269,7 @@
                          (send frame show #f))
                        #f)))
    (lambda () (send frame is-shown?))))
+
+;; Retained while feature-branch sketches migrate to the production entry
+;; point in nec2c-view.rkt.
+(define show-polarization-surface-poc show-polarization-pattern)

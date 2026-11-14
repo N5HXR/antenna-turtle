@@ -1762,6 +1762,17 @@ linear and logarithmic scales. Instantaneous vectors may reverse locally where
 reactive energy moves back and forth, while the average vectors show net power
 transport.
 
+The approved native polarization workbench is available directly from the DSL
+without generating a report:
+
+```racket
+(show-near-field fields #:view 'polarization)
+```
+
+This general entry point intentionally requires `#:view`. Polarization is its
+first native view; the report's E, H, power, vector, streamline, and volume
+displays can be promoted under the same interface in later work.
+
 For a faster experimental loop, the native OpenGL particle workbench reuses an
 already-computed near-field result without generating or navigating an HTML
 report:

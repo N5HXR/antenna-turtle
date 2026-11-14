@@ -2,10 +2,15 @@
 
 (require pict3d
          rackunit
+         racket/class
+         racket/gui/base
          racket/list
          racket/math
          "../antenna-turtle/private/nec2c.rkt"
          "../antenna-turtle/private/nec2c-opengl-view.rkt"
+         (only-in "../antenna-turtle/private/nec2c-view.rkt"
+                  [show-radiation-pattern-opengl
+                   show-integrated-radiation-pattern-opengl])
          "../antenna-turtle/private/polarization-poc.rkt"
          "../antenna-turtle/private/visualization-handle.rkt")
 
@@ -233,4 +238,39 @@
      spherical-grid #:width 640 #:height 480 #:mesh-step 45))
   (check-true (visualization-handle? handle))
   (check-true (visualization-open? handle))
+  (visualization-update! handle spherical-grid)
   (visualization-close! handle))
+
+(test-case "production radiation entry dispatches to polarization"
+  (define handle
+    (show-integrated-radiation-pattern-opengl
+     spherical-grid #:view 'polarization
+     #:width 640 #:height 700 #:mesh-step 45))
+  (check-true (visualization-handle? handle))
+  (check-true (visualization-open? handle))
+  (define viewer-frame
+    (for/first ([window (in-list (get-top-level-windows))]
+                #:when (and (send window is-shown?)
+                            (regexp-match? #rx"polarization workbench$"
+                                           (send window get-label))))
+      window))
+  (check-not-false viewer-frame)
+  (define-values (_display-width display-height) (get-display-size))
+  (check-true
+   (<= (send viewer-frame get-height)
+       (min 700 (max 240 (- display-height 80)))))
+  (visualization-update! handle spherical-grid)
+  (visualization-close! handle))
+
+(test-case "production radiation entry keeps gain as its default view"
+  (define handle
+    (show-integrated-radiation-pattern-opengl
+     spherical-grid #:width 640 #:height 480 #:mesh-step 45))
+  (check-true (visualization-handle? handle))
+  (check-true (visualization-open? handle))
+  (visualization-update! handle spherical-grid)
+  (define replacement (visualization-restage! handle))
+  (check-true (visualization-handle? replacement))
+  (check-true (visualization-open? replacement))
+  (visualization-close! handle)
+  (visualization-close! replacement))

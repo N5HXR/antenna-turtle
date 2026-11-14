@@ -13,13 +13,14 @@
          "near-field-particle.rkt"
          "near-field-polarization.rkt"
          "nec2c.rkt"
+         "rf-phase-clock.rkt"
          "visualization-handle.rkt")
 
-(provide show-near-field-polarization-point-poc
+(provide show-near-field-polarization
+         show-near-field-polarization-point-poc
          near-field-glyph-sample-indices)
 
 (define view-fov-degrees 34)
-(define phase-degrees-per-second 180.0)
 (define field-floor-db -30.0)
 (define magma-levels '(-30 -25 -19 -15 -11 -7 -3 -1 0))
 (define magma-colors
@@ -565,9 +566,6 @@
                           (map (lambda (component) (* scale component))
                                poynting))))))))
 
-(define (normalize-degrees degrees)
-  (- degrees (* 360.0 (floor (/ degrees 360.0)))))
-
 (define (format-real value [digits 3])
   (~r (exact->inexact value) #:precision digits))
 
@@ -694,13 +692,13 @@
          (refresh!)]
         [else (void)]))))
 
-(define (show-near-field-polarization-point-poc
+(define (show-near-field-polarization
          result
          #:section [section-index 0]
          #:antenna? [antenna? #t]
          #:width [width 1180]
          #:height [height 780])
-  (define who 'show-near-field-polarization-point-poc)
+  (define who 'show-near-field-polarization)
   (unless (nec2c-near-field-result? result)
     (raise-argument-error who "nec2c-near-field-result?" result))
   (unless (boolean? antenna?)
@@ -729,10 +727,7 @@
   (define (reference-scene)
     (freeze (combine field-map context-scene)))
   (define hit-plane (make-hit-plane section))
-  (define phase 0.0)
-  (define speed 1.0)
-  (define playing? #t)
-  (define last-tick (current-inexact-milliseconds))
+  (define phase-clock (make-rf-phase-clock))
   (define selected-u #f)
   (define selected-v #f)
   (define selected-center #f)
@@ -768,15 +763,23 @@
   (define mode-help #f)
   (define timer #f)
 
+  ;; Leave room for the window manager and desktop chrome on shorter screens.
+  ;; The scrollable control rail below lets the requested content fit without
+  ;; forcing the frame back beyond this display-aware bound.
+  (define-values (_display-width display-height) (get-display-size))
+  (define window-height
+    (min height (max 240 (- display-height 80))))
+
   (define frame
     (new frame% [label "Near-field polarization workbench"]
-         [width width] [height height]))
+         [width width] [height window-height]))
   (define eventspace (current-eventspace))
   (define root (new vertical-panel% [parent frame]))
   (define body (new horizontal-panel% [parent root]))
   (define viewport (new vertical-panel% [parent body]))
   (define rail
     (new vertical-panel% [parent body] [min-width 310]
+         [style '(auto-vscroll)]
          [stretchable-width #f] [alignment '(left top)]
          [vert-margin 12] [horiz-margin 12] [spacing 10]))
   (define footer
@@ -861,9 +864,11 @@
     (memq view-mode '(point ellipses)))
   (define (sync-animation-timer!)
     (when timer
-      (if (and playing? (animated-view?) (send frame is-shown?))
+      (if (and (rf-phase-clock-running? phase-clock)
+               (animated-view?)
+               (send frame is-shown?))
           (begin
-            (set! last-tick (current-inexact-milliseconds))
+            (rf-phase-clock-start! phase-clock)
             (send timer start 33))
           (send timer stop))))
   (define (update-mode-help!)
@@ -900,7 +905,8 @@
     (sync-animation-timer!))
   (define (current-glyph-beads)
     (if (eq? view-mode 'ellipses)
-        (make-near-field-glyph-beads glyph-layout scene-radius phase)
+        (make-near-field-glyph-beads
+         glyph-layout scene-radius (rf-phase-clock-phase phase-clock))
         empty-pict3d))
   (define (current-selection-trajectory)
     (if (and (eq? view-mode 'point) selected-center)
@@ -982,7 +988,8 @@
     (and selected-center
          (let ([state
                 (near-field-flow-sample
-                 field selected-u selected-v (degrees->radians phase)
+                 field selected-u selected-v
+                 (degrees->radians (rf-phase-clock-phase phase-clock))
                  'instantaneous)])
            (and state (near-field-flow-state-poynting state)))))
 
@@ -1002,7 +1009,8 @@
     (if (and (eq? view-mode 'point) selected-center)
         (let ([instantaneous-poynting (current-instantaneous-poynting)])
           (combine
-           (make-bead selected-center selected-ellipse scene-radius phase)
+           (make-bead selected-center selected-ellipse scene-radius
+                      (rf-phase-clock-phase phase-clock))
            (if instantaneous-poynting
                (make-poynting-arrow selected-center instantaneous-poynting
                                     scene-radius 'instantaneous)
@@ -1090,9 +1098,12 @@
              [min-value 0] [max-value 359] [init-value 0]
              [callback
               (lambda (control _event)
-                (set! phase (send control get-value))
+                (rf-phase-clock-set-phase!
+                 phase-clock (send control get-value))
                 (send phase-label set-label
-                      (format "~a degrees" (exact-round phase)))
+                      (format "~a degrees"
+                              (exact-round
+                               (rf-phase-clock-phase phase-clock))))
                 (send canvas set-dynamic-scenes!
                       (current-dynamic-scene) (current-glyph-beads))
                 (update-instantaneous-flow-label!))]))
@@ -1106,9 +1117,12 @@
         (new button% [parent playback-row] [label "PAUSE"]
              [callback
               (lambda (button _event)
-                (set! playing? (not playing?))
-                (set! last-tick (current-inexact-milliseconds))
-                (send button set-label (if playing? "PAUSE" "PLAY"))
+                (if (rf-phase-clock-running? phase-clock)
+                    (rf-phase-clock-stop! phase-clock)
+                    (rf-phase-clock-start! phase-clock))
+                (send button set-label
+                      (if (rf-phase-clock-running? phase-clock)
+                          "PAUSE" "PLAY"))
                 (sync-animation-timer!))]))
   (set! speed-label
         (new message% [parent playback-row] [label "speed 1.00x"]))
@@ -1117,15 +1131,18 @@
              [min-value 10] [max-value 400] [init-value 100]
              [callback
               (lambda (control _event)
-                (set! speed (/ (send control get-value) 100.0))
+                (rf-phase-clock-set-speed!
+                 phase-clock (/ (send control get-value) 100.0))
                 (send speed-label set-label
-                      (format "speed ~ax" (~r speed #:precision 2))))]))
+                      (format "speed ~ax"
+                              (~r (rf-phase-clock-speed phase-clock)
+                                  #:precision 2))))]))
   (set! mode-help
         (new message% [parent rail] [label ""]
              [auto-resize #t] [stretchable-width #t]))
   (update-mode-controls!)
 
-  ;; Start at the exact geometric center so the purpose of the PoC is visible
+  ;; Start at the exact geometric center so the workbench purpose is visible
   ;; immediately, while all later clicks use exact plane intersections.
   (select-hit! view-center)
 
@@ -1135,16 +1152,11 @@
               (lambda ()
                 (cond
                   [(or (not (send frame is-shown?))
-                       (not playing?)
+                       (not (rf-phase-clock-running? phase-clock))
                        (not (animated-view?)))
                    (send timer stop)]
                   [else
-                   (define now (current-inexact-milliseconds))
-                   (define elapsed (/ (- now last-tick) 1000.0))
-                   (set! last-tick now)
-                   (set! phase
-                         (normalize-degrees
-                          (+ phase (* phase-degrees-per-second elapsed speed))))
+                   (define phase (rf-phase-clock-tick! phase-clock))
                    (define displayed (modulo (exact-round phase) 360))
                    (send phase-slider set-value displayed)
                    (send phase-label set-label
@@ -1162,7 +1174,7 @@
         'visualization-update! "nec2c-near-field-result?" new-result))
      (raise-user-error
       'visualization-update!
-      "near-field selected-point PoC updates require reopening the viewer"))
+      "near-field polarization updates require reopening the viewer"))
    (lambda ()
      (parameterize ([current-eventspace eventspace])
        (queue-callback
@@ -1173,3 +1185,6 @@
      (parameterize ([current-eventspace eventspace])
        (queue-callback (lambda () (send timer stop) (send frame show #f)) #f)))
    (lambda () (send frame is-shown?))))
+
+;; Retained while feature-branch sketches migrate to show-near-field.
+(define show-near-field-polarization-point-poc show-near-field-polarization)
