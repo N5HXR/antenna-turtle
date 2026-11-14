@@ -1995,9 +1995,11 @@ simulation domain. A report can derive X-, Y-, or Z-normal planes at any
 position from the same data and interpolate continuously between retained
 voxel planes. `#:max-samples` is the spatial voxel budget for each requested
 quantity; electric and magnetic fields use the same retained grid. The
-exporter reduces the longest axis first, which normally preserves the more
-densely refined transverse mesh of a transmission line. This subsampling only
-affects retained report data, never the FDTD mesh or solver result.
+exporter incrementally reduces the longest retained axis first. This balances
+the retained dimensions for useful arbitrary slicing while still preserving
+more of the densely refined transverse mesh when one transmission-line axis is
+substantially longer. This subsampling only affects retained report data,
+never the FDTD mesh or solver result.
 
 Captured complex phasors are normalized to one watt of incident power at the
 selected excitation and frequency. The manifest records the reconstruction
@@ -2512,6 +2514,10 @@ power rather than directly in dB.
                      #:interpolate? [boolean #t])
 (front-to-side-ratio pattern #:component [component 'total])
 
+(polarization-at pattern #:azimuth degrees #:elevation degrees
+                 #:interpolate? [boolean #t]
+                 #:tolerance [nonnegative-real 1e-12]
+                 #:minimum-power [nonnegative-real 0.0])
 (axial-ratio-at pattern #:azimuth degrees #:elevation degrees
                 #:interpolate? [boolean #t])
 (polarization-tilt-at pattern #:azimuth degrees #:elevation degrees
@@ -2529,6 +2535,7 @@ power rather than directly in dB.
 (front-to-back-ratio pattern)             ; dB
 (front-to-side-ratio pattern)             ; dB
 
+(polarization-at pattern #:azimuth 45 #:elevation 10)
 (axial-ratio-at pattern #:azimuth 45 #:elevation 10)
 (polarization-tilt-at pattern #:azimuth 45 #:elevation 10)
 (polarization-sense-at pattern #:azimuth 45 #:elevation 10)

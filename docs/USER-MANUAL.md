@@ -1651,6 +1651,22 @@ camera, drag-to-orbit navigation, and wheel zoom. Its display mesh defaults to
 asymmetric main lobe does not waste zoom room on the opposite side of the RF
 origin.
 
+Pass `#:view 'polarization` to use the same measured radiation surface as a
+polarization workbench:
+
+```racket
+(show-radiation-pattern-opengl pattern #:view 'polarization)
+```
+
+The default color surface maps LHCP through linear to RHCP while retaining
+gain-derived brightness and ARRL gain-derived radius. The right panel can
+instead select axial ratio or axial tilt. Click the surface for exact complex
+field, axial-ratio, tilt, sense, and gain values; click the black background to
+clear the selection. Optional white ellipse glyphs display the local electric
+trajectory and a globally coherent phase bead. They are off by default. The
+polarization convention and detailed control reference are in
+`POLARIZATION.md`.
+
 Select the color ramp with `#:palette`. The choices are `'magma` (the default,
 also named `'sdr`) for a dark-purple through orange SDR-waterfall style,
 `'mmana` for the bright conventional antenna-plot palette,

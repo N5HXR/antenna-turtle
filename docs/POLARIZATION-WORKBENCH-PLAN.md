@@ -172,9 +172,19 @@ phase clock with current/charge/power animation where applicable.
 
 ### M13 — Portable HTML integration
 
-Reproduce the approved native UX in offline NEC2C/OpenEMS reports.  Native and
-HTML numerical results must agree, and report interaction must remain
-responsive without a server.
+Reproduce the approved native UX in the offline NEC2C report. Native and HTML
+numerical results must agree, and report interaction must remain responsive
+without a server. Audit OpenEMS after NEC2C acceptance and add only support
+that reuses its existing report payload and viewer architecture at low effort;
+OpenEMS parity is not an M13 release gate.
+
+The bounded OpenEMS audit confirmed that the browser-side mathematics can
+consume its complex Cartesian field captures, but exposed unresolved parity
+problems between NEC2C and OpenEMS wire-antenna models. Both near- and
+far-field OpenEMS polarization are therefore deferred until wire geometry,
+feed behavior, accepted power, and the radiated result agree on a reference
+case. This deferral does not affect the accepted NEC2C HTML work or the native
+polarization viewers.
 
 ### M14 — Documentation, performance, and merge
 
@@ -182,6 +192,9 @@ Document the APIs and all three reference models, run the full suite and manual
 acceptance checklist, record primary-workstation performance and optional Yoga
 11e observations, obtain final approval, and merge the feature branch.  The
 accepted milestone commits may be squashed for the final merge.
+
+Status: accepted. Documentation, automated acceptance, and final human
+approval are complete; the feature branch is ready to merge.
 
 ## Explicitly out of scope
 

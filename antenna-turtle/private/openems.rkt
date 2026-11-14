@@ -1848,10 +1848,13 @@
             (line "capture_min = ~a;" (octave-vector minimum))
             (line "capture_max = ~a;" (octave-vector maximum))
             (line "capture_counts = [sum(mesh.x >= capture_min(1) & mesh.x <= capture_max(1)), sum(mesh.y >= capture_min(2) & mesh.y <= capture_max(2)), sum(mesh.z >= capture_min(3) & mesh.z <= capture_max(3))];")
-            ;; Reduce the longest retained axis first.  Unlike one isotropic
-            ;; stride, this keeps the densely refined transverse axes of a
-            ;; transmission line intact whenever the longitudinal axis alone
-            ;; can satisfy the report budget.
+            ;; Reduce the longest retained axis first, one stride step at a
+            ;; time.  A proportional jump here is tempting, but it can spend
+            ;; nearly the whole voxel reduction on the first axis (for
+            ;; example, turning a roughly cubic capture into 4 x 158 x 212
+            ;; samples).  Incremental balancing keeps every varying axis
+            ;; useful for arbitrary report slices while still favoring a
+            ;; genuinely longer axis.
             (line "capture_stride = [1, 1, 1];")
             (line "while prod(ceil(capture_counts ./ capture_stride)) > ~a"
                   (exported-field-dump-max-samples dump))
@@ -1859,9 +1862,7 @@
             (line "  capture_candidates = capture_retained; capture_candidates(capture_counts <= 2) = 0;")
             (line "  [capture_longest, capture_axis] = max(capture_candidates);")
             (line "  if capture_longest <= 2, break; end")
-            (line "  capture_ratio = ceil(prod(capture_retained) / ~a);"
-                  (exported-field-dump-max-samples dump))
-            (line "  capture_stride(capture_axis) = min(capture_counts(capture_axis)-1, max(capture_stride(capture_axis)+1, capture_stride(capture_axis)*capture_ratio));")
+            (line "  capture_stride(capture_axis) = min(capture_counts(capture_axis)-1, capture_stride(capture_axis)+1);")
             (line "end")
             (line "capture_subsampling = sprintf('%d,%d,%d', capture_stride(1), capture_stride(2), capture_stride(3));")
             (line "CSX = AddDump(CSX, '~a', 'DumpType', ~a, 'Frequency', ~a, 'FileType', 1, 'DumpMode', ~a, 'SubSampling', capture_subsampling);"

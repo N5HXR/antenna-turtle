@@ -11,6 +11,17 @@ import {
 } from "./nec2c-inspector.js";
 import { averagePoynting, instantaneousComponent, instantaneousPoynting } from "./field-math.js";
 import {
+  arrlRadiusFactor,
+  polarizationSurfaceRgb,
+  sphericalFrame,
+} from "./far-field-polarization.js";
+import { analyzeCartesianPolarization, analyzePolarization } from "./polarization-math.js";
+import {
+  axialTiltColorscale,
+  nearFieldPolarization,
+  signedCircularityColorscale,
+} from "./near-field-polarization-map.js";
+import {
   componentGainRange,
   elevationPlaneDirection,
   gainOf,
@@ -809,16 +820,19 @@ export async function startNec2cReport(data) {
   const controlsPanel = document.createElement("section");
   controlsPanel.id = "nec-controls";
   controlsPanel.className = "panel";
-  controlsPanel.innerHTML = `<div class="row"><label for="pattern-component">COMPONENT</label>
+  controlsPanel.innerHTML = `<div class="row"><label for="pattern-view">PATTERN VIEW</label>
+    <select id="pattern-view"><option value="gain">gain</option>
+    <option value="polarization">polarization</option></select></div>
+    <div id="gain-component-row" class="row"><label for="pattern-component">COMPONENT</label>
     <select id="pattern-component"><option value="total">total</option>
     <option value="vertical">theta (Eθ, local basis)</option>
     <option value="horizontal">phi (Eφ, local basis)</option>
     <option value="x">X (fixed axis)</option><option value="y">Y (fixed axis)</option>
     <option value="z">Z (fixed axis)</option></select></div>
-    <div class="row"><label for="pattern-scale">RADIAL SCALE</label><select id="pattern-scale">
+    <div id="gain-scale-row" class="row"><label for="pattern-scale">RADIAL SCALE</label><select id="pattern-scale">
     <option value="arrl">ARRL modified log</option><option value="db">dB</option>
     <option value="linear">linear</option></select></div>
-    <div class="row"><label for="pattern-palette">COLOR</label><select id="pattern-palette">
+    <div id="gain-palette-row" class="row"><label for="pattern-palette">COLOR</label><select id="pattern-palette">
     <option value="mmana">MMANA</option><option value="magma" selected>magma</option><option value="sdr">SDR</option>
     <option value="inferno">inferno</option><option value="viridis">viridis</option>
     <option value="grayscale">grayscale</option><option value="electric">electric</option></select></div>
@@ -851,7 +865,20 @@ export async function startNec2cReport(data) {
     <div id="current-floor-row" class="row" hidden><label for="current-floor">FLOOR
     <span id="current-floor-value">−30 dB</span></label>
     <input id="current-floor" type="range" min="-80" max="-10" step="1" value="-30"></div>
-    <div class="row"><label for="pattern-opacity">PATTERN OPACITY
+    <div id="polarization-controls" hidden>
+    <div class="row"><label for="polarization-color">POLARIZATION COLOR</label>
+    <select id="polarization-color"><option value="signed-circularity">LHCP / linear / RHCP</option>
+    <option value="axial-ratio">axial ratio</option></select></div>
+    <div class="row"><label><input id="polarization-glyphs" type="checkbox"> ELLIPSE GLYPHS</label>
+    <label for="polarization-glyph-step">STEP <span id="polarization-glyph-step-value">4 samples</span></label>
+    <input id="polarization-glyph-step" type="range" min="1" max="12" step="1" value="4"></div>
+    <div class="row"><button id="polarization-play" type="button">PAUSE</button>
+    <label for="polarization-phase">RF PHASE <span id="polarization-phase-value">0°</span></label>
+    <input id="polarization-phase" type="range" min="0" max="359" step="1" value="0">
+    <label for="polarization-speed">SPEED <span id="polarization-speed-value">1.00×</span></label>
+    <input id="polarization-speed" type="range" min="0.25" max="2" step="0.25" value="1"></div>
+    </div>
+    <div id="pattern-opacity-row" class="row"><label for="pattern-opacity">PATTERN OPACITY
     <span id="pattern-opacity-value" class="opacity-value">100%</span></label>
     <input id="pattern-opacity" type="range" min="0.1" max="1" step="0.05" value="1"></div>
     <div class="row"><label><input id="model-visible" type="checkbox" checked> MODEL</label>
@@ -860,10 +887,10 @@ export async function startNec2cReport(data) {
     <label><input id="axes-visible" type="checkbox" checked> AXES</label>
     <label><input id="inspector-enabled" type="checkbox" checked> MARKERS / INSPECTOR</label>
     <button id="reset-view" type="button">RESET VIEW</button></div>
-    <div class="row"><label><input id="color-bands" type="checkbox"> 3 dB COLOR BANDS</label></div>
+    <div id="color-bands-row" class="row"><label><input id="color-bands" type="checkbox"> 3 dB COLOR BANDS</label></div>
     <div id="pattern-legend"><div class="pattern-legend-bar"></div>
-    <div class="pattern-legend-scale"><span>REL</span><div class="pattern-legend-ticks" data-scale="relative"></div></div>
-    <div class="pattern-legend-scale"><span>dBi</span><div class="pattern-legend-ticks" data-scale="absolute"></div></div></div>
+    <div id="pattern-relative-scale" class="pattern-legend-scale"><span>REL</span><div class="pattern-legend-ticks" data-scale="relative"></div></div>
+    <div id="pattern-absolute-scale" class="pattern-legend-scale"><span>dBi</span><div class="pattern-legend-ticks" data-scale="absolute"></div></div></div>
     <div id="pattern-detail"></div><div style="font-size:10px;color:#9ceeff;margin-top:4px">
     XYZ: <span style="color:#ff5555">X boom</span> · <span style="color:#55ff55">Y elements</span> ·
     <span style="color:#6688ff">Z vertical</span></div><div id="power-budget"></div>`;
@@ -884,11 +911,18 @@ export async function startNec2cReport(data) {
   currentProfile.querySelector("#current-profile-close").addEventListener("click", () => {
     currentProfile.hidden = true;
   });
+  const patternViewSelect = controlsPanel.querySelector("#pattern-view");
   const componentSelect = controlsPanel.querySelector("#pattern-component");
   const scaleSelect = controlsPanel.querySelector("#pattern-scale");
   const paletteSelect = controlsPanel.querySelector("#pattern-palette");
   const opacitySlider = controlsPanel.querySelector("#pattern-opacity");
   const colorBands = controlsPanel.querySelector("#color-bands");
+  const polarizationControls = controlsPanel.querySelector("#polarization-controls");
+  const polarizationColorSelect = controlsPanel.querySelector("#polarization-color");
+  const polarizationGlyphs = controlsPanel.querySelector("#polarization-glyphs");
+  const polarizationGlyphStep = controlsPanel.querySelector("#polarization-glyph-step");
+  const polarizationPhaseSlider = controlsPanel.querySelector("#polarization-phase");
+  const polarizationSpeedSlider = controlsPanel.querySelector("#polarization-speed");
   const segmentControls = controlsPanel.querySelector("#segment-controls");
   const segmentDisplay = controlsPanel.querySelector("#segment-display");
   const surfaceSmoothing = controlsPanel.querySelector("#surface-smoothing");
@@ -918,6 +952,11 @@ export async function startNec2cReport(data) {
       `${Number(powerBudget.efficiency_percent).toFixed(2)}%`;
   }
   let patternMaterial = null;
+  let patternMesh = null;
+  let polarizationSelectionMarker = null;
+  let polarizationGlyphBeads = [];
+  let polarizationPhaseDegrees = 0;
+  let polarizationPlaying = true;
   let segmentPhaseDegrees = 0;
   let segmentPlaying = true;
 
@@ -1021,6 +1060,20 @@ export async function startNec2cReport(data) {
     return rows;
   }
 
+  function patternDirection(hit) {
+    const local = patternGroup.worldToLocal(hit.point.clone());
+    const radius = local.length();
+    if (!(radius > 0)) return null;
+    const theta = Math.acos(Math.max(-1, Math.min(1, local.z / radius)));
+    const phi = (Math.atan2(local.y, local.x) * 180 / Math.PI + 360) % 360;
+    return { local, azimuth: phi, elevation: 90 - theta * 180 / Math.PI };
+  }
+
+  function axialRatioText(value) {
+    if (value === null || value === undefined) return "undefined";
+    return Number.isFinite(value) ? `${value.toFixed(3)}:1` : "linear (∞:1)";
+  }
+
   function renderInspector(hit) {
     if (!inspectorEnabled.checked || !hit) { inspector.hidden = true; return; }
     inspectorHit = hit;
@@ -1029,7 +1082,25 @@ export async function startNec2cReport(data) {
     let rows = [];
     let note = "";
     let profileCoax = null;
-    if (userData.segmentKey) {
+    if (userData.inspectorType === "pattern") {
+      const direction = patternDirection(hit);
+      if (!direction) { inspector.hidden = true; return; }
+      const state = interpolatedPolarization(data.pattern, table,
+        direction.elevation, direction.azimuth);
+      const gain = interpolatedGain(data.pattern, table,
+        direction.elevation, direction.azimuth, "total");
+      title = "POLARIZATION · EXACT DIRECTION";
+      rows = [
+        ["direction", `az ${direction.azimuth.toFixed(2)}° · el ${direction.elevation.toFixed(2)}°`],
+        ["total gain", `${gain.toFixed(3)} dBi`],
+        ["relative gain", `${(gain - referencePeak).toFixed(3)} dB`],
+        ["polarization", String(state.sense || "undefined").toUpperCase()],
+        ["axial ratio", axialRatioText(state.axialRatio)],
+        ["tilt angle", state.tiltDegrees === null ? "undefined for circular" : `${state.tiltDegrees.toFixed(2)}°`],
+        ["signed circularity", state.signedCircularity === null ? "undefined" : state.signedCircularity.toFixed(5)],
+      ];
+      note = "Sense is viewed from behind the antenna, looking outward along propagation.";
+    } else if (userData.segmentKey) {
       const wire = userData.wire || {};
       const sample = segmentSamples.get(userData.segmentKey);
       title = `${wire.name || `wire ${wire.id}`} · segment ${userData.segmentIndex}/${userData.segmentCount}`;
@@ -1293,6 +1364,20 @@ export async function startNec2cReport(data) {
   }
 
   function updateLegend() {
+    if (patternViewSelect.value === "polarization") {
+      const axial = polarizationColorSelect.value === "axial-ratio";
+      controlsPanel.querySelector(".pattern-legend-bar").style.background = axial
+        ? "linear-gradient(90deg,rgb(48,24,128),rgb(255,240,48))"
+        : "linear-gradient(90deg,rgb(255,32,128),rgb(128,255,32),rgb(32,128,255))";
+      controlsPanel.querySelector('[data-scale="relative"]').innerHTML = axial
+        ? "<span>linear</span><span>2:1</span><span>1:1</span>"
+        : "<span>LHCP</span><span>linear</span><span>RHCP</span>";
+      controlsPanel.querySelector("#pattern-relative-scale>span").textContent = axial ? "AR" : "POL";
+      controlsPanel.querySelector("#pattern-absolute-scale").hidden = true;
+      return;
+    }
+    controlsPanel.querySelector("#pattern-relative-scale>span").textContent = "REL";
+    controlsPanel.querySelector("#pattern-absolute-scale").hidden = false;
     const selected = palettes[paletteSelect.value] || palettes.magma;
     const gradient = colorBands.checked
       ? Array.from({ length: 10 }, (_, index) => {
@@ -1312,14 +1397,89 @@ export async function startNec2cReport(data) {
       `<span>${(referencePeak + db).toFixed(1)}</span>`).join("");
   }
 
-  function rebuildPattern() {
-    for (const child of patternGroup.children) {
+  function disposePattern() {
+    if (inspectorHit?.object?.userData?.inspectorType === "pattern") {
+      inspectorHit = null;
+      inspectorPinned = false;
+      inspector.hidden = true;
+    }
+    patternGroup.traverse(child => {
       child.geometry?.dispose();
       if (Array.isArray(child.material)) child.material.forEach(material => material.dispose());
       else child.material?.dispose();
-    }
+    });
     patternGroup.clear();
-    const component = componentSelect.value;
+    patternMesh = null;
+    polarizationSelectionMarker = null;
+    polarizationGlyphBeads = [];
+  }
+
+  function patternPoint(theta, phi, radius) {
+    return new THREE.Vector3(radius * Math.sin(theta) * Math.cos(phi),
+      radius * Math.sin(theta) * Math.sin(phi), radius * Math.cos(theta));
+  }
+
+  function addPolarizationGlyph(sample, theta, phi, radius, glyphSize) {
+    const state = analyzePolarization(sample.e_theta, sample.e_phi);
+    if (!state.axialRatio || radius < glyphSize * 2.2) return;
+    const frame = sphericalFrame(theta, phi, state.tiltDegrees || 0);
+    const direction = new THREE.Vector3(...frame.direction);
+    const center = patternPoint(theta, phi, radius).addScaledVector(direction, glyphSize * 1.35);
+    const major = new THREE.Vector3(...frame.majorAxis);
+    const minor = new THREE.Vector3(...frame.minorAxis);
+    const minorMajor = Number.isFinite(state.axialRatio) ? 1 / state.axialRatio : 0;
+    const points = Array.from({ length: 49 }, (_, index) => {
+      const angle = 2 * Math.PI * index / 48;
+      return center.clone().addScaledVector(major, glyphSize * Math.cos(angle))
+        .addScaledVector(minor, glyphSize * minorMajor * Math.sin(angle));
+    });
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points),
+      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.92,
+        depthTest: true, depthWrite: false, toneMapped: false }));
+    line.renderOrder = 3;
+    patternGroup.add(line);
+    const bead = new THREE.Mesh(new THREE.SphereGeometry(glyphSize * 0.12, 8, 6),
+      new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }));
+    bead.renderOrder = 4;
+    patternGroup.add(bead);
+    const ellipse = analyzeCartesianPolarization({
+      real: [sample.e_theta.real, sample.e_phi.real, 0],
+      imaginary: [sample.e_theta.imaginary, sample.e_phi.imaginary, 0],
+    });
+    polarizationGlyphBeads.push({ bead, center, thetaAxis: new THREE.Vector3(...frame.thetaAxis),
+      phiAxis: new THREE.Vector3(...frame.phiAxis), sample, majorAmplitude: ellipse?.majorAmplitude || 1,
+      glyphSize });
+  }
+
+  function updatePolarizationBeads() {
+    const phase = polarizationPhaseDegrees * Math.PI / 180;
+    const cosine = Math.cos(phase), sine = Math.sin(phase);
+    for (const glyph of polarizationGlyphBeads) {
+      const theta = glyph.sample.e_theta.real * cosine - glyph.sample.e_theta.imaginary * sine;
+      const phi = glyph.sample.e_phi.real * cosine - glyph.sample.e_phi.imaginary * sine;
+      glyph.bead.position.copy(glyph.center)
+        .addScaledVector(glyph.thetaAxis, glyph.glyphSize * theta / glyph.majorAmplitude)
+        .addScaledVector(glyph.phiAxis, glyph.glyphSize * phi / glyph.majorAmplitude);
+    }
+  }
+
+  function updatePatternControlMode() {
+    const polarization = patternViewSelect.value === "polarization";
+    for (const id of ["#gain-component-row", "#gain-scale-row", "#gain-palette-row",
+      "#pattern-opacity-row", "#color-bands-row"])
+      controlsPanel.querySelector(id).hidden = polarization;
+    polarizationControls.hidden = !polarization;
+    const glyphControlsEnabled = polarization && polarizationGlyphs.checked;
+    polarizationGlyphStep.disabled = !glyphControlsEnabled;
+    polarizationPhaseSlider.disabled = !glyphControlsEnabled;
+    polarizationSpeedSlider.disabled = !glyphControlsEnabled;
+    controlsPanel.querySelector("#polarization-play").disabled = !glyphControlsEnabled;
+  }
+
+  function rebuildPattern() {
+    disposePattern();
+    const polarization = patternViewSelect.value === "polarization";
+    const component = polarization ? "total" : componentSelect.value;
     const gains = data.pattern.samples.map(sample => gainOf(sample, component)).filter(Number.isFinite);
     const componentPeak = Math.max(...gains);
     const positions = [], colors = [], relativeGains = [], indices = [];
@@ -1329,8 +1489,8 @@ export async function startNec2cReport(data) {
         const phi = data.pattern.phi_values[pi] * Math.PI / 180;
         const gain = gainOf(sampleAt(data.pattern, table, ti, pi), component) ?? -100 + referencePeak;
         const relative = Math.min(0, gain - referencePeak);
-        const radiusFactor = scaleSelect.value === "arrl"
-          ? 0.89 ** ((-Math.max(-100, relative)) / 2)
+        const radiusFactor = polarization || scaleSelect.value === "arrl"
+          ? arrlRadiusFactor(relative)
           : scaleSelect.value === "linear"
             ? 10 ** (relative / 10)
             : Math.max(0, 1 + relative / 40);
@@ -1338,7 +1498,17 @@ export async function startNec2cReport(data) {
         positions.push(radius * Math.sin(theta) * Math.cos(phi),
           radius * Math.sin(theta) * Math.sin(phi), radius * Math.cos(theta));
         relativeGains.push(relative);
-        const color = colorAt(paletteSelect.value, relative); colors.push(color.r, color.g, color.b);
+        if (polarization) {
+          const sample = sampleAt(data.pattern, table, ti, pi);
+          const state = analyzePolarization(sample.e_theta, sample.e_phi);
+          const rgb = polarizationSurfaceRgb(polarizationColorSelect.value, state,
+            gain, totalRange.minimum, totalRange.peak);
+          const color = stopColor(rgb);
+          colors.push(color.r, color.g, color.b);
+        } else {
+          const color = colorAt(paletteSelect.value, relative);
+          colors.push(color.r, color.g, color.b);
+        }
       }
     }
     const pc = data.pattern.phi_values.length;
@@ -1351,7 +1521,7 @@ export async function startNec2cReport(data) {
       }
     }
     const geometry = new THREE.BufferGeometry();
-    if (colorBands.checked) {
+    if (!polarization && colorBands.checked) {
       const bandPositions = [], bandColors = [];
       for (let index = 0; index < indices.length; index += 3) {
         const vertices = [indices[index], indices[index + 1], indices[index + 2]];
@@ -1369,19 +1539,49 @@ export async function startNec2cReport(data) {
       geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
       geometry.setIndex(indices);
     }
-    const opacity = Number(opacitySlider.value);
+    const opacity = polarization ? 1 : Number(opacitySlider.value);
     patternMaterial = new THREE.MeshBasicMaterial({
       vertexColors: true, transparent: opacity < 1, opacity,
       side: THREE.DoubleSide, depthWrite: opacity >= 0.999,
     });
-    patternGroup.add(new THREE.Mesh(geometry, patternMaterial));
+    patternMesh = new THREE.Mesh(geometry, patternMaterial);
+    patternMesh.userData.inspectorType = "pattern";
+    patternGroup.add(patternMesh);
+    if (polarization && polarizationGlyphs.checked) {
+      const baseStride = Number(polarizationGlyphStep.value);
+      const glyphSize = patternRadius * 0.035;
+      for (let ti = 0; ti < data.pattern.theta_values.length; ++ti) {
+        const theta = data.pattern.theta_values[ti] * Math.PI / 180;
+        for (let pi = 0; pi < data.pattern.phi_values.length; ++pi) {
+          const phi = data.pattern.phi_values[pi] * Math.PI / 180;
+          if ((ti === 0 || ti === data.pattern.theta_values.length - 1) && pi !== 0) continue;
+          const sample = sampleAt(data.pattern, table, ti, pi);
+          const relative = Math.min(0, gainOf(sample, "total") - referencePeak);
+          const radiusFactor = arrlRadiusFactor(relative);
+          const localStride = Math.max(1, Math.round(baseStride / Math.max(0.3, radiusFactor)));
+          if (ti % localStride || pi % localStride) continue;
+          addPolarizationGlyph(sample, theta, phi, patternRadius * radiusFactor, glyphSize);
+        }
+      }
+      updatePolarizationBeads();
+    }
     controlsPanel.querySelector("#pattern-detail").textContent =
-      `${data.pattern.frequency_mhz.toPrecision(7)} MHz · ${patternComponentLabel(component)} peak ${componentPeak.toFixed(2)} dBi · ` +
-      `total reference ${referencePeak.toFixed(2)} dBi`;
+      polarization
+        ? `${data.pattern.frequency_mhz.toPrecision(7)} MHz · polarization surface · ARRL radius from total gain · ` +
+          `brightness ${totalRange.minimum.toFixed(1)} to ${totalRange.peak.toFixed(1)} dBi`
+        : `${data.pattern.frequency_mhz.toPrecision(7)} MHz · ${patternComponentLabel(component)} peak ${componentPeak.toFixed(2)} dBi · ` +
+          `total reference ${referencePeak.toFixed(2)} dBi`;
+    updatePatternControlMode();
     updateLegend();
   }
-  [componentSelect, scaleSelect, paletteSelect, colorBands]
+  [patternViewSelect, componentSelect, scaleSelect, paletteSelect, colorBands,
+    polarizationColorSelect, polarizationGlyphs]
     .forEach(element => element.addEventListener("change", rebuildPattern));
+  polarizationGlyphStep.addEventListener("input", () => {
+    controlsPanel.querySelector("#polarization-glyph-step-value").textContent =
+      Number(polarizationGlyphStep.value) === 1 ? "all" : `${polarizationGlyphStep.value} samples`;
+    rebuildPattern();
+  });
   controlsPanel.querySelector("#model-visible").addEventListener("change", event => {
     geometryGroup.visible = event.target.checked;
   });
@@ -1403,6 +1603,22 @@ export async function startNec2cReport(data) {
       patternMaterial.depthWrite = opacity >= 0.999;
       patternMaterial.needsUpdate = true;
     }
+  });
+  polarizationPhaseSlider.addEventListener("input", () => {
+    polarizationPhaseDegrees = Number(polarizationPhaseSlider.value);
+    polarizationPlaying = false;
+    controlsPanel.querySelector("#polarization-play").textContent = "PLAY";
+    controlsPanel.querySelector("#polarization-phase-value").textContent =
+      `${Math.round(polarizationPhaseDegrees)}°`;
+    updatePolarizationBeads();
+  });
+  polarizationSpeedSlider.addEventListener("input", () => {
+    controlsPanel.querySelector("#polarization-speed-value").textContent =
+      `${Number(polarizationSpeedSlider.value).toFixed(2)}×`;
+  });
+  controlsPanel.querySelector("#polarization-play").addEventListener("click", event => {
+    polarizationPlaying = !polarizationPlaying;
+    event.currentTarget.textContent = polarizationPlaying ? "PAUSE" : "PLAY";
   });
   segmentDisplay.addEventListener("change", updateSegmentDisplay);
   actualWireDiameter.addEventListener("change", () => {
@@ -1444,12 +1660,31 @@ export async function startNec2cReport(data) {
     pointer.x = 2 * (event.clientX - bounds.left) / bounds.width - 1;
     pointer.y = 1 - 2 * (event.clientY - bounds.top) / bounds.height;
     raycaster.setFromCamera(pointer, camera);
+    if (patternViewSelect.value === "polarization" && patternGroup.visible && patternMesh)
+      return raycaster.intersectObject(patternMesh, false)[0] || null;
     return raycaster.intersectObjects([...geometryMarkers, ...geometryHitSegments], false)[0] || null;
   }
   function selectInspectorHit(hit, pinned) {
+    if (polarizationSelectionMarker) {
+      patternGroup.remove(polarizationSelectionMarker);
+      polarizationSelectionMarker.geometry.dispose();
+      polarizationSelectionMarker.material.dispose();
+      polarizationSelectionMarker = null;
+    }
     inspectorHit = hit;
     inspectorPinned = Boolean(hit) && pinned;
     if (!hit) { inspector.hidden = true; return; }
+    if (pinned && hit.object.userData?.inspectorType === "pattern") {
+      const direction = patternDirection(hit);
+      if (direction) {
+        polarizationSelectionMarker = new THREE.Mesh(
+          new THREE.SphereGeometry(patternRadius * 0.015, 14, 10),
+          new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false, toneMapped: false }));
+        polarizationSelectionMarker.position.copy(direction.local);
+        polarizationSelectionMarker.renderOrder = 10;
+        patternGroup.add(polarizationSelectionMarker);
+      }
+    }
     if (["wire", "coax"].includes(currentReferenceSelect.value) &&
         segmentDisplay.value.startsWith("current-")) updateSegmentDisplay();
     else renderInspector(hit);
@@ -1596,7 +1831,7 @@ export async function startNec2cReport(data) {
     <label for="near-field-plane">PLANE</label><select id="near-field-plane"></select>
     <label for="near-field-quantity">FIELD</label><select id="near-field-quantity">
       <option value="electric">E</option><option value="magnetic">H</option>
-      <option value="power">POWER</option></select>
+      <option value="power">POWER</option><option value="polarization">POLARIZATION</option></select>
     <label for="near-field-mode">VIEW</label><select id="near-field-mode"></select>
     <span id="near-field-component-control" hidden><label for="near-field-component">COMPONENT</label>
     <select id="near-field-component"><option value="x">X</option><option value="y">Y</option>
@@ -1644,24 +1879,33 @@ export async function startNec2cReport(data) {
     ["power-instantaneous-magnitude", "instantaneous power intensity"],
     ["power-instantaneous-vectors", "instantaneous power vectors"],
   ];
+  const polarizationFieldModes = [
+    ["polarization-circularity", "LHCP / linear / RHCP"],
+    ["polarization-tilt", "axial tilt"],
+  ];
   let previousFieldQuantity = "electric";
   let electromagneticFieldMode = "envelope";
   let powerFieldMode = "power-average-magnitude";
+  let polarizationFieldMode = "polarization-circularity";
   const fieldReferenceCache = new Map();
 
   function setFieldModeOptions() {
     const power = fieldQuantitySelect.value === "power";
+    const polarization = fieldQuantitySelect.value === "polarization";
     if (fieldModeSelect.value) {
       if (previousFieldQuantity === "power") powerFieldMode = fieldModeSelect.value;
+      else if (previousFieldQuantity === "polarization") polarizationFieldMode = fieldModeSelect.value;
       else electromagneticFieldMode = fieldModeSelect.value;
     }
-    const modes = power ? powerFieldModes : electromagneticFieldModes;
+    const modes = power ? powerFieldModes
+      : polarization ? polarizationFieldModes : electromagneticFieldModes;
     fieldModeSelect.replaceChildren(...modes.map(([value, label]) => {
       const option = document.createElement("option");
       option.value = value; option.textContent = label;
       return option;
     }));
-    fieldModeSelect.value = power ? powerFieldMode : electromagneticFieldMode;
+    fieldModeSelect.value = power ? powerFieldMode
+      : polarization ? polarizationFieldMode : electromagneticFieldMode;
     previousFieldQuantity = fieldQuantitySelect.value;
   }
 
@@ -1669,7 +1913,8 @@ export async function startNec2cReport(data) {
                                   mode = fieldModeSelect.value) {
     return quantity === "power"
       ? mode.startsWith("power-instantaneous-")
-      : mode === "instantaneous" || mode === "instantaneous-signed";
+      : quantity !== "polarization" &&
+        (mode === "instantaneous" || mode === "instantaneous-signed");
   }
 
   function vectorFieldMode(quantity = fieldQuantitySelect.value,
@@ -1704,14 +1949,18 @@ export async function startNec2cReport(data) {
     for (const option of fieldQuantitySelect.options) {
       option.disabled = option.value === "power"
         ? !(fields.has("electric") && fields.has("magnetic"))
-        : !fields.has(option.value);
+        : option.value === "polarization"
+          ? !fields.has("electric") : !fields.has(option.value);
     }
     if (fieldQuantitySelect.selectedOptions[0]?.disabled) {
       fieldQuantitySelect.value = fields.has("electric") ? "electric" : "magnetic";
     }
     const phaseRelevant = instantaneousFieldMode();
+    const polarization = fieldQuantitySelect.value === "polarization";
     fieldPhaseSlider.disabled = !phaseRelevant;
     fieldWorkspace.querySelector("#near-field-play").disabled = !phaseRelevant;
+    fieldScaleSelect.disabled = polarization;
+    fieldFloorSlider.disabled = polarization;
     fieldComponentControl.hidden = !signedFieldMode();
   }
 
@@ -1781,6 +2030,26 @@ export async function startNec2cReport(data) {
     const selected = signedFieldMode(quantity, mode)
       ? `${quantity.toUpperCase()}${fieldComponentSelect.value.toUpperCase()}(t) = ` : "";
     return `${selected}${value.toPrecision(5)} ${units}<br>${relativeDb.toFixed(2)} dB relative<br>${detail}`;
+  }
+
+  function nearFieldPolarizationHover(state, section) {
+    if (!state) return "Polarization unavailable";
+    const component = (label, value) => {
+      const magnitude = Math.hypot(value.real, value.imaginary);
+      const phase = Math.atan2(value.imaginary, value.real) * 180 / Math.PI;
+      return `${label} ${magnitude.toPrecision(4)} ∠ ${phase.toFixed(1)}°`;
+    };
+    const axialRatio = Number.isFinite(state.axialRatio)
+      ? `${state.axialRatio.toPrecision(4)}:1` : "∞:1";
+    const tilt = state.tiltDegrees === null ? "undefined (circular)"
+      : `${state.tiltDegrees.toFixed(1)}°`;
+    return `projected ${String(section.u_axis).toUpperCase()}–` +
+      `${String(section.v_axis).toUpperCase()} polarization<br>` +
+      `${state.sense.toUpperCase()} · circularity ${state.signedCircularity.toFixed(4)}<br>` +
+      `axial ratio ${axialRatio} · tilt ${tilt}<br>` +
+      `${component(`E${String(section.u_axis).toUpperCase()}`, state.eU)}<br>` +
+      `${component(`E${String(section.v_axis).toUpperCase()}`, state.eV)}<br>` +
+      `${component(`E${String(section.normal_axis).toUpperCase()} (normal)`, state.eNormal)}`;
   }
 
   function signedDisplayValue(value, maximum, floor) {
@@ -1860,10 +2129,11 @@ export async function startNec2cReport(data) {
     const section = nearFieldSections[Number(fieldPlaneSelect.value) || 0];
     const quantity = fieldQuantitySelect.value;
     const mode = fieldModeSelect.value;
+    const polarization = quantity === "polarization";
     const logarithmic = fieldScaleSelect.value === "log";
     const floor = Number(fieldFloorSlider.value);
     const signed = signedFieldMode(quantity, mode);
-    const maximum = fieldReferenceMaximum(quantity, mode);
+    const maximum = polarization ? 1 : fieldReferenceMaximum(quantity, mode);
     const dbFactor = quantity === "power" ? 10 : 20;
     const width = section.u_values.length;
     const exclusionMask = nearFieldMasks[Number(fieldPlaneSelect.value) || 0] || [];
@@ -1876,6 +2146,13 @@ export async function startNec2cReport(data) {
         if (excluded) {
           row.push(null);
           hoverRow.push("PEC/source exclusion zone");
+          continue;
+        }
+        if (polarization) {
+          const state = nearFieldPolarization(sample, section);
+          row.push(state ? (mode === "polarization-tilt"
+            ? state.tiltDegrees : state.signedCircularity) : null);
+          hoverRow.push(nearFieldPolarizationHover(state, section));
           continue;
         }
         const value = fieldValue(sample, quantity, mode, fieldPhaseDegrees);
@@ -1895,26 +2172,44 @@ export async function startNec2cReport(data) {
     const signedTicks = logarithmic
       ? { tickvals: [-1, 0, 1], ticktext: ["− polarity", "0", "+ polarity"] }
       : {};
+    const polarizationTilt = mode === "polarization-tilt";
     const traces = [{
       type: "heatmap", x: section.u_values, y: section.v_values, z: rows,
       customdata: hover, hovertemplate: `%{customdata}<extra></extra>`,
-      colorscale: signed ? signedColorscale(quantity) : colorscale,
-      zmin: signed ? (logarithmic ? -1 : -maximum) : (logarithmic ? floor : 0),
-      zmax: signed ? (logarithmic ? 1 : maximum) : (logarithmic ? 0 : maximum),
-      colorbar: { title: signed ? `${quantity.toUpperCase()}${component}(t) ${logarithmic ? "signed level" : units}`
-        : (logarithmic ? "relative dB" : units), tickfont: { color: "#9ceeff" }, ...signedTicks },
-      zsmooth: "best", connectgaps: false,
+      colorscale: polarization
+        ? (polarizationTilt ? axialTiltColorscale : signedCircularityColorscale)
+        : signed ? signedColorscale(quantity) : colorscale,
+      zmin: polarization ? (polarizationTilt ? -90 : -1)
+        : signed ? (logarithmic ? -1 : -maximum) : (logarithmic ? floor : 0),
+      zmax: polarization ? (polarizationTilt ? 90 : 1)
+        : signed ? (logarithmic ? 1 : maximum) : (logarithmic ? 0 : maximum),
+      colorbar: { title: polarization ? (polarizationTilt ? "axial tilt" : "signed circularity")
+        : signed ? `${quantity.toUpperCase()}${component}(t) ${logarithmic ? "signed level" : units}`
+          : (logarithmic ? "relative dB" : units),
+        tickfont: { color: "#9ceeff" },
+        ...(polarization ? (polarizationTilt
+          ? { tickvals: [-90, -45, 0, 45, 90], ticktext: ["−90°", "−45°", "0°", "+45°", "+90°"] }
+          : { tickvals: [-1, 0, 1], ticktext: ["LHCP", "linear", "RHCP"] })
+          : signedTicks) },
+      // Axial tilt is an orientation modulo 180 degrees. Plotly's scalar
+      // smoothing would interpolate between equivalent +90 and -90 values
+      // through zero, painting a false full-spectrum seam. The sampled cells
+      // already share the same cyclic endpoint color, so leave only this mode
+      // unsmoothed rather than corrupting its topology.
+      zsmooth: polarizationTilt ? false : "best", connectgaps: false,
     }];
     if (vectorFieldMode(quantity, mode))
       traces.push(powerVectorTrace(
         section, exclusionMask, mode, fieldPhaseDegrees, maximum, floor));
     const powerTitle = instantaneousFieldMode(quantity, mode)
       ? "Instantaneous power flow" : "Average power flow";
-    fieldRailTitle.querySelector("strong").textContent =
-      quantity === "power" ? powerTitle : `${quantity.toUpperCase()} field`;
+    fieldRailTitle.querySelector("strong").textContent = polarization
+      ? (polarizationTilt ? "Projected E axial tilt" : "Projected E signed circularity")
+      : quantity === "power" ? powerTitle : `${quantity.toUpperCase()} field`;
     fieldRailTitle.querySelector("span").textContent =
       `${String(section.normal_axis).toUpperCase()}-normal at ` +
-      `${Number(section.position).toPrecision(5)} m`;
+      `${Number(section.position).toPrecision(5)} m` + (polarization
+        ? ` · viewed along +${String(section.normal_axis).toUpperCase()}` : "");
     return Plotly.react(fieldWorkspace.querySelector("#near-field-plot"), traces, {
       paper_bgcolor: "rgba(3,6,17,0)", plot_bgcolor: "#030611",
       font: { family: '"DejaVu Sans Mono", monospace', color: "#d8fbff" },
@@ -1980,6 +2275,7 @@ export async function startNec2cReport(data) {
     if (view === "pattern2d") drawPolar().then(() => Plotly.Plots.resize(polarWorkspace.querySelector("#pattern-polar")));
     if (view === "nearfield") drawNearField().then(() => Plotly.Plots.resize(fieldWorkspace.querySelector("#near-field-plot")));
     history.replaceState(null, "", `#${view}`);
+    scheduleAnimationFrame();
   }
   tabs.addEventListener("click", event => {
     const button = event.target.closest("button[data-view]");
@@ -1988,16 +2284,22 @@ export async function startNec2cReport(data) {
 
   const requestedHash = location.hash.slice(1);
   const requested = ["geometry", "pattern3d"].includes(requestedHash) ? "viewer3d" : requestedHash;
-  show(["viewer3d", "plots", "pattern2d", "nearfield"].includes(requested) ? requested : "viewer3d");
-
   let previousFrame = performance.now();
   let lastFieldAnimationDraw = 0;
   let fieldAnimationPending = false;
+  let animationFrameHandle = null;
+
+  function scheduleAnimationFrame() {
+    if (animationFrameHandle === null && !document.hidden)
+      animationFrameHandle = requestAnimationFrame(animate);
+  }
+
   function animate(now = performance.now()) {
-    requestAnimationFrame(animate);
+    animationFrameHandle = null;
     const elapsed = Math.min(0.1, Math.max(0, (now - previousFrame) / 1000));
     previousFrame = now;
-    if (activeView === "nearfield" && fieldPlaying && instantaneousFieldMode()) {
+    const fieldAnimating = activeView === "nearfield" && fieldPlaying && instantaneousFieldMode();
+    if (fieldAnimating) {
       fieldPhaseDegrees = (fieldPhaseDegrees + elapsed * 90) % 360;
       fieldPhaseSlider.value = String(Math.round(fieldPhaseDegrees));
       fieldWorkspace.querySelector("#near-field-phase-value").textContent = `${Math.round(fieldPhaseDegrees)}°`;
@@ -2007,19 +2309,50 @@ export async function startNec2cReport(data) {
         drawNearField().finally(() => { fieldAnimationPending = false; });
       }
     }
-    if (activeView !== "viewer3d") return;
-    if (segmentPlaying && segmentDisplay.value.endsWith("instantaneous")) {
+    if (activeView !== "viewer3d") {
+      if (fieldAnimating) scheduleAnimationFrame();
+      return;
+    }
+    const segmentAnimating = segmentPlaying && segmentDisplay.value.endsWith("instantaneous");
+    if (segmentAnimating) {
       segmentPhaseDegrees = (segmentPhaseDegrees + elapsed * 90) % 360;
       segmentPhaseSlider.value = String(Math.round(segmentPhaseDegrees));
       controlsPanel.querySelector("#segment-phase-value").textContent = `${Math.round(segmentPhaseDegrees)}°`;
       updateSegmentDisplay();
     }
+    const glyphAnimating = patternViewSelect.value === "polarization" &&
+      polarizationGlyphs.checked && polarizationPlaying;
+    if (glyphAnimating) {
+      polarizationPhaseDegrees = (polarizationPhaseDegrees + elapsed * 90 *
+        Number(polarizationSpeedSlider.value)) % 360;
+      polarizationPhaseSlider.value = String(Math.round(polarizationPhaseDegrees));
+      controlsPanel.querySelector("#polarization-phase-value").textContent =
+        `${Math.round(polarizationPhaseDegrees)}°`;
+      updatePolarizationBeads();
+    }
     const width = canvas.clientWidth, height = canvas.clientHeight;
     if (canvas.width !== width * renderer.getPixelRatio() || canvas.height !== height * renderer.getPixelRatio()) {
       renderer.setSize(width, height, false); camera.aspect = width / height; camera.updateProjectionMatrix();
     }
-    controls.update(); renderer.render(scene, camera);
+    const controlsChanged = controls.update();
+    renderer.render(scene, camera);
+    if (segmentAnimating || glyphAnimating || controlsChanged) scheduleAnimationFrame();
   }
+  controls.addEventListener("change", scheduleAnimationFrame);
+  controlsPanel.addEventListener("input", scheduleAnimationFrame);
+  controlsPanel.addEventListener("change", scheduleAnimationFrame);
+  controlsPanel.addEventListener("click", scheduleAnimationFrame);
+  fieldWorkspace.addEventListener("input", scheduleAnimationFrame);
+  fieldWorkspace.addEventListener("change", scheduleAnimationFrame);
+  fieldWorkspace.addEventListener("click", scheduleAnimationFrame);
+  canvas.addEventListener("pointermove", scheduleAnimationFrame);
+  canvas.addEventListener("wheel", scheduleAnimationFrame, { passive: true });
+  window.addEventListener("resize", scheduleAnimationFrame);
+  document.addEventListener("visibilitychange", () => {
+    previousFrame = performance.now();
+    scheduleAnimationFrame();
+  });
+  show(["viewer3d", "plots", "pattern2d", "nearfield"].includes(requested) ? requested : "viewer3d");
   document.documentElement.dataset.reportReady = "true";
-  requestAnimationFrame(animate);
+  scheduleAnimationFrame();
 }

@@ -668,6 +668,7 @@ returns transparent Racket values without printing or opening a window:
 (show-radiation-cut azimuth)
 (show-radiation-pattern-3d sphere)
 (show-radiation-pattern-opengl sphere #:palette 'magma)
+(show-radiation-pattern-opengl sphere #:view 'polarization)
 (show-radiation-pattern-opengl sphere #:color-step 3)
 
 (show-radiation-comparison
@@ -691,6 +692,13 @@ instantaneous Poynting intensity and vectors on linear or logarithmic scales.
 Use `#:near-fields #f` for the lighter report, or
 pass explicit `near-field-section` values to choose planes, bounds, and sample
 counts; see the API manual for the full form.
+
+Polarization is available in both the native OpenGL workbench and portable
+NEC2C reports. The far-field surface can show signed circularity, axial ratio,
+and axial tilt. Captured complex near fields open through
+`(show-near-field fields #:view 'polarization)` for point and plane-wide
+electric trajectories, spin, and average or instantaneous power flow. See
+[`docs/POLARIZATION.md`](docs/POLARIZATION.md) for conventions and examples.
 
 The ordinary 2-D graphs have a built-in data cursor. Left-drag retains Plot's
 normal zoom behavior and left-click unzooms once. Right-click or right-drag

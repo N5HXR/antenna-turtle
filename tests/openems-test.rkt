@@ -587,6 +587,38 @@
   (delete-file mock-octave)
   (clear-bodies))
 
+(test-case "OpenEMS field capture balances retained volume dimensions"
+  (reset-model!)
+  (model frequency 900)
+  (sheet name ground
+    points '((-0.01 -0.01) (0.01 -0.01) (0.01 0.01) (-0.01 0.01))
+    material pec)
+  (port up name feed gap 0.001 width 0.001 depth 0.001)
+  (define mock-octave (make-temporary-file "mock-octave~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out) (displayln "#!/bin/sh" out) (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define failure
+    (with-handlers ([exn:fail:openems? values])
+      (openems-sweep
+       850 950 #:octave mock-octave #:progress? #f #:record-radiation? #f
+       #:field-capture
+       (field-capture #:frequency 900 #:volume '(electric)
+                      #:max-samples 250000))
+      #f))
+  (check-true (exn:fail:openems? failure))
+  (define artifacts
+    (openems-run-info-artifacts (exn:fail:openems-run-info failure)))
+  (define driver (file->string (openems-artifacts-driver-path artifacts)))
+  (check-regexp-match
+   #rx"capture_stride\\(capture_axis\\) = min\\(capture_counts\\(capture_axis\\)-1, capture_stride\\(capture_axis\\)\\+1\\)"
+   driver)
+  (check-false (regexp-match? #rx"capture_ratio" driver))
+  (openems-close! artifacts)
+  (delete-file mock-octave)
+  (clear-bodies))
+
 (test-case "OpenEMS gives thin solid PEC bodies an interior mesh coordinate"
   (reset-model!)
   (model frequency 1000)

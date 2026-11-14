@@ -34,7 +34,18 @@
    (helix 0.18 {0.95 * wavelength / pi / 2})
    (show-model)
    (define pattern (nec2c-radiation-grid))
-   (show-polarization-surface-poc pattern)]
+   (show-radiation-pattern-opengl pattern #:view 'polarization)
+
+   (define fields
+     (nec2c-near-field-planes
+      #:planes
+      (list
+       (near-field-section
+        #:plane 'xy
+        #:position {1/2 * wavelength}
+        #:samples '(101 101)))))
+
+   (show-near-field fields #:view 'polarization)]
 
   ;; optimizing pitch
   [(eq? view 'opt-pitch)

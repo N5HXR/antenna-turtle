@@ -1,3 +1,5 @@
+import { analyzePolarization } from "./polarization-math.js";
+
 export function gainOf(sample, component) {
   if (["x", "y", "z"].includes(component))
     return cartesianComponentGain(sample, component);
@@ -146,17 +148,11 @@ export function interpolatedPolarization(pattern, table, elevation, azimuth) {
   const interpolateField = field => complexLinear(
     complexLinear(aa?.[field], ab?.[field], pf),
     complexLinear(ba?.[field], bb?.[field], pf), tf);
-  const interpolateScalar = field => linear(
-    linear(aa?.[field], ab?.[field], pf),
-    linear(ba?.[field], bb?.[field], pf), tf);
   const eTheta = interpolateField("e_theta");
   const ePhi = interpolateField("e_phi");
+  const analysis = analyzePolarization(eTheta, ePhi);
   const thetaPhase = complexPhase(eTheta);
   const phiPhase = complexPhase(ePhi);
-  const weighted = [
-    [aa, (1 - tf) * (1 - pf)], [ab, (1 - tf) * pf],
-    [ba, tf * (1 - pf)], [bb, tf * pf],
-  ].sort((a, b) => b[1] - a[1]);
   return {
     eTheta,
     ePhi,
@@ -165,9 +161,11 @@ export function interpolatedPolarization(pattern, table, elevation, azimuth) {
     eThetaPhaseDegrees: thetaPhase,
     ePhiPhaseDegrees: phiPhase,
     phaseDifferenceDegrees: wrapPhase(phiPhase - thetaPhase),
-    axialRatio: interpolateScalar("axial_ratio"),
-    tiltDegrees: interpolateScalar("tilt_degrees"),
-    sense: weighted[0][0]?.polarization ?? null,
+    axialRatio: analysis.axialRatio,
+    tiltDegrees: analysis.tiltDegrees,
+    signedCircularity: analysis.signedCircularity,
+    ellipticityDegrees: analysis.ellipticityDegrees,
+    sense: analysis.sense,
   };
 }
 

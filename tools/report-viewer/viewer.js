@@ -173,8 +173,13 @@ let fieldScale = "log";
 let logFloor = -40;
 let fieldOpacity = 0.8;
 let isosurfaceThresholdDb = -24;
-let sliceAxis = "x";
-let slicePosition = 0.5;
+// Browsers may restore form controls before an inline report script runs.
+// Initialize the rendering state from those controls so the selected plane
+// and thumb position cannot disagree with the slice actually being shown.
+const sliceAxisControl = document.getElementById("slice-axis");
+const slicePositionControl = document.getElementById("slice-position");
+let sliceAxis = sliceAxisControl.value;
+let slicePosition = Number(slicePositionControl.value) / 1000;
 let phaseDegrees = 0;
 let playing = true;
 let speed = 1;
@@ -358,7 +363,6 @@ const powerModes = [
   ["power-volume-average", "3D average power isosurface"],
   ["power-volume-instantaneous", "3D instantaneous power isosurface"],
 ];
-
 function isosurfaceMode() {
   return fieldMode === "volume-envelope"
     || fieldMode === "volume-instantaneous"
@@ -565,7 +569,8 @@ async function loadCapture(index) {
     } else {
       fields[fieldQuantity] = await cachedCaptureData(layer.fields[fieldQuantity]);
     }
-    const loaded = fieldQuantity === "power" ? fields.electric : fields[fieldQuantity];
+    const loaded = fieldQuantity === "power"
+      ? fields.electric : fields[fieldQuantity];
     active = buildFieldDisplay(loaded, layer.kind === "field-volume", fields);
   }
   displayObject = active.object;
@@ -671,6 +676,11 @@ function buildFieldDisplay(loaded, volume = false, fields = {}) {
   }
   const varyingAxes = [0, 1, 2].filter(axis => axis !== normalAxis);
   const [axisA, axisB] = varyingAxes;
+  const planeDimensions = [dimensions[axisA], dimensions[axisB]];
+  // Fewer than eight samples across either direction is diagnostic data, not
+  // a credible smooth heatmap. Retained reports from the former aggressive
+  // subsampling policy can otherwise look authoritative after interpolation.
+  const underResolvedPlane = Math.min(...planeDimensions) < 8;
   const coordinates = [capture.x, capture.y, capture.z];
   const normalCoordinate = coordinates[normalAxis][lower] * (1 - mix)
     + coordinates[normalAxis][upper] * mix;
@@ -733,6 +743,7 @@ function buildFieldDisplay(loaded, volume = false, fields = {}) {
     rangeCache: new Map(),
     normalAxis, normalVector, normalUserAxis, varyingAxes, userPosition,
     lower, upper, mix, coordinates, fixedCoordinates, dimensions,
+    planeDimensions, underResolvedPlane,
   };
 }
 
@@ -1429,6 +1440,8 @@ function currentDetail() {
 
 function updateCapture() {
   if (!active) return;
+  sliceAxisControl.value = sliceAxis;
+  slicePositionControl.value = String(Math.round(slicePosition * 1000));
   if (active.kind === "current-group") {
     setCurrentMapForGroup(active);
     for (const item of active.items) updateCurrentHeatmap(item);
@@ -1450,6 +1463,9 @@ function updateCapture() {
 
 function fieldDetail() {
   const { capture } = active.loaded;
+  const samplingWarning = active.underResolvedPlane
+    ? `WARNING: under-resolved plane (${active.planeDimensions.join("×")} samples); rerun this field capture · `
+    : "";
   const quantity = fieldQuantity === "power" ? "S"
     : capture.quantity === "electric" ? "E" : "H";
   const powerLabels = {
@@ -1497,7 +1513,7 @@ function fieldDetail() {
   const integral = fieldQuantity === "power" && !isosurfaceMode()
     ? ` · sampled ∬<S>·+${sliceAxis.toUpperCase()} dA ≈ ${formatPower(integratedAveragePower())}`
     : "";
-  return `${capture.frequency_mhz.toFixed(4)} MHz · ${capture.source}${location} · ${mode}${scale}${range}${integral} · ${units}`;
+  return `${samplingWarning}${capture.frequency_mhz.toFixed(4)} MHz · ${capture.source}${location} · ${mode}${scale}${range}${integral} · ${units}`;
 }
 
 function formatPower(watts) {
@@ -1827,6 +1843,7 @@ function updateFieldDisplay() {
   pmlLabel.hidden = false;
   document.getElementById("volume-controls").hidden = !active.volume;
   document.getElementById("field-range").disabled = false;
+  active.plane.material.wireframe = false;
   const magnitudeMaximum = magnitudeDisplayMaximum();
   const signedMaximum = fieldQuantity === "power"
     ? magnitudeMaximum
@@ -2194,13 +2211,13 @@ document.getElementById("field-quantity").addEventListener("change", event => {
   setModeOptions();
   loadCapture(Number(captureSelect.value));
 });
-document.getElementById("slice-axis").addEventListener("change", event => {
+sliceAxisControl.addEventListener("change", event => {
   sliceAxis = event.target.value;
   slicePosition = 0.5;
-  document.getElementById("slice-position").value = "500";
+  slicePositionControl.value = "500";
   rebuildVolumeSlice();
 });
-document.getElementById("slice-position").addEventListener("input", event => {
+slicePositionControl.addEventListener("input", event => {
   slicePosition = Number(event.target.value) / 1000;
   rebuildVolumeSlice();
 });
