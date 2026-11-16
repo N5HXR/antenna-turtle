@@ -15,6 +15,7 @@
          "private/nec2c-result-json.rkt"
          "private/touchstone.rkt"
          "private/measurement.rkt"
+         "private/optimization.rkt"
          "private/wire-lumped.rkt"
          "private/lumped-element-dsl.rkt"
          "private/wire-network.rkt"
@@ -100,6 +101,7 @@
  (all-from-out "private/nec2c-result-json.rkt")
  (all-from-out "private/touchstone.rkt")
  (all-from-out "private/measurement.rkt")
+ (all-from-out "private/optimization.rkt")
  (all-from-out "private/wire-lumped.rkt")
  (all-from-out "private/lumped-element-dsl.rkt")
  (all-from-out "private/wire-network.rkt")

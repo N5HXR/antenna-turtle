@@ -197,7 +197,8 @@ REPORT
    20)
   (check-equal?
    (ivl-max (vector-ref (plot-element-bounds-rect capped-line) 1))
-   10))
+   10)
+  (check-equal? (length (vswr-sweep-renderers sweep)) 4))
 
 (test-case "return-loss plots dip downward and ignore an exact-match infinity"
   (define (frequency-sample frequency return-loss)
@@ -299,6 +300,17 @@ REPORT
     (check-not-false (pair? (return-loss-sweep-renderers sweep)))
     (check-not-false (pair? (impedance-sweep-renderers sweep)))
     (check-not-false (pair? (smith-chart-renderers sweep)))
+
+    (define targeted (nec2c-vswr-frequencies '(295 305 300 305)))
+    (check-equal?
+     (map nec2c-sweep-frequency-frequency-mhz
+          (nec2c-sweep-result-frequencies targeted))
+     '(295 305 300))
+    (check-true
+     (andmap
+      (lambda (frequency)
+        (= (length (nec2c-sweep-frequency-feed-samples frequency)) 2))
+      (nec2c-sweep-result-frequencies targeted)))
 
     (define azimuth (nec2c-azimuth-pattern #:step 30))
     (check-equal? (length (nec2c-pattern-samples azimuth)) 13)

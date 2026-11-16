@@ -4,6 +4,7 @@
          racket/math
          racket/runtime-path
          plot/no-gui
+         "amateur-bands.rkt"
          "plot-cursor.rkt"
          "radiation-case.rkt"
          "visualization-handle.rkt"
@@ -158,7 +159,8 @@
       #:width 2
       #:label (cursor-series-label series)))
    (list (hrule 2 #:style 'short-dash #:color "gray" #:label "2:1")
-         (hrule 3 #:style 'dot #:color "darkgray" #:label "3:1"))))
+         (hrule 3 #:style 'dot #:color "darkgray" #:label "3:1")
+         (hrule 10 #:style 'long-dash #:color "gray" #:label "10:1"))))
 
 (define (return-loss-points result name floor-db)
   (for/list ([sample (in-list (samples-for-feed result name))])
@@ -728,6 +730,11 @@
    #:cursor-rule? cursor-rule?
    #:theme theme))
 
+(define (frequency-plot-renderers renderers series)
+  ;; Band rectangles deliberately precede the data renderers so their alpha
+  ;; is composited into the background rather than washing out the traces.
+  (append (amateur-band-renderers series) renderers))
+
 (define (cursor-number value)
   (cond
     [(rational? value) (real->decimal-string (exact->inexact value) 4)]
@@ -840,7 +847,9 @@
 (define (show-s-parameter-magnitude result #:legend? [legend? #f])
   (define series (s-parameter-series result 'magnitude))
   (show-plot
-   (s-parameter-magnitude-renderers result)
+   (frequency-plot-renderers
+    (s-parameter-magnitude-renderers result)
+    series)
    series
    (sweep-label-proc "magnitude" " dB")
    #:title "OpenEMS S-parameter magnitude"
@@ -851,7 +860,9 @@
 (define (show-s-parameter-phase result #:legend? [legend? #f])
   (define series (s-parameter-series result 'phase))
   (show-plot
-   (s-parameter-phase-renderers result)
+   (frequency-plot-renderers
+    (s-parameter-phase-renderers result)
+    series)
    series
    (sweep-label-proc "phase" " degrees")
    #:title "OpenEMS S-parameter phase"
@@ -865,14 +876,17 @@
   (define backend (backend-title normalized))
   (define series (vswr-cursor-series normalized max-vswr))
   (show-plot
-   (vswr-sweep-renderers normalized #:max-vswr max-vswr)
+   (frequency-plot-renderers
+    (vswr-sweep-renderers normalized #:max-vswr max-vswr)
+    series)
    series
    (sweep-label-proc "VSWR" ":1")
    #:title (format "~a VSWR sweep" backend)
    #:legend-items
    (append (series-legend-items series)
            (list (plot-legend-item "2:1" "gray" 'short-dash 'line)
-                 (plot-legend-item "3:1" "darkgray" 'dot 'line)))
+                 (plot-legend-item "3:1" "darkgray" 'dot 'line)
+                 (plot-legend-item "10:1" "gray" 'long-dash 'line)))
    #:legend? legend?
    #:x-label "frequency (MHz)"
    #:y-label
@@ -887,9 +901,11 @@
   (define backend (backend-title normalized))
   (define series (return-loss-cursor-series normalized floor-db))
   (show-plot
-   (return-loss-sweep-renderers
-    normalized
-    #:floor-db floor-db)
+   (frequency-plot-renderers
+    (return-loss-sweep-renderers
+     normalized
+     #:floor-db floor-db)
+    series)
    series
    (sweep-label-proc "S11" " dB")
    #:title (format "~a return-loss sweep" backend)
@@ -928,7 +944,9 @@
 (define (show-gain-sweep result #:legend? [legend? #f])
   (define series (gain-sweep-cursor-series result))
   (show-plot
-   (gain-sweep-renderers result)
+   (frequency-plot-renderers
+    (gain-sweep-renderers result)
+    series)
    series
    gain-sweep-label-proc
    #:title "NEC2C gain and match over frequency"
@@ -952,7 +970,9 @@
   (define backend (backend-title normalized))
   (define series (impedance-cursor-series normalized))
   (show-plot
-   (impedance-sweep-renderers normalized)
+   (frequency-plot-renderers
+    (impedance-sweep-renderers normalized)
+    series)
    series
    (sweep-label-proc "impedance" " ohms")
    #:title (format "~a input impedance" backend)

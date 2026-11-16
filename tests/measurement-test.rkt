@@ -71,6 +71,50 @@
                 '(100 -inf.0))
   (check-equal? (measurement-ports two-port) '(feed "other")))
 
+(define (network-with-vswrs pairs)
+  (network-sweep
+   'test #f 50
+   (for/list ([pair (in-list pairs)])
+     (define frequency (first pair))
+     (define vswr (second pair))
+     (define gamma (/ (- vswr 1.0) (+ vswr 1.0)))
+     (network-sample 'feed frequency gamma (* 50 vswr)
+                     (if (zero? gamma)
+                         -inf.0
+                         (* 20.0 (/ (log gamma) (log 10.0))))
+                     vswr))))
+
+(test-case "multi-match reports thresholds and physically meaningful loss"
+  (define result
+    (multi-match
+     (network-with-vswrs '((3.6 1.0) (7.1 2.0) (14.1 5.0) (28.1 12.0)))
+     '(3.6 7.1 14.1 28.1)
+     #:interpolate? #f))
+  (check-equal? (multi-match-result-good-count result) 2)
+  (check-equal? (multi-match-result-usable-count result) 3)
+  (check-equal? (multi-match-result-outside-count result) 1)
+  (check-equal? (multi-match-result-worst-vswr result) 12.0)
+  (check-equal?
+   (map multi-match-point-classification (multi-match-result-points result))
+   '(good good tunable outside-limit))
+  (check-= (multi-match-point-mismatch-loss-db
+            (second (multi-match-result-points result)))
+           (* -10.0 (/ (log (/ 8.0 9.0)) (log 10.0)))
+           1e-12)
+  (check-true (<= 0 (multi-match-result-score result) 100)))
+
+(test-case "multi-match ranking protects the worst target band"
+  (define broadly-usable
+    (multi-match
+     (network-with-vswrs '((7.1 2.5) (14.1 3.0) (28.1 4.0)))
+     '(7.1 14.1 28.1)))
+  (define one-unusable
+    (multi-match
+     (network-with-vswrs '((7.1 1.1) (14.1 1.2) (28.1 11.0)))
+     '(7.1 14.1 28.1)))
+  (check-true (multi-match<? broadly-usable one-unusable))
+  (check-false (multi-match<? one-unusable broadly-usable)))
+
 (define run (openems-run-info #f 0 0 "" "" #f (hash)))
 (define multiport
   (openems-multiport-result

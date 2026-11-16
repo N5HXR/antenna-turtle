@@ -1534,6 +1534,53 @@ For multiple feeds, select one with `#:feed`. Model the antenna alone when it
 is to become a Touchstone load in another simulator; otherwise its matching
 network would be included twice.
 
+For multiband optimization, solve only the target frequencies and score them
+as a group:
+
+```racket
+(define targets '(3.6 7.1 10.1 14.1 21.1 28.1))
+(define target-sweep (nec2c-vswr-frequencies targets))
+(define match (multi-match target-sweep targets #:maximum-vswr 10))
+
+(multi-match-result-score match)         ; 0--100 presentation score
+(multi-match-result-worst-vswr match)
+(multi-match-result-outside-count match) ; targets above 10:1
+(multi-match-result-points match)         ; per-frequency measurements
+```
+
+Sort candidate metrics with `multi-match<?`. It prioritizes keeping every
+target within the hard limit before improving worst-case VSWR, the count below
+the good threshold, and aggregate mismatch. This avoids selecting a design
+whose excellent average conceals one unusable band. A dense broadband sweep
+is still valuable for visually checking the finalists.
+
+The scoped optimization tracker removes the bookkeeping from a
+programmer-controlled search without choosing a search strategy:
+
+```racket
+(define winning-attributes
+  (with-optimizer multi-match<?
+    (define (measure)
+      (multi-match (nec2c-vswr-frequencies targets)
+                   targets
+                   #:interpolate? #f))
+
+    (loop for len from 0.9 to 1.1 by 0.02 do
+      (build-ocfd! len 0.7)
+      (track `(length-scale ,len) (measure)))
+
+    (best 'key)))
+```
+
+Keys and results are opaque to the tracker. The program remains free to
+use nested loops, random candidates, manual refinement, or another generator.
+Within `with-optimizer`, `(best 'result)` returns the winning measurement and
+`(best 'run)` returns its complete record. The tracker does not reconstruct the
+winning geometry; use the returned key to do that explicitly when desired. The
+underlying `make-optimizer`, `optimizer-track!`, and `optimizer-list` procedures
+remain available when a tracker must be passed among functions or every run is
+needed in best-first order.
+
 When NEC2C-N5HXR dielectric support is in use, a simple one-cuboid model can
 delegate its cubic mesh arithmetic and small commensurability adjustments:
 
@@ -1648,7 +1695,17 @@ orientation on mouse release.
 
 VSWR plots include every finite value by default and let Plot choose the
 vertical extent. For a deliberately clipped overview, supply a ceiling such
-as `(show-vswr-sweep sweep #:max-vswr 10)`.
+as `(show-vswr-sweep sweep #:max-vswr 10)`. Reference rules mark 2:1, 3:1,
+and 10:1; the last is a common upper matching-range commitment for external
+antenna tuners.
+
+Frequency-sweep graphs shade the United States amateur allocations from 2200
+meters through 3 centimeters with a subtle blue background. Only allocations
+that intersect the displayed MHz range are drawn; wide enough spans also carry
+a small band label at the top edge. The discontinuous 60-meter and microwave
+allocations remain separate instead of being presented as continuous bands.
+This applies to VSWR, return loss, impedance, gain-and-match, and OpenEMS
+S-parameter graphs. It does not alter plot scaling or the underlying samples.
 
 All 2-D analysis graphs include a data cursor. Left-drag zooms and left-click
 unzooms as usual. Right-click or hold the right button while dragging to select

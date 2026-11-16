@@ -2955,6 +2955,132 @@ adds reflection coefficient, return loss in dB, and VSWR calculated against
 `model-impedance`. Infinite return loss and VSWR are represented with Racket's
 positive infinity where mathematically appropriate.
 
+### `(nec2c-vswr-frequencies frequencies common-keywords ...)`
+
+Measures an arbitrary nonempty list of positive frequencies in MHz in one
+NEC2C invocation. Unlike a uniform sweep, only the requested frequencies are
+solved. Duplicate frequencies are removed while preserving the order of their
+first occurrence. The returned value is the same `nec2c-sweep-result` used by
+the ordinary sweep, plotting, measurement, and serialization APIs.
+
+```racket
+(define target-frequencies '(3.6 7.1 10.1 14.1 21.1 28.1))
+(define targets (nec2c-vswr-frequencies target-frequencies))
+```
+
+This is especially useful in parameter searches, where a dense 3--30 MHz
+sweep for every candidate would calculate many frequencies that do not
+participate in the objective.
+
+### Multiband matching metrics
+
+```racket
+(multi-match result frequencies
+             [#:port port-name #f]
+             [#:good-vswr 2.0]
+             [#:maximum-vswr 10.0]
+             [#:interpolate? #t])
+
+(multi-match-rank metric)
+(multi-match<? left right)
+```
+
+`multi-match` returns a transparent `multi-match-result`. Its `points` contain
+one `multi-match-point` per target frequency with VSWR, return loss, mismatch
+loss, and a classification of `'good`, `'tunable`, or `'outside-limit`.
+Aggregate fields include a 0--100 presentation score, counts for each
+threshold, worst and mean VSWR, and mean mismatch loss.
+
+The score is convenient for tables and heat maps. Optimization should use
+`multi-match<?`, which ranks results lexicographically by fewer targets over
+the hard limit, lower worst-case VSWR, more targets under the good limit,
+lower mean mismatch loss, and lower mean VSWR. `multi-match-rank` exposes this
+tuple directly.
+
+### Optimization tracking
+
+```racket
+(with-optimizer better?
+  body ...)
+
+;; Within with-optimizer only:
+(track key result)
+(best [selector])
+
+(make-optimizer better?)
+(optimizer-track! optimizer annotation result)
+(optimizer-best optimizer)
+(optimizer-best-annotation optimizer)
+(optimizer-best-result optimizer)
+(optimizer-list optimizer)
+(optimizer-count optimizer)
+```
+
+`with-optimizer` is the concise, scoped interface. It creates a tracker and
+evaluates its body in an internal-definition context, so local measurement
+functions and arbitrary candidate-generation logic may appear inside it.
+`track` records a candidate's opaque reconstruction key and comparison result.
+`best` accepts `'key`, `'result`, `'run`, or `'number`; `'annotation` is an alias
+for `'key`. With no selector it returns the complete run. Every form returns
+`#f` when no candidate has been tracked. `track` and `best` report a syntax
+error when used outside `with-optimizer`.
+
+```racket
+(define winning-parameters
+  (with-optimizer multi-match<?
+    (define (measure)
+      (multi-match (nec2c-vswr-frequencies target-frequencies)
+                   target-frequencies
+                   #:interpolate? #f))
+
+    (loop for len from 0.9 to 1.1 by 0.02 do
+      (loop for per from 0.6 to 0.8 by 0.02 do
+        (build-ocfd! len per)
+        (track `(len ,len per ,per) (measure))))
+
+    (best 'key)))
+```
+
+The procedure interface below exposes the same tracker for libraries and cases
+that need to pass it between functions.
+
+An optimizer records experiments without generating candidates or rebuilding
+models. `better?` is a strict ordering predicate over result values: it receives
+two results and returns true when the first should rank ahead of the second.
+`optimizer-track!` accepts an arbitrary annotation describing how the candidate
+was produced and an arbitrary result understood by `better?`. It returns the
+new transparent `optimization-run`, whose accessors are
+`optimization-run-annotation`, `optimization-run-result`, and
+`optimization-run-number`.
+
+`optimizer-best` returns the best run seen so far, or `#f` before anything has
+been tracked. `optimizer-best-annotation` and `optimizer-best-result` directly
+return the corresponding part of that run, also returning `#f` when empty.
+`optimizer-list` returns every run in best-first order;
+comparatively tied runs remain in evaluation order. The optimizer never changes
+the current Turtle model and does not interpret annotations.
+
+```racket
+(define search (make-optimizer multi-match<?))
+
+(loop for len from 0.9 to 1.1 by 0.02 do
+  (build-ocfd! len 0.7)
+  (optimizer-track!
+   search
+   (list 'length-scale len)
+   (multi-match
+    (nec2c-vswr-frequencies target-frequencies)
+    target-frequencies
+    #:interpolate? #f)))
+
+(define winning-attributes (optimizer-best-annotation search))
+(define winning-match (optimizer-best-result search))
+```
+
+Hard constraints can be expressed by the comparator. It should return `#f`
+when its left result is disqualified and `#t` when only its right result is
+disqualified. If it returns `#f` in both directions, the runs are tied.
+
 ### `(nec2c-azimuth-pattern ...)`
 
 ```racket
@@ -3517,6 +3643,12 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
 (visualization-close! handle)
 (visualization-open? handle)
 ```
+
+Plots whose horizontal axis is frequency in MHz include a non-scaling,
+background overlay of intersecting United States amateur allocations from
+2200 meters through 3 centimeters. This includes the network and S-parameter
+sweep viewers, but not the Smith chart, whose axes are normalized reflection
+coordinates.
 
 Components are `'total`, `'vertical`, or `'horizontal`. The corresponding
 headless renderer constructors—`vswr-sweep-renderers`,
