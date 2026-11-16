@@ -36,6 +36,8 @@ needs adjustment. Do not turn an unconverged result into a golden value.
 | `12-lossy-line.rkt` | FR4/copper has more loss than ideal materials; inspect power budget |
 | `13-pec-cavity.rkt` | Rectangular-cavity TE101 resonance |
 | `14-pi-attenuator.rkt` | Matched, reciprocal 6 dB resistor pi attenuator |
+| `20-wire-reference-yagi.rkt` | Dry-run and opt-in FDTD comparison for a three-element wire Yagi |
+| `21-wire-reference-moxon.rkt` | Dry-run and opt-in FDTD comparison for a bent-wire Moxon |
 
 The line and distributed-resonator dimensions use first-pass effective-
 permittivity estimates. Their initial tolerances are intentionally wider than

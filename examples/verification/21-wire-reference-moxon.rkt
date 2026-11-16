@@ -3,7 +3,7 @@
 ;; Published L. B. Cebik/W4RNL dimensions already used by the project. This
 ;; 29 MHz version retains the 20 mm wire from the original Antenna Turtle
 ;; example and exercises right-angle bends plus closely spaced open ends.
-(model title "Verification 13: OpenEMS wire-reference Moxon"
+(model title "Verification 21: OpenEMS wire-reference Moxon"
        frequency 29 impedance 50
        max-length (/ wavelength 120)
        wire-diameter (* 20 millimeter))

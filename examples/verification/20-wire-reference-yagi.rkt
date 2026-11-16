@@ -5,7 +5,7 @@
 ;; Three-element subset of the measured-dimension family used by
 ;; examples/yagi-compare.rkt. The unmatched driven element has a low terminal
 ;; resistance, but NEC2C gives a useful directional reference near 7.25 dBi.
-(model title "Verification 12: OpenEMS wire-reference Yagi"
+(model title "Verification 20: OpenEMS wire-reference Yagi"
        frequency 146 impedance 50
        max-length (/ wavelength 100)
        wire-diameter (* 6 millimeter))
