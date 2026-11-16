@@ -32,6 +32,7 @@
  (struct-out openems-s-parameter-sample)
  (struct-out openems-multiport-result)
  (struct-out openems-source-result)
+ (struct-out openems-dry-run)
  (struct-out exn:fail:openems)
  openems-sweep
  openems-load-artifacts
@@ -73,6 +74,14 @@
 ;; An impressed source has no reference impedance or incident/reflected wave,
 ;; so it deliberately cannot masquerade as a one-port network result.
 (struct openems-source-result (run source-name) #:transparent)
+
+;; Exact mesh construction without an FDTD solve. Memory figures are a
+;; deliberately broad engineering range because OpenEMS storage depends on
+;; PML, materials, probes, dumps, and operator compression.
+(struct openems-dry-run
+  (run line-counts cell-count minimum-spacing-m
+       estimated-memory-low-bytes estimated-memory-high-bytes warnings)
+  #:transparent)
 
 (struct exn:fail:openems exn:fail (run-info) #:transparent)
 
@@ -1316,7 +1325,7 @@
 ;; capsule boundaries at each distinct centerline coordinate.  This keeps an
 ;; ordinary dipole inexpensive while giving loops and curved wire antennas a
 ;; continuous Cartesian current path.
-(define (wire-refinement-axis-values edges transform axis)
+(define (legacy-wire-refinement-axis-values edges transform axis)
   (define transformed
     (for/list ([edge (in-list edges)])
       (define start
@@ -1373,6 +1382,109 @@
           (define radius (/ (wire-edge-diameter edge) 2))
           (list (- center radius) (+ center radius))))
        =)))
+
+(define (subdivide-span low high maximum-spacing)
+  (define count (max 1 (ceiling (/ (- high low) maximum-spacing))))
+  (for/list ([index (in-range (add1 count))])
+    (+ low (* (- high low) (/ index count)))))
+
+;; Reference-wire meshing resolves the finite capsule diameter and a uniform
+;; air halo while avoiding needless fine cells along a straight wire run.
+;; Every endpoint receives a longitudinal neighborhood so feed gaps, free ends,
+;; junctions, and bends are resolved. An oblique edge varies on more than one
+;; Cartesian axis; stair-stepping therefore requires its complete projection
+;; on every varying axis to use the wire pitch. This can intentionally become
+;; very expensive, which is why the profile is opt-in and supports dry runs.
+(define (reference-wire-refinement-axis-values
+         edges transform axis minimum-wire-cells wire-halo-radii)
+  (define transformed
+    (for/list ([edge (in-list edges)])
+      (define start
+        (transform-point transform (vertex-point (wire-edge-start edge))))
+      (define stop
+        (transform-point transform (vertex-point (wire-edge-end edge))))
+      (list edge start stop)))
+  (define (varying-axes item)
+    (match-define (list _edge start stop) item)
+    (define scale (max 1 (apply max (map abs (append start stop)))))
+    (for/list ([coordinate (in-range 3)]
+               #:unless (near? (list-ref start coordinate)
+                               (list-ref stop coordinate) scale))
+      coordinate))
+  (define values
+    (remove-duplicates
+     (append*
+      (for/list ([item (in-list transformed)])
+        (match-define (list edge start stop) item)
+        (define radius (/ (wire-edge-diameter edge) 2))
+        (define pitch (/ (wire-edge-diameter edge) minimum-wire-cells))
+        (define halo (* wire-halo-radii radius))
+        (define varying (varying-axes item))
+        (define feed-coordinate
+          (and (wire-edge-feed? edge)
+               (case (wire-edge-feed-location edge)
+                 [(start) (list-ref start axis)]
+                 [(center) (/ (+ (list-ref start axis)
+                                  (list-ref stop axis))
+                               2)]
+                 [(end) (list-ref stop axis)])))
+        (define feed-gap
+          (and feed-coordinate
+               (max (/ (model-wavelength) 1000) radius)))
+        (cond
+          ;; Transverse cross-section and air halo.
+          [(not (member axis varying))
+           (define center (list-ref start axis))
+           (subdivide-span (- center halo) (+ center halo) pitch)]
+          ;; Oblique stair-step path plus endpoint neighborhoods.
+          [(> (length varying) 1)
+           (subdivide-span
+            (- (min (list-ref start axis) (list-ref stop axis)) halo)
+            (+ (max (list-ref start axis) (list-ref stop axis)) halo)
+            pitch)]
+          ;; Straight run: only its two longitudinal endpoint neighborhoods.
+          [else
+           (append
+            (subdivide-span (- (list-ref start axis) halo)
+                            (+ (list-ref start axis) halo) pitch)
+            (subdivide-span (- (list-ref stop axis) halo)
+                            (+ (list-ref stop axis) halo) pitch)
+            (if feed-coordinate
+                ;; The port terminal planes are mandatory mesh coordinates.
+                ;; Grow the fine lattice outward from those exact faces so a
+                ;; center-anchored helper cannot create sub-pitch sliver cells
+                ;; beside the feed gap.
+                (let* ([half-gap (/ feed-gap 2)]
+                       [extent (max halo half-gap)])
+                  (append
+                   (subdivide-span (- feed-coordinate extent)
+                                   (- feed-coordinate half-gap) pitch)
+                   (subdivide-span (+ feed-coordinate half-gap)
+                                   (+ feed-coordinate extent) pitch)))
+                '()))])))
+     =))
+  ;; Helpers from nearby endpoints can carry different sub-pitch offsets.
+  ;; Passing both lattices to SmoothMeshLines creates accidental sliver cells
+  ;; and can multiply the whole axis. These coordinates are numerical helpers,
+  ;; not authored boundaries, so retain one representative whenever two are
+  ;; closer than half the finest requested wire pitch.
+  (define minimum-pitch
+    (apply min
+           (for/list ([edge (in-list edges)])
+             (/ (wire-edge-diameter edge) minimum-wire-cells))))
+  (reverse
+   (for/fold ([kept '()]) ([value (in-list (sort values <))])
+     (if (and (pair? kept)
+              (< (- value (car kept)) (/ minimum-pitch 2)))
+         kept
+         (cons value kept)))))
+
+(define (wire-refinement-axis-values
+         edges transform axis minimum-wire-cells wire-halo-radii)
+  (if minimum-wire-cells
+      (reference-wire-refinement-axis-values
+       edges transform axis minimum-wire-cells wire-halo-radii)
+      (legacy-wire-refinement-axis-values edges transform axis)))
 
 (define (dielectric-subdivision-values geometry axis max-resolution
                                        minimum-dielectric-cells)
@@ -1518,7 +1630,7 @@
                              geometry-minimum geometry-maximum wavelength-min
                              record-radiation?
                              field-dumps capture-frequency-hz
-                             capture-excitation-index)
+                             capture-excitation-index dry-run?)
   (define path (build-path directory "run-openems.m"))
   (define port-count (length ports))
   (define source-count (length sources))
@@ -1545,6 +1657,7 @@
         (line "if exist('AddDjordjevicSarkarMaterial', 'file') ~~= 2, error('Antenna Turtle broadband dielectrics require AddDjordjevicSarkarMaterial (CSXCAD 0.7 or newer)'); end"))
       (line "physical_constants;")
       (line "unit = 1.0;")
+      (line "dry_run = ~a;" (if dry-run? 1 0))
       (line "f_start = ~a;" (number-string (* start-mhz 1e6)))
       (line "f_stop = ~a;" (number-string (* stop-mhz 1e6)))
       (line "budget_frequency = ~a;" (number-string budget-frequency-hz))
@@ -1591,6 +1704,10 @@
       (line "packages = pkg('list');")
       (line "for k = 1:numel(packages), fprintf(fid, '%s=%s\\n', packages{k}.name, packages{k}.version); end")
       (line "fclose(fid);")
+      (line "if dry_run")
+      (line "  fprintf('Antenna Turtle dry run: mesh construction complete; FDTD skipped.\\n');")
+      (line "  return;")
+      (line "end")
       (line "freq = linspace(f_start, f_stop, ~a);" steps)
       (line "all_s = [];")
       (for ([active-index (in-range 1 (add1 excitation-count))])
@@ -2723,11 +2840,14 @@
                                         default-maximum-timesteps]
                        #:end-criteria [end-criteria default-end-criteria]
                        #:wire-segments [wire-segments 24]
+                       #:minimum-wire-cells [minimum-wire-cells #f]
+                       #:wire-halo-radii [wire-halo-radii 2]
                        #:octave [requested-octave #f]
                        #:keep-artifacts? [keep? #t]
                        #:progress? [progress? #t]
                        #:record-radiation? [record-radiation? #t]
                        #:field-capture [capture #f]
+                       #:dry-run? [dry-run? #f]
                        #:timeout [timeout #f])
   (when (model-has-wire-coatings?)
     (raise-user-error
@@ -2746,11 +2866,14 @@
       #:padding-wavelengths padding-wavelengths
       #:max-timesteps maximum-timesteps
       #:end-criteria end-criteria
+      #:minimum-wire-cells minimum-wire-cells
+      #:wire-halo-radii wire-halo-radii
       #:octave requested-octave
       #:keep-artifacts? keep?
       #:progress? progress?
       #:record-radiation? record-radiation?
       #:field-capture capture
+      #:dry-run? dry-run?
       #:timeout timeout
       #:wire-derivation derivation))
    #:segments wire-segments
@@ -2771,11 +2894,14 @@
                        #:max-timesteps [maximum-timesteps
                                         default-maximum-timesteps]
                        #:end-criteria [end-criteria default-end-criteria]
+                       #:minimum-wire-cells [minimum-wire-cells #f]
+                       #:wire-halo-radii [wire-halo-radii 2]
                        #:octave [requested-octave #f]
                        #:keep-artifacts? [keep? #t]
                        #:progress? [progress? #t]
                        #:record-radiation? [record-radiation? #t]
                        #:field-capture [capture #f]
+                       #:dry-run? [dry-run? #f]
                        #:timeout [timeout #f]
                        #:wire-derivation [wire-derivation #f])
   (positive-real 'openems-sweep start-mhz "start frequency in MHz")
@@ -2806,12 +2932,21 @@
     (raise-argument-error 'openems-sweep "exact-positive-integer?" maximum-timesteps))
   (unless (and (finite-real? end-criteria) (> end-criteria 0) (< end-criteria 1))
     (raise-argument-error 'openems-sweep "real strictly between 0 and 1" end-criteria))
+  (unless (or (not minimum-wire-cells)
+              (and (exact-integer? minimum-wire-cells)
+                   (>= minimum-wire-cells 2)))
+    (raise-argument-error
+     'openems-sweep "#f or exact integer >= 2" minimum-wire-cells))
+  (unless (and (finite-real? wire-halo-radii) (>= wire-halo-radii 1))
+    (raise-argument-error 'openems-sweep "real >= 1" wire-halo-radii))
   (unless (boolean? keep?)
     (raise-argument-error 'openems-sweep "boolean?" keep?))
   (unless (boolean? progress?)
     (raise-argument-error 'openems-sweep "boolean?" progress?))
   (unless (boolean? record-radiation?)
     (raise-argument-error 'openems-sweep "boolean?" record-radiation?))
+  (unless (boolean? dry-run?)
+    (raise-argument-error 'openems-sweep "boolean?" dry-run?))
   (unless (or (not capture) (field-capture? capture))
     (raise-argument-error 'openems-sweep "(or/c #f field-capture?)" capture))
   (when (and capture
@@ -3064,13 +3199,19 @@
   (define wire-mesh-values
     (if wire-derivation
         (for/list ([axis (in-range 3)])
-          (wire-refinement-axis-values (model-edges) transform axis))
+          (wire-refinement-axis-values
+           (model-edges) transform axis
+           minimum-wire-cells wire-halo-radii))
         '(() () ())))
   (when (and wire-derivation (ormap pair? wire-mesh-values))
     (printf
      (string-append
-      "OpenEMS wire mesh: diameter-aware refinement adds ~a/~a/~a "
+      "OpenEMS wire mesh: ~a refinement adds ~a/~a/~a "
       "X/Y/Z helper lines for capsule geometry\n")
+     (if minimum-wire-cells
+         (format "reference (~a cells/diameter, ~a-radius halo)"
+                 minimum-wire-cells wire-halo-radii)
+         "diameter-aware")
      (length (first wire-mesh-values))
      (length (second wire-mesh-values))
      (length (third wire-mesh-values))))
@@ -3108,7 +3249,7 @@
                        minimum maximum wavelength-min record-radiation?
                        field-dumps
                        (and capture (* 1e6 (field-capture-frequency capture)))
-                       capture-excitation)
+                       capture-excitation dry-run?)
   (define initial-manifest
     (hash
      'format_version 1
@@ -3140,7 +3281,14 @@
                         (wire-solid-derivation-body wire-derivation)))
                'edge_count (wire-solid-derivation-edge-count wire-derivation)
                'circular_segments (wire-solid-derivation-segments wire-derivation)
-               'mesh_refinement "diameter-aware"
+               'mesh_refinement
+               (if minimum-wire-cells "reference-resolved" "diameter-aware")
+               'minimum_wire_cells_across_diameter
+               (or minimum-wire-cells 'null)
+               'wire_halo_radii
+               (if minimum-wire-cells
+                   (exact->inexact wire-halo-radii)
+                   'null)
                'mesh_helper_lines_by_axis
                (map length wire-mesh-values)
                'feed_edge_id
@@ -3292,7 +3440,7 @@
                    'end_criteria end-criteria)))
   (write-manifest directory initial-manifest)
   (define progress
-    (and progress?
+    (and progress? (not dry-run?)
          (make-progress-window (model-title) maximum-timesteps end-criteria
                                directory)))
   (define-values (status timed-out? cancelled? elapsed)
@@ -3356,7 +3504,8 @@
            'cell_count (* (length x) (length y) (length z))))
         (hash-ref initial-manifest 'mesh)))
   (define final-nf2ff
-    (if (and record-radiation? mesh-values)
+    (if (and record-radiation? mesh-values
+             (andmap (lambda (axis) (>= (length axis) 17)) mesh-values))
         (hash-set*
          (hash-ref initial-manifest 'nf2ff)
          'start_m
@@ -3368,7 +3517,8 @@
   (define final-manifest
     (hash-set*
      initial-manifest
-     'status (cond [cancelled? "cancelled"]
+     'status (cond [dry-run? "estimated"]
+                   [cancelled? "cancelled"]
                    [timed-out? "timed-out"]
                    [(zero? status) "complete"]
                    [else "failed"])
@@ -3385,6 +3535,70 @@
   (define run
     (openems-run-info octave elapsed status stdout stderr artifacts final-manifest))
   (cond
+    [dry-run?
+     (unless (zero? status)
+       (raise
+        (exn:fail:openems
+         (format
+          "OpenEMS mesh dry run exited with status ~a; artifacts retained in ~a"
+          status directory)
+         (current-continuation-marks)
+         run)))
+     (unless mesh-values
+       (raise
+        (exn:fail:openems
+         (format
+          "OpenEMS mesh dry run did not produce mesh coordinates; artifacts retained in ~a"
+          directory)
+         (current-continuation-marks)
+         run)))
+     (define line-counts (map length mesh-values))
+     (define cell-count (apply * line-counts))
+     (define minimum-spacing
+       (hash-ref final-mesh 'minimum_cell_spacing_m))
+     ;; A useful preflight range, not a promise: a basic compressed operator
+     ;; may fit near the lower bound, while PML, material state, probes, and
+     ;; field dumps can push a run above the upper bound.
+     (define memory-low (* cell-count 96))
+     (define memory-high (* cell-count 256))
+     (define wavelength-to-minimum-spacing
+       (/ wavelength-min minimum-spacing))
+     (define warnings
+       (append
+        (if (> cell-count 25000000)
+            (list "extreme mesh: expect a long solve and substantial memory pressure")
+            '())
+        (if (and (> cell-count 8000000) (<= cell-count 25000000))
+            (list "large mesh: review memory and runtime before starting FDTD")
+            '())
+        (if (> wavelength-to-minimum-spacing 1500)
+            (list
+             (format
+              (string-append
+               "fine spatial timestep: shortest free-space wavelength is "
+               "~a minimum cells; low-frequency FDTD may run much longer "
+               "than the cell count suggests")
+              (exact-round wavelength-to-minimum-spacing)))
+            '())
+        (if (and minimum-wire-cells (not wire-derivation))
+            (list "wire-reference refinement requested, but the model has no derived Turtle wire graph")
+            '())))
+     (printf
+      (string-append
+       "OpenEMS dry-run estimate: ~a x ~a x ~a lines; ~a cells; "
+       "heuristic solver memory ~a--~a MiB.\n")
+      (first line-counts) (second line-counts) (third line-counts)
+      cell-count
+      (exact-round (/ memory-low (* 1024 1024)))
+      (exact-round (/ memory-high (* 1024 1024))))
+     (for ([warning (in-list warnings)])
+       (printf "OpenEMS dry-run warning: ~a\n" warning))
+     (define estimate
+       (openems-dry-run
+        run line-counts cell-count minimum-spacing
+        memory-low memory-high warnings))
+     (unless keep? (openems-close! estimate))
+     estimate]
     [cancelled?
      (printf "OpenEMS simulation cancelled; ~a: ~a\n"
              (if keep? "artifacts retained" "removing artifacts")
@@ -3479,6 +3693,8 @@
        (openems-run-info-artifacts (openems-multiport-result-run value))]
       [(openems-source-result? value)
        (openems-run-info-artifacts (openems-source-result-run value))]
+      [(openems-dry-run? value)
+       (openems-run-info-artifacts (openems-dry-run-run value))]
       [(openems-run-info? value) (openems-run-info-artifacts value)]
       [(openems-artifacts? value) value]
       [else
@@ -3486,7 +3702,7 @@
         'openems-close!
         (string-append
          "(or/c openems-sweep-result? openems-multiport-result? openems-source-result? "
-         "openems-run-info? openems-artifacts?)")
+         "openems-dry-run? openems-run-info? openems-artifacts?)")
         value)]))
   (when (openems-artifacts-available? artifacts)
     (define directory (openems-artifacts-directory artifacts))

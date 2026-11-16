@@ -4,6 +4,7 @@
  (struct-out simulation-profile)
  draft
  standard
+ wire-reference
  derive-simulation-profile)
 
 ;; A profile contains numerical-accuracy and solver-stopping policy. Runtime
@@ -20,13 +21,15 @@
    padding-wavelengths
    maximum-timesteps
    end-criteria
-   wire-segments)
+   wire-segments
+   minimum-wire-cells
+   wire-halo-radii)
   #:guard
   (lambda (name frequency-steps cells-per-wavelength
                 minimum-dielectric-cells minimum-trace-cells
                 metal-edge-resolution mesh-grading
                 padding-wavelengths maximum-timesteps end-criteria
-                wire-segments type-name)
+                wire-segments minimum-wire-cells wire-halo-radii type-name)
     (define (finite-positive? value)
       (and (real? value) (rational? value) (positive? value)))
     (unless (or (symbol? name) (string? name))
@@ -56,10 +59,20 @@
       (raise-argument-error type-name "finite real between 0 and 1" end-criteria))
     (unless (and (exact-integer? wire-segments) (>= wire-segments 3))
       (raise-argument-error type-name "exact-integer? >= 3" wire-segments))
+    (unless (or (not minimum-wire-cells)
+                (and (exact-integer? minimum-wire-cells)
+                     (>= minimum-wire-cells 2)))
+      (raise-argument-error
+       type-name "#f or exact-integer? >= 2" minimum-wire-cells))
+    (unless (and (finite-positive? wire-halo-radii)
+                 (>= wire-halo-radii 1))
+      (raise-argument-error
+       type-name "finite real >= 1" wire-halo-radii))
     (values name frequency-steps cells-per-wavelength
             minimum-dielectric-cells minimum-trace-cells
             metal-edge-resolution mesh-grading
-            padding-wavelengths maximum-timesteps end-criteria wire-segments))
+            padding-wavelengths maximum-timesteps end-criteria wire-segments
+            minimum-wire-cells wire-halo-radii))
   #:transparent)
 
 (define draft
@@ -74,7 +87,9 @@
    0.5
    100000
    1e-4
-   24))
+   24
+   #f
+   2))
 
 (define standard
   (simulation-profile
@@ -88,7 +103,30 @@
    0.5
    250000
    1e-5
-   24))
+   24
+   #f
+   2))
+
+;; An intentionally expensive profile for small, wire-only reference models.
+;; It resolves each ordinary wire diameter with six cells and keeps that pitch
+;; through a six-radius air halo around centerlines, endpoints, and junctions.
+;; Oblique wires can make the Cartesian product of these helpers enormous;
+;; callers should dry-run the mesh before starting FDTD.
+(define wire-reference
+  (simulation-profile
+   'wire-reference
+   101
+   30
+   6
+   5
+   #f
+   1.3
+   0.5
+   250000
+   1e-5
+   32
+   6
+   6))
 
 (define (derive-simulation-profile
          base
@@ -118,7 +156,13 @@
          #:end-criteria
          [end-criteria (simulation-profile-end-criteria base)]
          #:wire-segments
-         [wire-segments (simulation-profile-wire-segments base)])
+         [wire-segments (simulation-profile-wire-segments base)]
+         #:minimum-wire-cells
+         [minimum-wire-cells
+          (simulation-profile-minimum-wire-cells base)]
+         #:wire-halo-radii
+         [wire-halo-radii
+          (simulation-profile-wire-halo-radii base)])
   (unless (simulation-profile? base)
     (raise-argument-error
      'derive-simulation-profile "simulation-profile?" base))
@@ -126,4 +170,5 @@
    name frequency-steps cells-per-wavelength minimum-dielectric-cells
    minimum-trace-cells
    metal-edge-resolution mesh-grading padding-wavelengths
-   maximum-timesteps end-criteria wire-segments))
+   maximum-timesteps end-criteria wire-segments
+   minimum-wire-cells wire-halo-radii))

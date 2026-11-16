@@ -166,7 +166,7 @@
     "gap" "depth" "path" "join" "miter-limit"
     "resistance" "inductance" "capacitance" "topology" "caps"
     "engine" "sweep" "profile" "octave" "keep-artifacts" "progress"
-    "timeout"))
+    "record-radiation" "record-fields" "dry-run" "timeout"))
 
 ;; Settings of the wire-network DSL.  As with the solid settings, these are
 ;; highlighted only in their declaration forms so identifiers such as `name`,
@@ -196,7 +196,7 @@
     "rogers-4003c" "rogers-4350b" "rogers-5880"
     "rect" "exact" "metal" "local" "world" "xy" "xz" "yz"
     "origin" "top" "bottom" "front" "start" "center" "end"
-    "draft" "standard" "openems"
+    "draft" "standard" "wire-reference" "openems"
     "series" "parallel" "miter" "bevel"))
 
 (defconst antenna-turtle--feed-locations

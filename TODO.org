@@ -158,8 +158,11 @@ mixed-reference-impedance multiport normalization explicitly deferred.
 ** TODO Record final validation evidence
 Run the opt-in dipole NEC2C/OpenEMS integration test and mesh-convergence test
 when convenient, retain or summarize their results, and rerun the ordinary
-test suite.  These long solver runs are release evidence rather than routine
-unit tests.
+test suite.  Build and VNA-measure the dipole using the protocol in
+~docs/OPENEMS-WIRE-REFERENCE.md~; retain the Touchstone data, physical
+dimensions, calibration-plane description, and exact model revision.  These
+long solver runs and bench measurements are release evidence rather than
+routine unit tests.
 
 ** TODO Establish wire-model parity before adding OpenEMS polarization reports
 Work through a controlled wire-antenna case in NEC2C and OpenEMS. Validate the
@@ -169,6 +172,14 @@ polarization. Once the reference case agrees, revisit near-field report
 polarization and decide whether to add complex angular NF2FF components for a
 far-field view. Do not increase the FDTD mesh or field-capture budget merely to
 enable polarization presentation.
+
+** TODO Add automatic mesh-convergence studies across solver backends
+Build a solver-neutral convergence runner that evaluates a sequence of
+numerical profiles, retains comparable impedance/pattern metrics, and reports
+whether requested tolerances were reached. OpenEMS should vary resolved-wire
+and wavelength mesh policy while NEC2C varies segment density. Keep this out of
+the initial wire-reference profile: automatic convergence is a substantial
+cross-backend feature rather than an implicit extra simulation.
 
 ** TODO Review soak-period findings and decide whether to merge
 Fix Revision 1 defects found during hands-on modeling, rerun the relevant
@@ -202,5 +213,5 @@ sharing one segment, and validate native sweeps against repeated static-~NT~
 runs. See ~docs/NEC2C-FREQUENCY-DEPENDENT-NETWORK-SPEC.md~. OpenEMS reuse is a
 future postprocessing/layout consideration and is not part of the first
 revision.
-* TODO Play with classic dipole simulation vs wire dipole distribution
+* DONE Play with classic dipole simulation vs wire dipole distribution
 Question is how different the signal pattern, etc., for two concentrated point charges 180-degrees out of phase changing sinusoidally with the same charge magnitude as the endpoints of the wire dipole; compare to wire dipole.

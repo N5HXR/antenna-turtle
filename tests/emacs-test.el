@@ -41,7 +41,8 @@
             "(with-material rogers-4003c\n"
             "  (sheet rect size '(10 2)))\n"
             "(conductor name foil conductivity 1e7 sheet-thickness 12e-6)\n"
-            "(simulate engine openems sweep '(800 1050) profile draft)\n")
+            "(simulate engine openems sweep '(800 1050)\n"
+            "          profile wire-reference dry-run #t)\n")
     (antenna-turtle-setup)
     (font-lock-ensure)
     (should (eq (antenna-turtle-test--face-at "cuboid" 1)
@@ -85,8 +86,10 @@
                 'font-lock-constant-face))
     (should (eq (antenna-turtle-test--face-at "xy" 1)
                 'font-lock-constant-face))
-    (should (eq (antenna-turtle-test--face-at "draft" 1)
+    (should (eq (antenna-turtle-test--face-at "wire-reference" 1)
                 'font-lock-constant-face))
+    (should (eq (antenna-turtle-test--face-at "dry-run" 1)
+                'antenna-turtle-loop-clause-face))
     (should (eq (antenna-turtle-test--face-at "rogers-4003c" 1)
                 'font-lock-constant-face))
     (should (eq (antenna-turtle-test--face-at "sheet-thickness" 1)

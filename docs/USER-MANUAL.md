@@ -1106,9 +1106,32 @@ The compact simulation frontend separates solver policy from visualization:
 
 `draft` selects lambda/20, four dielectric cells, 100,000 maximum timesteps,
 and -40 dB termination. `standard` selects lambda/30, six dielectric cells,
-250,000 timesteps, and -50 dB. Use `derive-simulation-profile` to define a
-project-specific profile while preserving all unspecified settings. See
-`examples/openems-patch-dsl.rkt` for a complete solid-DSL example.
+250,000 timesteps, and -50 dB. The opt-in `wire-reference` profile resolves
+ordinary Turtle wires with six cells across their diameter and a six-radius
+fine-mesh halo. It is intended only for small validation articles; always
+estimate it before starting FDTD:
+
+```racket
+(define estimate
+  (simulate engine openems
+            sweep '(400 470)
+            profile wire-reference
+            dry-run #t
+            progress #f))
+
+(openems-dry-run-cell-count estimate)
+(openems-dry-run-estimated-memory-high-bytes estimate)
+```
+
+The dry run builds the exact smoothed mesh in Octave but does not construct or
+run an FDTD operator. It also reports axis line counts, minimum spacing, a
+broad memory-planning range, and size warnings. See
+`docs/OPENEMS-WIRE-REFERENCE.md` for scope and initial validation evidence.
+The estimate does not predict wall time: fine wire spacing controls the FDTD
+timestep while RF frequency and bandwidth control excitation duration.
+Use `derive-simulation-profile` to define a project-specific profile while
+preserving all unspecified settings. See `examples/openems-patch-dsl.rkt` for
+a complete solid-DSL example.
 
 With two or more ports, `openems-sweep` performs one independent excitation
 per port and returns the complete S-matrix. Unlike the convenient one-port

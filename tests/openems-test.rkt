@@ -1246,3 +1246,49 @@
   (check-not-false (pair? (return-loss-sweep-renderers result)))
   (check-not-false (pair? (impedance-sweep-renderers result)))
   (check-not-false (pair? (smith-chart-renderers result))))
+
+(test-case "OpenEMS dry run returns the generated mesh without FDTD results"
+  (reset-model!)
+  (model frequency 432 wire-diameter (* 3 millimeter)
+         max-length (/ wavelength 100))
+  (with-wire (spread up (* 0.47 wavelength) feed center))
+  (define mock-octave (make-temporary-file "mock-octave-dry-run~a"))
+  (call-with-output-file mock-octave
+    #:exists 'truncate/replace
+    (lambda (out)
+      (displayln "#!/bin/sh" out)
+      (displayln "mkdir -p simulation" out)
+      (displayln "printf '%s\\n' '0,0.0001,0.0002' > simulation/mesh-x.csv" out)
+      (displayln "printf '%s\\n' '0,0.0001,0.0002' > simulation/mesh-y.csv" out)
+      (displayln "printf '%s\\n' '0,0.0001,0.0002,0.0003' > simulation/mesh-z.csv" out)
+      (displayln "printf '%s\\n' 'octave=mock' > simulation/versions.txt" out)
+      (displayln "exit 0" out)))
+  (file-or-directory-permissions mock-octave #o755)
+  (define estimate
+    (simulate engine openems
+              sweep '(400 470)
+              profile wire-reference
+              octave mock-octave
+              progress #f
+              record-radiation #f
+              dry-run #t))
+  (check-true (openems-dry-run? estimate))
+  (check-equal? (openems-dry-run-line-counts estimate) '(3 3 4))
+  (check-equal? (openems-dry-run-cell-count estimate) 36)
+  (check-= (openems-dry-run-minimum-spacing-m estimate) 0.0001 1e-12)
+  (check-true
+   (for/or ([warning (in-list (openems-dry-run-warnings estimate))])
+     (regexp-match? #rx"fine spatial timestep" warning)))
+  (define run (openems-dry-run-run estimate))
+  (define driver
+    (file->string
+     (openems-artifacts-driver-path (openems-run-info-artifacts run))))
+  (check-regexp-match #rx"dry_run = 1" driver)
+  (check-regexp-match #rx"FDTD skipped" driver)
+  (define conversion
+    (hash-ref (openems-run-info-manifest run) 'wire_conversion))
+  (check-equal? (hash-ref conversion 'mesh_refinement) "reference-resolved")
+  (check-equal? (hash-ref conversion 'minimum_wire_cells_across_diameter) 6)
+  (openems-close! estimate)
+  (delete-file mock-octave)
+  (clear-wires))

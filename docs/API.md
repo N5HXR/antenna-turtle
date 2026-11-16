@@ -1840,13 +1840,14 @@ open plots. Its complete contextual signature is:
           [progress boolean]
           [record-radiation boolean]
           [record-fields field-capture-request]
+          [dry-run boolean]
           [timeout seconds-or-#f])
 ```
 
 `sweep` is required and `profile` defaults to `standard`. `octave` defaults to
 `#f` (use `octave-executable`, `OCTAVE`, or `PATH` discovery), artifact
 retention and progress default to `#t`, radiation recording defaults to `#t`,
-field recording defaults to disabled, and timeout defaults to `#f`
+field recording and dry-run mode default to disabled, and timeout defaults to `#f`
 (unlimited). Numerical policy lives in the profile:
 
 ```racket
@@ -1877,7 +1878,11 @@ oblique traces, 100,000 maximum timesteps, and a -40 dB residual-energy
 threshold. `standard` uses lambda/30, six dielectric cells, five across
 oblique traces, 250,000 timesteps, and -50 dB. Both use 101 frequency
 samples, mesh grading 1.4, half-wavelength padding, automatic metal-edge
-resolution, and 24 segments around derived wire capsules.
+resolution, and 24 segments around derived wire capsules. `wire-reference`
+uses lambda/30, mesh grading 1.3, 32 capsule segments, six cells across each
+ordinary wire diameter, and a six-radius fine-mesh halo. It is an expensive,
+opt-in profile for small wire validation articles, not the routine wire
+backend.
 
 `simulation-profile` is a transparent structure. Construct one directly in
 the following field order, or more readably derive it with keywords:
@@ -1886,7 +1891,8 @@ the following field order, or more readably derive it with keywords:
 (simulation-profile name frequency-steps cells-per-wavelength
                     minimum-dielectric-cells minimum-trace-cells
                     metal-edge-resolution mesh-grading padding-wavelengths
-                    maximum-timesteps end-criteria wire-segments)
+                    maximum-timesteps end-criteria wire-segments
+                    minimum-wire-cells wire-halo-radii)
 
 (derive-simulation-profile
  base
@@ -1900,13 +1906,17 @@ the following field order, or more readably derive it with keywords:
  #:padding-wavelengths [count (simulation-profile-padding-wavelengths base)]
  #:maximum-timesteps [count (simulation-profile-maximum-timesteps base)]
  #:end-criteria [fraction (simulation-profile-end-criteria base)]
- #:wire-segments [count (simulation-profile-wire-segments base)])
+ #:wire-segments [count (simulation-profile-wire-segments base)]
+ #:minimum-wire-cells [count-or-#f (simulation-profile-minimum-wire-cells base)]
+ #:wire-halo-radii [count (simulation-profile-wire-halo-radii base)])
 ```
 
 Every omitted derivation keyword inherits from `base`. Frequency steps must be
 at least 2; cell minima and timestep limits are positive exact integers;
 grading is greater than 1; end criteria is between 0 and 1; and wire segments
-is at least 3. For example, a convergence run that changes only mesh density
+is at least 3. `minimum-wire-cells` is `#f` for legacy diameter-aware helpers
+or an exact integer of at least 2 for resolved-wire meshing; `wire-halo-radii`
+is at least 1. For example, a convergence run that changes only mesh density
 is:
 
 ```racket
@@ -2187,11 +2197,14 @@ permittivity of dispersive materials.
  #:max-timesteps 100000
  #:end-criteria 1e-5
  #:wire-segments 24
+ #:minimum-wire-cells #f
+ #:wire-halo-radii 2
  #:octave #f
  #:keep-artifacts? #t
  #:progress? #t
  #:record-radiation? #t
  #:field-capture #f
+ #:dry-run? #f
  #:timeout #f)
 ```
 
@@ -2212,6 +2225,20 @@ a physical gap and lumped port. Its default gap is
 `max(wavelength/1000, wire-radius)`; a warning is printed when that gap exceeds
 the marked edge's length. `#:wire-segments` controls capsule circular
 tessellation and must be at least three.
+
+`#:minimum-wire-cells` enables resolved-wire helpers when set to an integer of
+at least 2. Each wire diameter uses that many cells and retains that pitch
+through `#:wire-halo-radii` conductor radii around its centerline. Straight
+runs receive fine endpoint neighborhoods; oblique runs require their complete
+Cartesian projections to use the fine pitch. Because rectilinear planes are
+global, this policy can become extremely expensive. `wire-reference` selects
+6 and 6 respectively.
+
+`#:dry-run? #t` performs scene export and the exact Octave mesh construction,
+then exits before FDTD. It returns an `openems-dry-run` containing axis line
+counts, total mesh-cell estimate, minimum spacing, a 96--256 byte/cell memory
+planning range, warnings, and the ordinary run/artifact metadata. This is a
+cost estimator, not evidence of numerical convergence.
 
 The exporter derives diameter-aware mesh helpers for capsule wires. A
 grid-aligned straight wire contributes transverse lines at its physical
@@ -2316,7 +2343,8 @@ never deleted by `openems-close!`.
 ### `(openems-close! result-or-run-or-artifacts)`
 
 Accepts an `openems-sweep-result`, `openems-multiport-result`,
-`openems-run-info`, or `openems-artifacts`. It deletes a solver-created
+`openems-source-result`, `openems-dry-run`, `openems-run-info`, or
+`openems-artifacts`. It deletes a solver-created
 temporary directory, leaves a directory loaded by `openems-load-artifacts`
 on disk, marks the artifact handle unavailable, and returns `void`.
 
@@ -3798,7 +3826,8 @@ constructor signature shown below.
 (simulation-profile name frequency-steps cells-per-wavelength
                     minimum-dielectric-cells minimum-trace-cells
                     metal-edge-resolution mesh-grading padding-wavelengths
-                    maximum-timesteps end-criteria wire-segments)
+                    maximum-timesteps end-criteria wire-segments
+                    minimum-wire-cells wire-halo-radii)
 ```
 
 `antenna-model` and `solid-scene` additionally export field mutators because
@@ -3897,6 +3926,10 @@ and measurement accessors.
 (openems-result-port name reference-impedance)
 (openems-s-parameter-sample frequency-mhz output-port input-port value db)
 (openems-multiport-result run ports s-parameters input-samples)
+(openems-source-result run source-name)
+(openems-dry-run run line-counts cell-count minimum-spacing-m
+                 estimated-memory-low-bytes estimated-memory-high-bytes
+                 warnings)
 (openems-power-budget run frequency-mhz excitation-port
                       incident-power-w reflected-power-w accepted-power-w
                       delivered-power-w radiated-power-w dielectric-power-w
