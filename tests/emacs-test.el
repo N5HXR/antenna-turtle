@@ -22,6 +22,7 @@
             "(wire-coating material petg diameter 0.012)\n"
             "(with-wire-coating material petg diameter 0.014\n"
             "  (with-wire (forward 1)))\n"
+            "(with-max-length 0.01 (with-wire (forward 1)))\n"
             "(wire-coating-off)\n"
             "(set-coating-experimental #t)\n"
             "(circular-wire-mesh 2 12 4)\n"
@@ -50,6 +51,8 @@
     (should (eq (antenna-turtle-test--face-at "wire-coating" 1)
                 'antenna-turtle-macro-face))
     (should (eq (antenna-turtle-test--face-at "with-wire-coating" 1)
+                'antenna-turtle-macro-face))
+    (should (eq (antenna-turtle-test--face-at "with-max-length" 1)
                 'antenna-turtle-macro-face))
     (should (eq (antenna-turtle-test--face-at "wire-coating-off" 1)
                 'antenna-turtle-api-face))

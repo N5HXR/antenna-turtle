@@ -22,6 +22,7 @@
  (struct-out wire-edge)
  (struct-out wire-coating-spec)
  wire-edge-coating
+ wire-edge-maximum-segment-length
  wire-edge-feed? wire-edge-feed-location wire-edge-feed-name
  wire-edge-feed-amplitude wire-edge-feed-phase
  (struct-out antenna-model)
@@ -50,6 +51,7 @@
  model-height
  real-ground
  maximum-segment-length
+ call-with-maximum-segment-length
  maximum-nec2c-patch-length
  snap-length
  model-frequency
@@ -115,6 +117,12 @@
 ;; constructor arity, pattern matches, and printed forms remain unchanged.
 (define edge-coatings (make-weak-hasheq))
 
+;; Like coatings, local segmentation policy belongs to an authored edge but
+;; is not part of wire-edge's historical transparent representation.  Keep it
+;; by edge identity so existing constructors, patterns, and printed values do
+;; not change.
+(define edge-maximum-segment-lengths (make-weak-hasheq))
+
 (define (wire-edge-coating edge)
   (unless (wire-edge? edge)
     (raise-argument-error 'wire-edge-coating "wire-edge?" edge))
@@ -124,6 +132,16 @@
   (if coating
       (hash-set! edge-coatings edge coating)
       (hash-remove! edge-coatings edge)))
+
+(define (wire-edge-maximum-segment-length edge)
+  (unless (wire-edge? edge)
+    (raise-argument-error 'wire-edge-maximum-segment-length "wire-edge?" edge))
+  (hash-ref edge-maximum-segment-lengths edge #f))
+
+(define (set-wire-edge-maximum-segment-length! edge length)
+  (if length
+      (hash-set! edge-maximum-segment-lengths edge length)
+      (hash-remove! edge-maximum-segment-lengths edge)))
 
 ;; An orientation is a row-major 3x3 local-to-global matrix.
 (struct turtle-state
@@ -243,6 +261,7 @@
        (raise-argument-error 'model-height "nonnegative-real?" value))
      value)))
 (define maximum-segment-length-override (make-parameter #f))
+(define current-edge-maximum-segment-length (make-parameter #f))
 (define maximum-nec2c-patch-length-override (make-parameter #f))
 (define snap-length-override (make-parameter #f))
 (define model-frequency (make-parameter 141/10))
@@ -374,6 +393,14 @@
             'maximum-segment-length length "maximum segment length")
            (maximum-segment-length-override length))
          (maximum-segment-length-override #f))]))
+
+(define (call-with-maximum-segment-length length thunk)
+  (ensure-positive-real 'with-max-length length "maximum segment length")
+  (unless (and (procedure? thunk) (procedure-arity-includes? thunk 0))
+    (raise-argument-error 'with-max-length
+                          "(procedure-arity-includes/c 0)" thunk))
+  (parameterize ([current-edge-maximum-segment-length length])
+    (thunk)))
 
 ;; NEC2's MFIE surface discretization is deliberately coarser than the wire
 ;; current discretization.  The NEC manual recommends at least 25 patches per
@@ -1096,6 +1123,8 @@
      (define new-edge
        (wire-edge (add1 (length edges)) start end diameter finalized-feed))
      (set-wire-edge-coating! new-edge coating)
+     (set-wire-edge-maximum-segment-length!
+      new-edge (current-edge-maximum-segment-length))
      (set-antenna-model-edges! m (append edges (list new-edge)))
      (when (pending-feed-location) (pending-feed-location #f))])
   (values (vertex-point start) (vertex-point end)))
@@ -1108,7 +1137,7 @@
            (and (eq? (wire-edge-start edge) end)
                 (eq? (wire-edge-end edge) start)))))
 
-(define (append-reflected-edge! start-point end-point diameter coating)
+(define (append-reflected-edge! start-point end-point diameter coating max-length)
   (define m (current-antenna-model))
   (define start (intern-vertex! start-point))
   (define end
@@ -1122,6 +1151,7 @@
     (define reflected-edge
       (wire-edge (add1 (length edges)) start end diameter #f))
     (set-wire-edge-coating! reflected-edge coating)
+    (set-wire-edge-maximum-segment-length! reflected-edge max-length)
     (set-antenna-model-edges! m (append edges (list reflected-edge))))
   (void))
 
@@ -1171,9 +1201,10 @@
      (reflect-point-across-plane
       (vertex-point (wire-edge-start edge)) anchor normal)
      (reflect-point-across-plane
-      (vertex-point (wire-edge-end edge)) anchor normal)
+     (vertex-point (wire-edge-end edge)) anchor normal)
      (wire-edge-diameter edge)
-     (wire-edge-coating edge)))
+     (wire-edge-coating edge)
+     (wire-edge-maximum-segment-length edge)))
   (apply values results))
 
 (define (perform-movement destination)
@@ -1376,7 +1407,9 @@
 
 (define (edge-segment-count
          edge
-         [max-length (maximum-segment-length)])
+         [fallback-max-length (maximum-segment-length)])
+  (define max-length
+    (or (wire-edge-maximum-segment-length edge) fallback-max-length))
   (ensure-positive-real 'edge-segment-count max-length
                         "maximum segment length")
   (define base-count

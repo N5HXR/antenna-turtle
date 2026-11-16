@@ -248,6 +248,28 @@ space. This is useful when choosing an elevation range:
 - The count for an edge is `ceiling(edge-length / maximum-segment-length)`.
 - A center-fed edge's count is increased when necessary to make it odd.
 
+### `(with-max-length length body ...)`
+
+Records a local maximum segment length on every wire edge created by `body`.
+The positive `length` is in physical metres and takes precedence over the
+global `maximum-segment-length` when NEC2C or MMANA geometry is generated.
+Nested forms restore the enclosing value on exit; edges outside the form keep
+the global policy. Reflected copies retain the originating edge's local value.
+
+```racket
+(with-max-length {spacing / 2}
+  (from-here
+    (move forward (half spacing))
+    (with-wire (move down feed-line-length)))
+  (from-here
+    (move back (half spacing))
+    (with-wire (move down feed-line-length))))
+```
+
+The form changes solver subdivision, not authored geometry. It does not refine
+OpenEMS Cartesian meshes, and NEC wire-port fixture edges remain one segment.
+Use `show-segmentation-report` to inspect the resolved mixed segmentation.
+
 ### `(maximum-nec2c-patch-length [length])`
 
 - Default behavior: one-fifth of the wavelength at `model-frequency`.
@@ -907,8 +929,10 @@ overlapping edges each count because each represents a laid wire edge.
 `wire-edge-feed-location` returns `#f`, `'start`, `'center`, or `'end`.
 `wire-edge-feed-name`, `wire-edge-feed-amplitude`, and
 `wire-edge-feed-phase` expose the remaining excitation metadata.
-`wire-edge-feed?` remains available as a Boolean convenience predicate. All
-structure predicates and accessors are exported. A `ground-spec` has kind
+`wire-edge-feed?` remains available as a Boolean convenience predicate.
+`wire-edge-maximum-segment-length` returns the local positive length captured
+by `with-max-length`, or `#f` when the edge uses global segmentation.
+All structure predicates and accessors are exported. A `ground-spec` has kind
 `'none`, `'perfect`, or `'real`; only real ground carries numeric material
 fields. `antenna-model` also
 exports mutators because it is declared mutable; tooling should prefer normal
@@ -922,7 +946,9 @@ Returns Euclidean edge length.
 
 Returns the solver subdivision count, including odd-count adjustment for a
 center-fed edge. The exact signature is
-`(edge-segment-count edge [maximum-length (maximum-segment-length)])`.
+`(edge-segment-count edge [fallback-maximum-length
+(maximum-segment-length)])`. An edge-local value recorded by `with-max-length`
+takes precedence over the fallback argument.
 
 ## 12. Geometry Viewer
 

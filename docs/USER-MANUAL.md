@@ -1392,6 +1392,26 @@ count so the source occupies the unique center solver segment. Start and end
 feeds use the first and last NEC segment or MMANA's `b` and `e` locations.
 MATLAB supports center feeds only and reports an error for start/end feeds.
 
+Use `with-max-length` to refine only the edges created in one lexical scope.
+The value is stored with those edges and applied later when NEC2C or MMANA
+geometry is generated:
+
+```racket
+(with-max-length {spacing / 2}
+  (from-here
+    (move forward (half spacing))
+    (with-wire (move down feed-line-length)))
+  (from-here
+    (move back (half spacing))
+    (with-wire (move down feed-line-length))))
+```
+
+This is useful for closely spaced conductors without forcing the complete
+antenna to use the same fine segmentation. The local value takes precedence
+over the model's global maximum, nests dynamically, and follows reflected
+wire copies. It has no effect on OpenEMS Cartesian mesh generation. NEC port
+fixture edges retain their required single-segment representation.
+
 Multiple feeds are supported by the core language and wire exporters. The loft
 MATLAB exporter currently supports at most one.
 

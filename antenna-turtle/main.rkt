@@ -115,6 +115,7 @@
              point-vector-local spread-local
              mark-feed
              call-with-wire call-with-points call-with-scale call-from-here
+             call-with-maximum-segment-length
              call-with-warp call-with-surface call-with-reflection
              call-with-radial-repeat radial-iterations-value
              set-wire-coating! call-with-wire-coating
@@ -138,6 +139,7 @@
  ;; Compatibility forms retained for existing models.
  with-pen
  with-scale
+ with-max-length
  with-push
  export-nec2c
  (struct-out segmentation-report)
@@ -599,6 +601,9 @@
 
 (define-syntax-rule (with-scale factor body ...)
   (call-with-scale factor (lambda () body ...)))
+
+(define-syntax-rule (with-max-length length body ...)
+  (call-with-maximum-segment-length length (lambda () body ...)))
 
 (define-syntax-rule (with-push body ...)
   (from-here body ...))
