@@ -112,6 +112,12 @@ Cross-solver agreement cannot establish which model represents a physical
 antenna. Use the free-space dipole as the first bench article before spending
 time on the Yagi or Moxon:
 
+The nominal fixture in `examples/verification/10-free-space-dipole.rkt` is
+0.47 free-space wavelength tip to tip at 432 MHz (about 326.2 mm), uses 3 mm
+diameter conductor, and derives a 1.5 mm feed gap. That leaves nominal metal
+arms of about 162.3 mm each. Measure the finished article rather than treating
+those rounded construction dimensions as its as-built geometry.
+
 1. Record the finished tip-to-tip length, conductor diameter, feed-gap width,
    connector geometry, and any support material.
 2. Measure a VNA sweep wide enough to contain resonance. Move the calibration
