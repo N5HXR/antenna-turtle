@@ -240,10 +240,10 @@
          "coax" (wire-coax-declaration-name coax))))
     ;; A coax may terminate at an NT port or at the input of a downstream TL
     ;; instead of directly at an antenna wire. In that case the network
-    ;; supplies the output circuit.
+    ;; supplies the output circuit.  Its exterior shield is also a valid
+    ;; negative-side conductor: it is the cold element in a coaxial dipole.
     (when (and (not (downstream-network-port? output))
-               (null? (filter (lambda (edge) (not (memq edge shield)))
-                              (other-incident-edges output output-negative))))
+               (null? (other-incident-edges output output-negative)))
       (raise-arguments-error
        who "coax output negative terminal is not connected to an antenna conductor"
        "coax" (wire-coax-declaration-name coax)

@@ -6,12 +6,14 @@
          "core.rkt"
          "measurement-interpolation.rkt"
          "nec2c.rkt"
-         "network.rkt")
+         "network.rkt"
+         "wire-network.rkt")
 
 (provide
  impedance-at admittance-at resistance-at reactance-at
  reflection-at s11-db-at return-loss-at vswr-at
  find-s11-minimum
+ deembed-transmission-line
  impedance->reflection-coefficient
  reflection-coefficient->return-loss reflection-coefficient->vswr
  impedance->return-loss impedance->vswr
@@ -72,6 +74,89 @@
        "network-sweep?, nec2c-sweep-result?, nec2c-gain-sweep-result?, "
        "openems-sweep-result?, or openems-multiport-result?")
       result)]))
+
+(define (deembedding-name who value)
+  (cond [(string? value) value]
+        [(symbol? value) (symbol->string value)]
+        [else (raise-argument-error who "(or/c symbol? string?)" value)]))
+
+(define (find-transmission-line who requested-name)
+  (define name (deembedding-name who requested-name))
+  (define matching
+    (filter (lambda (line)
+              (string=? name (format "~a" (wire-transmission-line-name line))))
+            (model-wire-transmission-lines)))
+  (if (pair? matching)
+      (car matching)
+      (raise-arguments-error
+       who "no transmission line with that name exists in the current model"
+       "line" requested-name
+       "available lines" (map wire-transmission-line-name
+                              (model-wire-transmission-lines)))))
+
+(define (finite-complex? value)
+  (and (number? value)
+       (rational? (real-part value))
+       (rational? (imag-part value))))
+
+(define (network-sample-from-impedance port frequency impedance reference-impedance)
+  (define reflection
+    (/ (- impedance reference-impedance)
+       (+ impedance reference-impedance)))
+  (define magnitude* (magnitude reflection))
+  (network-sample
+   port frequency reflection impedance
+   (if (zero? magnitude*)
+       -inf.0
+       (* 20.0 (/ (log magnitude*) (log 10.0))))
+   (reflection-magnitude->vswr magnitude*)))
+
+;; Reverse a lossless TL transformation.  The original sweep retains the
+;; source-plane answer; this copy reports the antenna-side port instead.
+(define (deembed-transmission-line result line-name #:feed [requested-feed #f])
+  (define who 'deembed-transmission-line)
+  (define sweep (network-result->sweep who result))
+  (define line (find-transmission-line who line-name))
+  (define feed-name
+    (if requested-feed
+        (deembedding-name who requested-feed)
+        (format "~a" (wire-transmission-line-name line))))
+  (define samples (network-sweep-samples sweep))
+  (unless (for/or ([sample (in-list samples)])
+            (string=? feed-name (format "~a" (network-sample-port-name sample))))
+    (raise-arguments-error
+     who "the selected transmission line has no matching feed in the sweep"
+     "line" line-name "feed" feed-name
+     "available feeds" (remove-duplicates (map network-sample-port-name samples))))
+  (define z0 (wire-transmission-line-impedance line))
+  (define physical-length (wire-transmission-line-physical-length line))
+  (define velocity-factor (wire-transmission-line-velocity-factor line))
+  (define output-name
+    (format "~a" (wire-port-declaration-name
+                    (wire-transmission-line-output-port line))))
+  (define reference-impedance (network-sweep-reference-impedance sweep))
+  (struct-copy
+   network-sweep sweep
+   [samples
+    (for/list ([sample (in-list samples)])
+      (if (string=? feed-name (format "~a" (network-sample-port-name sample)))
+          (let* ([frequency (network-sample-frequency-mhz sample)]
+                 [theta (* 2.0 pi
+                           (/ physical-length
+                              (* velocity-factor
+                                 (frequency->wavelength frequency))))]
+                 [tangent (tan theta)]
+                 [input-impedance (network-sample-impedance sample)]
+                 [output-impedance
+                  (/ (* z0 (- input-impedance (* 0+1i z0 tangent)))
+                     (- z0 (* 0+1i input-impedance tangent)))])
+            (unless (finite-complex? output-impedance)
+              (raise-arguments-error
+               who "de-embedding produced a non-finite antenna-side impedance"
+               "frequency (MHz)" frequency "line" line-name))
+            (network-sample-from-impedance output-name frequency output-impedance
+                                           reference-impedance))
+          sample))]))
 
 (define (select-name who requested available description)
   (define names (unique-names available))

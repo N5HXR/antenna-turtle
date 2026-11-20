@@ -105,6 +105,24 @@
     (move down 1)
     (move left 1)))
 
+;; The shield exterior starts at the negative terminal of the output port.
+;; It is intentionally the cold radiating element here; no separate wire is
+;; attached to that terminal.
+(define (build-vertical-coax-dipole)
+  (reset-model!)
+  (model title "Vertical coaxial dipole"
+         frequency 14.2
+         max-length 0.2
+         wire-diameter 0.002
+         ground perfect)
+  (move up 5)
+  (wire-port up name feedpoint gap 0.05 diameter 0.002)
+  (from-here
+    (move up 0.025)
+    (with-wire (move up 1)))
+  (coax type rg58 output feedpoint
+    (move down 1)))
+
 (test-case "coax creates a visible shield, two one-segment ports, and a TL card"
   (build-coax-fed-dipole)
   (check-equal? (length (model-wire-ports)) 2)
@@ -121,6 +139,14 @@
    (deck-lines "TL " text)
    '("TL 5 1 3 1 50.000000000000 1.515151515152 0 0 0 0"))
   (check-true (string-contains? text "EX 0 5 1 0 1.000000000000 0.000000000000")))
+
+(test-case "coax shield may be the cold element of a coaxial dipole"
+  (build-vertical-coax-dipole)
+  ;; Export succeeds: the shield route is a legitimate output-negative
+  ;; conductor even though no separate wire continues from that terminal.
+  (define text (deck-text))
+  (check-equal? (length (deck-lines "TL " text)) 1)
+  (check-equal? (length (deck-lines "EX " text)) 1))
 
 (test-case "show-model renderers include port polarity markers"
   (build-coax-fed-dipole)
