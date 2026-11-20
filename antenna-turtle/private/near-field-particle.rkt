@@ -7,7 +7,10 @@
 (provide (struct-out near-field-flow-field)
          (struct-out near-field-flow-state)
          make-near-field-flow-field
+         near-field-flow-electric
          near-field-flow-sample
+         near-field-flow-average-poynting
+         near-field-flow-signed-normal-power
          near-field-flow-seed-weights
          near-field-plane-point)
 
@@ -94,6 +97,18 @@
           (lerp cv dv u-fraction)
           v-fraction)))
 
+(define (near-field-flow-electric field u v)
+  (unless (near-field-flow-field? field)
+    (raise-argument-error
+     'near-field-flow-electric "near-field-flow-field?" field))
+  (define u-location (interval-at (near-field-flow-field-u-values field) u))
+  (define v-location (interval-at (near-field-flow-field-v-values field) v))
+  (and u-location v-location
+       (bilinear-vector field
+                        (car u-location) (car v-location)
+                        (cdr u-location) (cdr v-location)
+                        nec2c-near-field-sample-electric)))
+
 (define (instantaneous phasor phase)
   (define cosine (cos phase))
   (define sine (sin phase))
@@ -124,8 +139,7 @@
        (let* ([u-index (car u-location)] [u-fraction (cdr u-location)]
               [v-index (car v-location)] [v-fraction (cdr v-location)]
               [electric
-               (bilinear-vector field u-index v-index u-fraction v-fraction
-                                nec2c-near-field-sample-electric)]
+               (near-field-flow-electric field u v)]
               [magnetic
                (bilinear-vector field u-index v-index u-fraction v-fraction
                                 nec2c-near-field-sample-magnetic)]
@@ -153,6 +167,22 @@
                    '(0.0 0.0 0.0))])
          (near-field-flow-state velocity poynting
                                 electric-energy magnetic-energy))))
+
+(define (near-field-flow-average-poynting field u v)
+  (define state (near-field-flow-sample field u v 0.0 'average))
+  (and state (near-field-flow-state-poynting state)))
+
+(define (near-field-flow-signed-normal-power field u v)
+  (unless (near-field-flow-field? field)
+    (raise-argument-error
+     'near-field-flow-signed-normal-power "near-field-flow-field?" field))
+  (define poynting (near-field-flow-average-poynting field u v))
+  (and poynting
+       (case (nec2c-near-field-section-normal-axis
+              (near-field-flow-field-section field))
+         [(x) (first poynting)]
+         [(y) (second poynting)]
+         [(z) (third poynting)])))
 
 (define (near-field-flow-seed-weights field)
   (for/list ([sample (in-vector (near-field-flow-field-samples field))])

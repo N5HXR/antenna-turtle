@@ -22,5 +22,8 @@
 (module+ main
   (define sweep (nec2c-vswr-sweep 5 20 #:steps 1001))
   (show-smith-chart sweep)
+  (define pattern (nec2c-radiation-grid))
+  (show-radiation-pattern-opengl pattern #:view 'polarization)
+
   ;; (show-return-loss-sweep sweep)
 )
