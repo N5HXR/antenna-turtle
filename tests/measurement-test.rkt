@@ -71,6 +71,28 @@
                 '(100 -inf.0))
   (check-equal? (measurement-ports two-port) '(feed "other")))
 
+(test-case "lossless transmission-line de-embedding recovers antenna impedance"
+  (reset-model!)
+  (model)
+  (wire-port input forward gap 0.01)
+  (from-here (move up 1) (wire-port output forward gap 0.01))
+  (transmission-line name feedline input input output output
+                     impedance 50 physical-length 2.4 velocity-factor 0.66)
+  (define frequency 14.1)
+  (define load 73+21i)
+  (define theta (* 2 pi frequency 1000000 (/ 2.4 (* .66 299792458))))
+  (define tangent (tan theta))
+  (define input
+    (* 50 (/ (+ load (* 0+1i 50 tangent))
+             (+ 50 (* 0+1i load tangent)))))
+  (define measured
+    (network-sweep
+     'test #f 50
+     (list (network-sample "feedline" frequency 0 input 0 1))))
+  (define deembedded (deembed-transmission-line measured 'feedline))
+  (check-equal? (measurement-ports deembedded) '("output"))
+  (check-= (magnitude (- (impedance-at deembedded frequency) load)) 0 1e-10))
+
 (define run (openems-run-info #f 0 0 "" "" #f (hash)))
 (define multiport
   (openems-multiport-result
