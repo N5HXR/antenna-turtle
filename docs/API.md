@@ -1728,6 +1728,8 @@ mode plus a radiating turtle wire for current on the shield exterior:
 
 The body starts at the output port's negative terminal and traces from the
 antenna toward the input measurement plane with wire generation already on.
+That shield-exterior wire is electrically attached to the negative terminal;
+it may itself be the cold radiating element of a coaxial dipole.
 At its end, `coax` creates a generated input port whose negative terminal joins
 the shield path. `type` selects a catalog profile; current profiles are
 `rg58`, `rg6`, `rg8`, `rg8x`, `rg213`, `rg174`, `rg316`, `rg400`, `rg142`,
@@ -2422,6 +2424,34 @@ The complete one-port/network signatures are:
 (define null-frequency (first null))
 (define null-s11-db (second null))
 ```
+
+### `(deembed-transmission-line sweep line [#:feed name])`
+
+Returns a solver-neutral copy of a network sweep with the named model
+transmission line mathematically removed. The original source-plane sweep is
+unchanged; pass the returned result to the usual impedance, VSWR, return-loss,
+or Smith-chart reporting functions when you want the antenna-side view.
+`line` may be a `coax` name, since every `coax` declares a transmission line
+with the same name. The feed defaults to that name and can be overridden for
+an explicitly named source.
+
+```racket
+(coax name feedline type rg58 output feedpoint
+  (move down {quarter-wave - (half foot)}))
+
+(define source-sweep (nec2c-vswr-sweep 13 15))
+(define feedpoint-sweep
+  (deembed-transmission-line source-sweep 'feedline))
+
+(show-smith-chart source-sweep)    ; input of the feedline
+(show-smith-chart feedpoint-sweep) ; output of the feedline / antenna port
+(impedance-at feedpoint-sweep 14.1) ; antenna-side impedance
+```
+
+Each sample uses the recorded characteristic impedance, routed physical length,
+and velocity factor to reverse the lossless transmission-line transformation.
+S11 and VSWR are recalculated against the sweep's reference impedance.
+De-embed one line at a time when inspecting a cascade.
 
 The `#:port` argument may be omitted when there is exactly one port. Port
 symbols and strings with the same spelling match. Complex impedance and
