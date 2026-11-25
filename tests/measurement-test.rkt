@@ -277,6 +277,39 @@
   (define half-efficient (constant-pattern '(0 45 90) 0))
   (check-= (pattern-air-radiation-efficiency half-efficient) 0.5 1e-10))
 
+(define (pattern-with-missing-polar-gain e-theta e-phi)
+  (define theta-values '(0 45 90))
+  (define phi-values '(0 90 180 270))
+  (nec2c-pattern-grid
+   #f theta-values phi-values
+   (for*/list ([phi (in-list phi-values)]
+               [theta (in-list theta-values)])
+     (define polar-null? (zero? theta))
+     (nec2c-pattern-sample
+      3.55 theta phi (- 90 theta) phi
+      (and (not polar-null?) 0)
+      (and (not polar-null?) 0)
+      (and (not polar-null?) 0)
+      1 0 'linear
+      (if polar-null? e-theta 1+0i)
+      (if polar-null? e-phi 0+0i)))))
+
+(test-case "power integration treats an exact field null as zero gain"
+  (define polar-null (pattern-with-missing-polar-gain 0+0i 0+0i))
+  ;; The 0--45 degree cells average zero at their polar corners and unit gain
+  ;; at 45 degrees; the 45--90 degree cells have unit gain throughout.
+  (define expected
+    (* 2 pi
+       (+ (* 0.5 (- 1 (cos (/ pi 4))))
+          (cos (/ pi 4)))))
+  (check-= (pattern-power-gain-integral polar-null) expected 1e-10)
+  ;; Missing gain with a nonzero field is still malformed solver data.
+  (check-exn
+   #rx"real, non-NaN gain"
+   (lambda ()
+     (pattern-power-gain-integral
+      (pattern-with-missing-polar-gain 1+0i 0+0i)))))
+
 (test-case "NEC power convenience layer includes mismatch and ground residual"
   (define half-efficient (constant-pattern '(0 45 90) 0))
   (define diagnostics
