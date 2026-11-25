@@ -14,6 +14,7 @@
                                 #:progress? [progress? #t]
                                 #:record-radiation? [record-radiation? #t]
                                 #:field-capture [capture #f]
+                                #:dry-run? [dry-run? #f]
                                 #:timeout [timeout #f])
   (unless (simulation-profile? profile)
     (raise-argument-error 'simulate "simulation-profile?" profile))
@@ -34,11 +35,16 @@
    #:max-timesteps (simulation-profile-maximum-timesteps profile)
    #:end-criteria (simulation-profile-end-criteria profile)
    #:wire-segments (simulation-profile-wire-segments profile)
+   #:minimum-wire-cells
+   (simulation-profile-minimum-wire-cells profile)
+   #:wire-halo-radii
+   (simulation-profile-wire-halo-radii profile)
    #:octave octave
    #:keep-artifacts? keep-artifacts?
    #:progress? progress?
    #:record-radiation? record-radiation?
    #:field-capture capture
+   #:dry-run? dry-run?
    #:timeout timeout))
 
 (begin-for-syntax
@@ -56,12 +62,12 @@
       (define key (syntax-e key-stx))
       (unless (memq key
                     '(engine sweep profile octave keep-artifacts progress
-                             record-radiation record-fields timeout))
+                             record-radiation record-fields dry-run timeout))
        (raise-syntax-error
          'simulate
          (string-append
           "expected engine, sweep, profile, octave, keep-artifacts, "
-          "progress, record-radiation, record-fields, or timeout setting")
+          "progress, record-radiation, record-fields, dry-run, or timeout setting")
          stx key-stx))
       (when (hash-has-key? result key)
         (raise-syntax-error
@@ -100,6 +106,7 @@
           #,@(optional-keyword
               settings 'record-radiation #'#:record-radiation?)
           #,@(optional-keyword settings 'record-fields #'#:field-capture)
+          #,@(optional-keyword settings 'dry-run #'#:dry-run?)
           #,@(optional-keyword settings 'timeout #'#:timeout)))]))
 
 ;; Near-field recording already belongs to the simulation result. This name

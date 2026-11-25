@@ -282,7 +282,10 @@ function addGeometry(data, group) {
   }
   const feedMaterial = new THREE.MeshStandardMaterial({
     color: 0xff42d0, emissive: 0xff1498, emissiveIntensity: 1.2,
-    depthTest: false,
+    // Surface bodies are translucent and therefore render in Three.js's
+    // transparent pass. Keep geometry overlays in that same pass so their
+    // renderOrder can actually place them in front of the body.
+    transparent: true, opacity: 1, depthTest: false, depthWrite: false,
   });
   for (const wire of data.geometry.wires) {
     const actualRadius = Math.max(Number(wire.diameter) / 2, 1e-9);
@@ -296,7 +299,10 @@ function addGeometry(data, group) {
       const b = start.clone().lerp(end, (index + 1) / count);
       const baseColor = wire.color && wire.color !== "null"
         ? new THREE.Color(String(wire.color).replace(/\s+/g, "")) : new THREE.Color(0x8eeaff);
-      const material = new THREE.MeshBasicMaterial({ color: baseColor, depthTest: false });
+      const material = new THREE.MeshBasicMaterial({
+        color: baseColor, transparent: true, opacity: 1,
+        depthTest: false, depthWrite: false,
+      });
       const conductor = cylinderBetween(a.toArray(), b.toArray(), radius, material);
       conductor.renderOrder = 3;
       conductor.userData.segmentKey = `${wire.id}:${index + 1}`;
@@ -333,9 +339,11 @@ function addGeometry(data, group) {
   }
   const portMaterials = {
     negative: new THREE.MeshStandardMaterial({ color: 0x36a3ff, emissive: 0x103caa,
-      emissiveIntensity: 1, depthTest: false }),
+      emissiveIntensity: 1, transparent: true, opacity: 1,
+      depthTest: false, depthWrite: false }),
     positive: new THREE.MeshStandardMaterial({ color: 0xff556f, emissive: 0xaa102c,
-      emissiveIntensity: 1, depthTest: false }),
+      emissiveIntensity: 1, transparent: true, opacity: 1,
+      depthTest: false, depthWrite: false }),
   };
   for (const port of data.geometry.ports || []) {
     for (const polarity of ["negative", "positive"]) {
@@ -350,7 +358,8 @@ function addGeometry(data, group) {
     }
   }
   const loadMaterial = new THREE.MeshStandardMaterial({
-    color: 0xffa31a, emissive: 0xff4f00, emissiveIntensity: 1.25, depthTest: false,
+    color: 0xffa31a, emissive: 0xff4f00, emissiveIntensity: 1.25,
+    transparent: true, opacity: 1, depthTest: false, depthWrite: false,
   });
   for (const load of data.geometry.lumped_loads || []) {
     const marker = new THREE.Mesh(

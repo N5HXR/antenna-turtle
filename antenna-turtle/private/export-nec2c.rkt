@@ -518,7 +518,7 @@
   (fprintf out "NEC2C segmentation report — ~a\n" (model-title))
   (fprintf out "  Frequency:                 ~a MHz\n"
            (report-number (segmentation-report-frequency-mhz report)))
-  (fprintf out "  Maximum target length:     ~a m\n"
+  (fprintf out "  Global target length:      ~a m\n"
            (report-number
             (segmentation-report-target-segment-length-m report)))
   (fprintf out "  Authored wire edges:       ~a\n"

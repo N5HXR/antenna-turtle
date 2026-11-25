@@ -50,6 +50,19 @@
   (check-equal? (segmentation-report-minimum-segment-length-m report) 1)
   (check-equal? (segmentation-report-maximum-segment-length-m report) 1))
 
+(test-case "segmentation report resolves mixed global and local limits"
+  (reset-model!)
+  (maximum-segment-length 1/2)
+  (with-wire
+    (forward 1)
+    (with-max-length 1/10 (forward 1))
+    (forward 1))
+  (define report (nec2c-segmentation-report))
+  (check-equal? (segmentation-report-wire-edge-count report) 3)
+  (check-equal? (segmentation-report-segment-count report) 14)
+  (check-equal? (segmentation-report-minimum-segment-length-m report) 1/10)
+  (check-equal? (segmentation-report-maximum-segment-length-m report) 1/2))
+
 (test-case "empty models have zero-valued aggregate statistics"
   (reset-model!)
   (define report (nec2c-segmentation-report))

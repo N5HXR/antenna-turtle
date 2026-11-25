@@ -1106,9 +1106,32 @@ The compact simulation frontend separates solver policy from visualization:
 
 `draft` selects lambda/20, four dielectric cells, 100,000 maximum timesteps,
 and -40 dB termination. `standard` selects lambda/30, six dielectric cells,
-250,000 timesteps, and -50 dB. Use `derive-simulation-profile` to define a
-project-specific profile while preserving all unspecified settings. See
-`examples/openems-patch-dsl.rkt` for a complete solid-DSL example.
+250,000 timesteps, and -50 dB. The opt-in `wire-reference` profile resolves
+ordinary Turtle wires with six cells across their diameter and a six-radius
+fine-mesh halo. It is intended only for small validation articles; always
+estimate it before starting FDTD:
+
+```racket
+(define estimate
+  (simulate engine openems
+            sweep '(400 470)
+            profile wire-reference
+            dry-run #t
+            progress #f))
+
+(openems-dry-run-cell-count estimate)
+(openems-dry-run-estimated-memory-high-bytes estimate)
+```
+
+The dry run builds the exact smoothed mesh in Octave but does not construct or
+run an FDTD operator. It also reports axis line counts, minimum spacing, a
+broad memory-planning range, and size warnings. See
+`docs/OPENEMS-WIRE-REFERENCE.md` for scope and initial validation evidence.
+The estimate does not predict wall time: fine wire spacing controls the FDTD
+timestep while RF frequency and bandwidth control excitation duration.
+Use `derive-simulation-profile` to define a project-specific profile while
+preserving all unspecified settings. See `examples/openems-patch-dsl.rkt` for
+a complete solid-DSL example.
 
 With two or more ports, `openems-sweep` performs one independent excitation
 per port and returns the complete S-matrix. Unlike the convenient one-port
@@ -1369,6 +1392,26 @@ count so the source occupies the unique center solver segment. Start and end
 feeds use the first and last NEC segment or MMANA's `b` and `e` locations.
 MATLAB supports center feeds only and reports an error for start/end feeds.
 
+Use `with-max-length` to refine only the edges created in one lexical scope.
+The value is stored with those edges and applied later when NEC2C or MMANA
+geometry is generated:
+
+```racket
+(with-max-length {spacing / 2}
+  (from-here
+    (move forward (half spacing))
+    (with-wire (move down feed-line-length)))
+  (from-here
+    (move back (half spacing))
+    (with-wire (move down feed-line-length))))
+```
+
+This is useful for closely spaced conductors without forcing the complete
+antenna to use the same fine segmentation. The local value takes precedence
+over the model's global maximum, nests dynamically, and follows reflected
+wire copies. It has no effect on OpenEMS Cartesian mesh generation. NEC port
+fixture edges retain their required single-segment representation.
+
 Multiple feeds are supported by the core language and wire exporters. The loft
 MATLAB exporter currently supports at most one.
 
@@ -1491,6 +1534,53 @@ For multiple feeds, select one with `#:feed`. Model the antenna alone when it
 is to become a Touchstone load in another simulator; otherwise its matching
 network would be included twice.
 
+For multiband optimization, solve only the target frequencies and score them
+as a group:
+
+```racket
+(define targets '(3.6 7.1 10.1 14.1 21.1 28.1))
+(define target-sweep (nec2c-vswr-frequencies targets))
+(define match (multi-match target-sweep targets #:maximum-vswr 10))
+
+(multi-match-result-score match)         ; 0--100 presentation score
+(multi-match-result-worst-vswr match)
+(multi-match-result-outside-count match) ; targets above 10:1
+(multi-match-result-points match)         ; per-frequency measurements
+```
+
+Sort candidate metrics with `multi-match<?`. It prioritizes keeping every
+target within the hard limit before improving worst-case VSWR, the count below
+the good threshold, and aggregate mismatch. This avoids selecting a design
+whose excellent average conceals one unusable band. A dense broadband sweep
+is still valuable for visually checking the finalists.
+
+The scoped optimization tracker removes the bookkeeping from a
+programmer-controlled search without choosing a search strategy:
+
+```racket
+(define winning-attributes
+  (with-optimizer multi-match<?
+    (define (measure)
+      (multi-match (nec2c-vswr-frequencies targets)
+                   targets
+                   #:interpolate? #f))
+
+    (loop for len from 0.9 to 1.1 by 0.02 do
+      (build-ocfd! len 0.7)
+      (track `(length-scale ,len) (measure)))
+
+    (best 'key)))
+```
+
+Keys and results are opaque to the tracker. The program remains free to
+use nested loops, random candidates, manual refinement, or another generator.
+Within `with-optimizer`, `(best 'result)` returns the winning measurement and
+`(best 'run)` returns its complete record. The tracker does not reconstruct the
+winning geometry; use the returned key to do that explicitly when desired. The
+underlying `make-optimizer`, `optimizer-track!`, and `optimizer-list` procedures
+remain available when a tracker must be passed among functions or every run is
+needed in best-first order.
+
 When NEC2C-N5HXR dielectric support is in use, a simple one-cuboid model can
 delegate its cubic mesh arithmetic and small commensurability adjustments:
 
@@ -1543,6 +1633,25 @@ grid and pass up to nine of them to the comparison viewer:
  #:aspect-ratio 16/9
  #:palette 'inferno)
 ```
+
+The same named grids can be compared as traces through a selected plane:
+
+```racket
+(show-radiation-cut-comparison
+ (list (radiation-case "reference" reference-grid)
+       (radiation-case "longer directors" longer-grid)
+       (radiation-case "wider spacing" wider-grid))
+ #:cut 'elevation
+ #:azimuth 0
+ #:scale 'relative)
+```
+
+An elevation cut joins the selected azimuth and its reciprocal bearing into
+one vertical plane. Use `#:cut 'azimuth` with `#:elevation` for a horizontal
+cut. All traces share the maximum gain across every complete grid. The
+default `'relative` scale labels that reference as 0 dB; `'absolute` labels
+the same rings in dBi, without changing the trace geometry. `#:floor-db`
+sets the displayed dynamic range below the shared peak.
 
 For a direct pattern-difference view, make the first case the reference and
 enable difference coloring:
@@ -1605,7 +1714,17 @@ orientation on mouse release.
 
 VSWR plots include every finite value by default and let Plot choose the
 vertical extent. For a deliberately clipped overview, supply a ceiling such
-as `(show-vswr-sweep sweep #:max-vswr 10)`.
+as `(show-vswr-sweep sweep #:max-vswr 10)`. Reference rules mark 2:1, 3:1,
+and 10:1; the last is a common upper matching-range commitment for external
+antenna tuners.
+
+Frequency-sweep graphs shade the United States amateur allocations from 2200
+meters through 3 centimeters with a subtle blue background. Only allocations
+that intersect the displayed MHz range are drawn; wide enough spans also carry
+a small band label at the top edge. The discontinuous 60-meter and microwave
+allocations remain separate instead of being presented as continuous bands.
+This applies to VSWR, return loss, impedance, gain-and-match, and OpenEMS
+S-parameter graphs. It does not alter plot scaling or the underlying samples.
 
 All 2-D analysis graphs include a data cursor. Left-drag zooms and left-click
 unzooms as usual. Right-click or hold the right button while dragging to select

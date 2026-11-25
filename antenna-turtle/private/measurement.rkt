@@ -2,6 +2,7 @@
 
 (require racket/list
          "measurement-network.rkt"
+         "measurement-match.rkt"
          "measurement-power.rkt"
          "measurement-radiation.rkt"
          "nec2c.rkt")
@@ -12,6 +13,7 @@
  (except-out (all-from-out "measurement-radiation.rkt")
              measurement-pattern-frequencies)
  (all-from-out "measurement-power.rkt")
+ (all-from-out "measurement-match.rkt")
  measurement-frequencies
  measurement-frequency-range
  measurement-ports)

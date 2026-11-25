@@ -27,6 +27,10 @@ the volume-body [`examples/openems-dipole.rkt`](examples/openems-dipole.rkt)
 and dielectric/sheet [`examples/openems-patch.rkt`](examples/openems-patch.rkt)
 references. [`examples/openems-wire-yagi.rkt`](examples/openems-wire-yagi.rkt)
 builds one ordinary wire Yagi and compares its NEC2C and OpenEMS patterns.
+For deliberately small wire cross-checks, the opt-in
+[`wire-reference` profile and mesh dry-run workflow](docs/OPENEMS-WIRE-REFERENCE.md)
+resolve conductor diameter at substantially higher cost; NEC2C remains the
+recommended routine wire solver.
 [`examples/openems-patch-dsl.rkt`](examples/openems-patch-dsl.rkt) shows the
 turtle-oriented solid layer, scoped units/materials, simulation profiles, and
 data-only `simulate`/`radiation-pattern` workflow.
@@ -675,6 +679,11 @@ returns transparent Racket values without printing or opening a window:
  (list (radiation-case "baseline" sphere)
        (radiation-case "revision" revised-sphere))
  #:aspect-ratio 16/9)
+
+(show-radiation-cut-comparison
+ (list (radiation-case "baseline" sphere)
+       (radiation-case "revision" revised-sphere))
+ #:cut 'elevation #:azimuth 0 #:scale 'absolute)
 
 ;; One portable file with wire geometry, matching plots, an interactive 3-D
 ;; radiation surface with unlit palette colors, opacity and a gain legend,

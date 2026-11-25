@@ -90,6 +90,7 @@
  parse-nec2c-output
  nec2c-measure-impedance
  nec2c-vswr-sweep
+ nec2c-vswr-frequencies
  nec2c-sweep->network-sweep
  nec2c-azimuth-pattern
  nec2c-elevation-pattern
@@ -1732,6 +1733,81 @@
           (nec2c-sweep-sample feedpoint gamma return-loss vswr)))
       (nec2c-sweep-frequency frequency feed-samples)))
   (nec2c-sweep-result run reference frequencies))
+
+(define (normalize-requested-frequencies who frequencies)
+  (unless (and (list? frequencies) (pair? frequencies))
+    (raise-argument-error who "nonempty list of positive frequencies in MHz"
+                          frequencies))
+  (for ([frequency (in-list frequencies)])
+    (unless (and (real? frequency)
+                 (not (infinite? frequency))
+                 (not (nan? frequency))
+                 (positive? frequency))
+      (raise-argument-error who "list of positive finite frequencies in MHz"
+                            frequencies)))
+  (remove-duplicates frequencies approximately=?))
+
+(define (nec2c-vswr-frequencies
+         requested-frequencies
+         #:model-path [model-path #f]
+         #:executable [executable #f]
+         #:dielectrics? [dielectrics? #t]
+         #:dielectric-solver [dielectric-solver 'dense]
+         #:solver-tolerance [solver-tolerance #f]
+         #:solver-iterations [solver-iterations #f]
+         #:keep-artifacts? [keep? #f]
+         #:timeout [timeout #f])
+  (define frequencies
+    (normalize-requested-frequencies
+     'nec2c-vswr-frequencies requested-frequencies))
+  ;; NEC frequency cards are uniform sweeps. Repeating a one-frequency FR/XQ
+  ;; pair keeps an arbitrary target list in one solver invocation without
+  ;; filling the gaps with measurements the caller did not request.
+  (define analysis-cards
+    (append
+     (list "PT -1")
+     (append*
+      (for/list ([frequency (in-list frequencies)])
+        (list (frequency-card frequency) "XQ 0")))))
+  (define-values (run report)
+    (runner-keywords
+     model-path executable dielectrics? dielectric-solver
+     solver-tolerance solver-iterations keep? timeout analysis-cards
+     (lambda (report)
+       (define parsed (parsed-nec2c-report-feeds report))
+       (define actual-frequencies
+         (remove-duplicates
+          (map parsed-nec2c-feed-frequency-mhz parsed)
+          approximately=?))
+       (unless (and (= (length actual-frequencies) (length frequencies))
+                    (for/and ([requested (in-list frequencies)])
+                      (ormap (lambda (actual)
+                               (approximately=? requested actual))
+                             actual-frequencies)))
+         (error 'nec2c-vswr-frequencies
+                "requested frequencies ~a but parsed ~a"
+                frequencies actual-frequencies))
+       (define expected-rows (* (length frequencies) (length (feed-edges))))
+       (unless (= (length parsed) expected-rows)
+         (error 'nec2c-vswr-frequencies
+                "expected ~a feed rows but parsed ~a"
+                expected-rows (length parsed))))))
+  (define enriched (map enrich-feed (parsed-nec2c-report-feeds report)))
+  (define reference (model-impedance))
+  (define results
+    (for/list ([frequency (in-list frequencies)])
+      (define feed-samples
+        (for/list ([feedpoint (in-list enriched)]
+                   #:when
+                   (approximately=?
+                    frequency
+                    (nec2c-feedpoint-sample-frequency-mhz feedpoint)))
+          (define-values (gamma return-loss vswr)
+            (reflection-metrics
+             (nec2c-feedpoint-sample-impedance feedpoint) reference))
+          (nec2c-sweep-sample feedpoint gamma return-loss vswr)))
+      (nec2c-sweep-frequency frequency feed-samples)))
+  (nec2c-sweep-result run reference results))
 
 (define (angular-sequence who start stop step)
   (unless (and (real? start) (real? stop) (real? step) (> step 0) (>= stop start))

@@ -121,7 +121,17 @@
     (raise-arguments-error who "pattern is missing an angular sample"
                            "theta (degrees)" theta
                            "phi (degrees)" phi))
-  (db->power (nec2c-pattern-sample-total-gain-db sample)))
+  (define gain-db (nec2c-pattern-sample-total-gain-db sample))
+  (cond
+    [(and (not gain-db)
+          (number? (nec2c-pattern-sample-e-theta sample))
+          (number? (nec2c-pattern-sample-e-phi sample))
+          (zero? (nec2c-pattern-sample-e-theta sample))
+          (zero? (nec2c-pattern-sample-e-phi sample)))
+     ;; NEC leaves logarithmic gain blank at an exact field null. It retains
+     ;; zero complex fields, which unambiguously mean zero linear power.
+     0.0]
+    [else (db->power gain-db)]))
 
 (define (directivity-pattern? pattern)
   (define metadata (nec2c-pattern-grid-run pattern))

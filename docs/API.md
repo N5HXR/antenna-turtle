@@ -248,6 +248,28 @@ space. This is useful when choosing an elevation range:
 - The count for an edge is `ceiling(edge-length / maximum-segment-length)`.
 - A center-fed edge's count is increased when necessary to make it odd.
 
+### `(with-max-length length body ...)`
+
+Records a local maximum segment length on every wire edge created by `body`.
+The positive `length` is in physical metres and takes precedence over the
+global `maximum-segment-length` when NEC2C or MMANA geometry is generated.
+Nested forms restore the enclosing value on exit; edges outside the form keep
+the global policy. Reflected copies retain the originating edge's local value.
+
+```racket
+(with-max-length {spacing / 2}
+  (from-here
+    (move forward (half spacing))
+    (with-wire (move down feed-line-length)))
+  (from-here
+    (move back (half spacing))
+    (with-wire (move down feed-line-length))))
+```
+
+The form changes solver subdivision, not authored geometry. It does not refine
+OpenEMS Cartesian meshes, and NEC wire-port fixture edges remain one segment.
+Use `show-segmentation-report` to inspect the resolved mixed segmentation.
+
 ### `(maximum-nec2c-patch-length [length])`
 
 - Default behavior: one-fifth of the wavelength at `model-frequency`.
@@ -907,8 +929,10 @@ overlapping edges each count because each represents a laid wire edge.
 `wire-edge-feed-location` returns `#f`, `'start`, `'center`, or `'end`.
 `wire-edge-feed-name`, `wire-edge-feed-amplitude`, and
 `wire-edge-feed-phase` expose the remaining excitation metadata.
-`wire-edge-feed?` remains available as a Boolean convenience predicate. All
-structure predicates and accessors are exported. A `ground-spec` has kind
+`wire-edge-feed?` remains available as a Boolean convenience predicate.
+`wire-edge-maximum-segment-length` returns the local positive length captured
+by `with-max-length`, or `#f` when the edge uses global segmentation.
+All structure predicates and accessors are exported. A `ground-spec` has kind
 `'none`, `'perfect`, or `'real`; only real ground carries numeric material
 fields. `antenna-model` also
 exports mutators because it is declared mutable; tooling should prefer normal
@@ -922,7 +946,9 @@ Returns Euclidean edge length.
 
 Returns the solver subdivision count, including odd-count adjustment for a
 center-fed edge. The exact signature is
-`(edge-segment-count edge [maximum-length (maximum-segment-length)])`.
+`(edge-segment-count edge [fallback-maximum-length
+(maximum-segment-length)])`. An edge-local value recorded by `with-max-length`
+takes precedence over the fallback argument.
 
 ## 12. Geometry Viewer
 
@@ -1842,13 +1868,14 @@ open plots. Its complete contextual signature is:
           [progress boolean]
           [record-radiation boolean]
           [record-fields field-capture-request]
+          [dry-run boolean]
           [timeout seconds-or-#f])
 ```
 
 `sweep` is required and `profile` defaults to `standard`. `octave` defaults to
 `#f` (use `octave-executable`, `OCTAVE`, or `PATH` discovery), artifact
 retention and progress default to `#t`, radiation recording defaults to `#t`,
-field recording defaults to disabled, and timeout defaults to `#f`
+field recording and dry-run mode default to disabled, and timeout defaults to `#f`
 (unlimited). Numerical policy lives in the profile:
 
 ```racket
@@ -1879,7 +1906,11 @@ oblique traces, 100,000 maximum timesteps, and a -40 dB residual-energy
 threshold. `standard` uses lambda/30, six dielectric cells, five across
 oblique traces, 250,000 timesteps, and -50 dB. Both use 101 frequency
 samples, mesh grading 1.4, half-wavelength padding, automatic metal-edge
-resolution, and 24 segments around derived wire capsules.
+resolution, and 24 segments around derived wire capsules. `wire-reference`
+uses lambda/30, mesh grading 1.3, 32 capsule segments, six cells across each
+ordinary wire diameter, and a six-radius fine-mesh halo. It is an expensive,
+opt-in profile for small wire validation articles, not the routine wire
+backend.
 
 `simulation-profile` is a transparent structure. Construct one directly in
 the following field order, or more readably derive it with keywords:
@@ -1888,7 +1919,8 @@ the following field order, or more readably derive it with keywords:
 (simulation-profile name frequency-steps cells-per-wavelength
                     minimum-dielectric-cells minimum-trace-cells
                     metal-edge-resolution mesh-grading padding-wavelengths
-                    maximum-timesteps end-criteria wire-segments)
+                    maximum-timesteps end-criteria wire-segments
+                    minimum-wire-cells wire-halo-radii)
 
 (derive-simulation-profile
  base
@@ -1902,13 +1934,17 @@ the following field order, or more readably derive it with keywords:
  #:padding-wavelengths [count (simulation-profile-padding-wavelengths base)]
  #:maximum-timesteps [count (simulation-profile-maximum-timesteps base)]
  #:end-criteria [fraction (simulation-profile-end-criteria base)]
- #:wire-segments [count (simulation-profile-wire-segments base)])
+ #:wire-segments [count (simulation-profile-wire-segments base)]
+ #:minimum-wire-cells [count-or-#f (simulation-profile-minimum-wire-cells base)]
+ #:wire-halo-radii [count (simulation-profile-wire-halo-radii base)])
 ```
 
 Every omitted derivation keyword inherits from `base`. Frequency steps must be
 at least 2; cell minima and timestep limits are positive exact integers;
 grading is greater than 1; end criteria is between 0 and 1; and wire segments
-is at least 3. For example, a convergence run that changes only mesh density
+is at least 3. `minimum-wire-cells` is `#f` for legacy diameter-aware helpers
+or an exact integer of at least 2 for resolved-wire meshing; `wire-halo-radii`
+is at least 1. For example, a convergence run that changes only mesh density
 is:
 
 ```racket
@@ -2189,11 +2225,14 @@ permittivity of dispersive materials.
  #:max-timesteps 100000
  #:end-criteria 1e-5
  #:wire-segments 24
+ #:minimum-wire-cells #f
+ #:wire-halo-radii 2
  #:octave #f
  #:keep-artifacts? #t
  #:progress? #t
  #:record-radiation? #t
  #:field-capture #f
+ #:dry-run? #f
  #:timeout #f)
 ```
 
@@ -2214,6 +2253,20 @@ a physical gap and lumped port. Its default gap is
 `max(wavelength/1000, wire-radius)`; a warning is printed when that gap exceeds
 the marked edge's length. `#:wire-segments` controls capsule circular
 tessellation and must be at least three.
+
+`#:minimum-wire-cells` enables resolved-wire helpers when set to an integer of
+at least 2. Each wire diameter uses that many cells and retains that pitch
+through `#:wire-halo-radii` conductor radii around its centerline. Straight
+runs receive fine endpoint neighborhoods; oblique runs require their complete
+Cartesian projections to use the fine pitch. Because rectilinear planes are
+global, this policy can become extremely expensive. `wire-reference` selects
+6 and 6 respectively.
+
+`#:dry-run? #t` performs scene export and the exact Octave mesh construction,
+then exits before FDTD. It returns an `openems-dry-run` containing axis line
+counts, total mesh-cell estimate, minimum spacing, a 96--256 byte/cell memory
+planning range, warnings, and the ordinary run/artifact metadata. This is a
+cost estimator, not evidence of numerical convergence.
 
 The exporter derives diameter-aware mesh helpers for capsule wires. A
 grid-aligned straight wire contributes transverse lines at its physical
@@ -2318,7 +2371,8 @@ never deleted by `openems-close!`.
 ### `(openems-close! result-or-run-or-artifacts)`
 
 Accepts an `openems-sweep-result`, `openems-multiport-result`,
-`openems-run-info`, or `openems-artifacts`. It deletes a solver-created
+`openems-source-result`, `openems-dry-run`, `openems-run-info`, or
+`openems-artifacts`. It deletes a solver-created
 temporary directory, leaves a directory loaded by `openems-load-artifacts`
 on disk, marks the artifact handle unavailable, and returns `void`.
 
@@ -2931,6 +2985,132 @@ adds reflection coefficient, return loss in dB, and VSWR calculated against
 `model-impedance`. Infinite return loss and VSWR are represented with Racket's
 positive infinity where mathematically appropriate.
 
+### `(nec2c-vswr-frequencies frequencies common-keywords ...)`
+
+Measures an arbitrary nonempty list of positive frequencies in MHz in one
+NEC2C invocation. Unlike a uniform sweep, only the requested frequencies are
+solved. Duplicate frequencies are removed while preserving the order of their
+first occurrence. The returned value is the same `nec2c-sweep-result` used by
+the ordinary sweep, plotting, measurement, and serialization APIs.
+
+```racket
+(define target-frequencies '(3.6 7.1 10.1 14.1 21.1 28.1))
+(define targets (nec2c-vswr-frequencies target-frequencies))
+```
+
+This is especially useful in parameter searches, where a dense 3--30 MHz
+sweep for every candidate would calculate many frequencies that do not
+participate in the objective.
+
+### Multiband matching metrics
+
+```racket
+(multi-match result frequencies
+             [#:port port-name #f]
+             [#:good-vswr 2.0]
+             [#:maximum-vswr 10.0]
+             [#:interpolate? #t])
+
+(multi-match-rank metric)
+(multi-match<? left right)
+```
+
+`multi-match` returns a transparent `multi-match-result`. Its `points` contain
+one `multi-match-point` per target frequency with VSWR, return loss, mismatch
+loss, and a classification of `'good`, `'tunable`, or `'outside-limit`.
+Aggregate fields include a 0--100 presentation score, counts for each
+threshold, worst and mean VSWR, and mean mismatch loss.
+
+The score is convenient for tables and heat maps. Optimization should use
+`multi-match<?`, which ranks results lexicographically by fewer targets over
+the hard limit, lower worst-case VSWR, more targets under the good limit,
+lower mean mismatch loss, and lower mean VSWR. `multi-match-rank` exposes this
+tuple directly.
+
+### Optimization tracking
+
+```racket
+(with-optimizer better?
+  body ...)
+
+;; Within with-optimizer only:
+(track key result)
+(best [selector])
+
+(make-optimizer better?)
+(optimizer-track! optimizer annotation result)
+(optimizer-best optimizer)
+(optimizer-best-annotation optimizer)
+(optimizer-best-result optimizer)
+(optimizer-list optimizer)
+(optimizer-count optimizer)
+```
+
+`with-optimizer` is the concise, scoped interface. It creates a tracker and
+evaluates its body in an internal-definition context, so local measurement
+functions and arbitrary candidate-generation logic may appear inside it.
+`track` records a candidate's opaque reconstruction key and comparison result.
+`best` accepts `'key`, `'result`, `'run`, or `'number`; `'annotation` is an alias
+for `'key`. With no selector it returns the complete run. Every form returns
+`#f` when no candidate has been tracked. `track` and `best` report a syntax
+error when used outside `with-optimizer`.
+
+```racket
+(define winning-parameters
+  (with-optimizer multi-match<?
+    (define (measure)
+      (multi-match (nec2c-vswr-frequencies target-frequencies)
+                   target-frequencies
+                   #:interpolate? #f))
+
+    (loop for len from 0.9 to 1.1 by 0.02 do
+      (loop for per from 0.6 to 0.8 by 0.02 do
+        (build-ocfd! len per)
+        (track `(len ,len per ,per) (measure))))
+
+    (best 'key)))
+```
+
+The procedure interface below exposes the same tracker for libraries and cases
+that need to pass it between functions.
+
+An optimizer records experiments without generating candidates or rebuilding
+models. `better?` is a strict ordering predicate over result values: it receives
+two results and returns true when the first should rank ahead of the second.
+`optimizer-track!` accepts an arbitrary annotation describing how the candidate
+was produced and an arbitrary result understood by `better?`. It returns the
+new transparent `optimization-run`, whose accessors are
+`optimization-run-annotation`, `optimization-run-result`, and
+`optimization-run-number`.
+
+`optimizer-best` returns the best run seen so far, or `#f` before anything has
+been tracked. `optimizer-best-annotation` and `optimizer-best-result` directly
+return the corresponding part of that run, also returning `#f` when empty.
+`optimizer-list` returns every run in best-first order;
+comparatively tied runs remain in evaluation order. The optimizer never changes
+the current Turtle model and does not interpret annotations.
+
+```racket
+(define search (make-optimizer multi-match<?))
+
+(loop for len from 0.9 to 1.1 by 0.02 do
+  (build-ocfd! len 0.7)
+  (optimizer-track!
+   search
+   (list 'length-scale len)
+   (multi-match
+    (nec2c-vswr-frequencies target-frequencies)
+    target-frequencies
+    #:interpolate? #f)))
+
+(define winning-attributes (optimizer-best-annotation search))
+(define winning-match (optimizer-best-result search))
+```
+
+Hard constraints can be expressed by the comparator. It should return `#f`
+when its left result is disqualified and `#t` when only its right result is
+disqualified. If it returns `#f` in both directions, the runs are tied.
+
 ### `(nec2c-azimuth-pattern ...)`
 
 ```racket
@@ -3435,6 +3615,15 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
                     [#:floor-db -40]
                     [#:normalize? #t]
                     [#:legend? #f])
+(show-radiation-cut-comparison
+ (list (radiation-case title grid) ...)
+ [#:cut 'elevation]
+ [#:azimuth 0]
+ [#:elevation 0]
+ [#:component 'total]
+ [#:floor-db -40]
+ [#:scale 'relative]
+ [#:legend? #t])
 (show-radiation-pattern-3d grid
                            [#:component 'total]
                            [#:floor-db -40]
@@ -3494,12 +3683,19 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
 (visualization-open? handle)
 ```
 
+Plots whose horizontal axis is frequency in MHz include a non-scaling,
+background overlay of intersecting United States amateur allocations from
+2200 meters through 3 centimeters. This includes the network and S-parameter
+sweep viewers, but not the Smith chart, whose axes are normalized reflection
+coordinates.
+
 Components are `'total`, `'vertical`, or `'horizontal`. The corresponding
 headless renderer constructors—`vswr-sweep-renderers`,
 `return-loss-sweep-renderers`, `gain-sweep-renderers`,
 `impedance-sweep-renderers`,
 `smith-chart-renderers`,
-`radiation-cut-renderers`, and
+`radiation-cut-renderers`,
+`radiation-cut-comparison-renderers`, and
 `radiation-grid-renderers`—return ordinary Racket Plot renderers for custom
 figures or bitmap generation.
 
@@ -3828,7 +4024,8 @@ constructor signature shown below.
 (simulation-profile name frequency-steps cells-per-wavelength
                     minimum-dielectric-cells minimum-trace-cells
                     metal-edge-resolution mesh-grading padding-wavelengths
-                    maximum-timesteps end-criteria wire-segments)
+                    maximum-timesteps end-criteria wire-segments
+                    minimum-wire-cells wire-halo-radii)
 ```
 
 `antenna-model` and `solid-scene` additionally export field mutators because
@@ -3927,6 +4124,10 @@ and measurement accessors.
 (openems-result-port name reference-impedance)
 (openems-s-parameter-sample frequency-mhz output-port input-port value db)
 (openems-multiport-result run ports s-parameters input-samples)
+(openems-source-result run source-name)
+(openems-dry-run run line-counts cell-count minimum-spacing-m
+                 estimated-memory-low-bytes estimated-memory-high-bytes
+                 warnings)
 (openems-power-budget run frequency-mhz excitation-port
                       incident-power-w reflected-power-w accepted-power-w
                       delivered-power-w radiated-power-w dielectric-power-w

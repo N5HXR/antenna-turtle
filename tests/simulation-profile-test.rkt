@@ -16,7 +16,12 @@
   (check-equal? (simulation-profile-minimum-dielectric-cells standard) 6)
   (check-equal? (simulation-profile-minimum-trace-cells standard) 5)
   (check-equal? (simulation-profile-maximum-timesteps standard) 250000)
-  (check-equal? (simulation-profile-end-criteria standard) 1e-5))
+  (check-equal? (simulation-profile-end-criteria standard) 1e-5)
+
+  (check-equal? (simulation-profile-name wire-reference) 'wire-reference)
+  (check-equal? (simulation-profile-minimum-wire-cells wire-reference) 6)
+  (check-equal? (simulation-profile-wire-halo-radii wire-reference) 6)
+  (check-equal? (simulation-profile-mesh-grading wire-reference) 1.3))
 
 (test-case "derived profiles replace only explicit fields"
   (define convergence
@@ -34,6 +39,7 @@
                 (simulation-profile-end-criteria standard))
   (check-equal? (simulation-profile-wire-segments convergence)
                 (simulation-profile-wire-segments standard))
+  (check-false (simulation-profile-minimum-wire-cells convergence))
   (check-exn
    exn:fail:contract?
    (lambda ()

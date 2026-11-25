@@ -93,6 +93,50 @@
   (check-equal? (measurement-ports deembedded) '("output"))
   (check-= (magnitude (- (impedance-at deembedded frequency) load)) 0 1e-10))
 
+(define (network-with-vswrs pairs)
+  (network-sweep
+   'test #f 50
+   (for/list ([pair (in-list pairs)])
+     (define frequency (first pair))
+     (define vswr (second pair))
+     (define gamma (/ (- vswr 1.0) (+ vswr 1.0)))
+     (network-sample 'feed frequency gamma (* 50 vswr)
+                     (if (zero? gamma)
+                         -inf.0
+                         (* 20.0 (/ (log gamma) (log 10.0))))
+                     vswr))))
+
+(test-case "multi-match reports thresholds and physically meaningful loss"
+  (define result
+    (multi-match
+     (network-with-vswrs '((3.6 1.0) (7.1 2.0) (14.1 5.0) (28.1 12.0)))
+     '(3.6 7.1 14.1 28.1)
+     #:interpolate? #f))
+  (check-equal? (multi-match-result-good-count result) 2)
+  (check-equal? (multi-match-result-usable-count result) 3)
+  (check-equal? (multi-match-result-outside-count result) 1)
+  (check-equal? (multi-match-result-worst-vswr result) 12.0)
+  (check-equal?
+   (map multi-match-point-classification (multi-match-result-points result))
+   '(good good tunable outside-limit))
+  (check-= (multi-match-point-mismatch-loss-db
+            (second (multi-match-result-points result)))
+           (* -10.0 (/ (log (/ 8.0 9.0)) (log 10.0)))
+           1e-12)
+  (check-true (<= 0 (multi-match-result-score result) 100)))
+
+(test-case "multi-match ranking protects the worst target band"
+  (define broadly-usable
+    (multi-match
+     (network-with-vswrs '((7.1 2.5) (14.1 3.0) (28.1 4.0)))
+     '(7.1 14.1 28.1)))
+  (define one-unusable
+    (multi-match
+     (network-with-vswrs '((7.1 1.1) (14.1 1.2) (28.1 11.0)))
+     '(7.1 14.1 28.1)))
+  (check-true (multi-match<? broadly-usable one-unusable))
+  (check-false (multi-match<? one-unusable broadly-usable)))
+
 (define run (openems-run-info #f 0 0 "" "" #f (hash)))
 (define multiport
   (openems-multiport-result
@@ -254,6 +298,39 @@
   ;; Unit gain over only the upper hemisphere radiates half of accepted power.
   (define half-efficient (constant-pattern '(0 45 90) 0))
   (check-= (pattern-air-radiation-efficiency half-efficient) 0.5 1e-10))
+
+(define (pattern-with-missing-polar-gain e-theta e-phi)
+  (define theta-values '(0 45 90))
+  (define phi-values '(0 90 180 270))
+  (nec2c-pattern-grid
+   #f theta-values phi-values
+   (for*/list ([phi (in-list phi-values)]
+               [theta (in-list theta-values)])
+     (define polar-null? (zero? theta))
+     (nec2c-pattern-sample
+      3.55 theta phi (- 90 theta) phi
+      (and (not polar-null?) 0)
+      (and (not polar-null?) 0)
+      (and (not polar-null?) 0)
+      1 0 'linear
+      (if polar-null? e-theta 1+0i)
+      (if polar-null? e-phi 0+0i)))))
+
+(test-case "power integration treats an exact field null as zero gain"
+  (define polar-null (pattern-with-missing-polar-gain 0+0i 0+0i))
+  ;; The 0--45 degree cells average zero at their polar corners and unit gain
+  ;; at 45 degrees; the 45--90 degree cells have unit gain throughout.
+  (define expected
+    (* 2 pi
+       (+ (* 0.5 (- 1 (cos (/ pi 4))))
+          (cos (/ pi 4)))))
+  (check-= (pattern-power-gain-integral polar-null) expected 1e-10)
+  ;; Missing gain with a nonzero field is still malformed solver data.
+  (check-exn
+   #rx"real, non-NaN gain"
+   (lambda ()
+     (pattern-power-gain-integral
+      (pattern-with-missing-polar-gain 1+0i 0+0i)))))
 
 (test-case "NEC power convenience layer includes mismatch and ground residual"
   (define half-efficient (constant-pattern '(0 45 90) 0))

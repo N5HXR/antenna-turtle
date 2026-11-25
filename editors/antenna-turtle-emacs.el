@@ -128,7 +128,7 @@
     "radial-repeat"
     "wire-port" "transmission-line" "two-port-y" "ideal-transformer" "coax"
     "wire-coating" "with-wire-coating"
-    "with-wire" "with-points" "from-here" "with-scale" "with-warp"
+    "with-wire" "with-points" "from-here" "with-scale" "with-max-length" "with-warp"
     "with-surface" "with-pen" "with-push" "with-material" "with-body"
     "with-traces"
     "union" "difference" "intersect" "hull" "scale"
@@ -166,7 +166,7 @@
     "gap" "depth" "path" "join" "miter-limit"
     "resistance" "inductance" "capacitance" "topology" "caps"
     "engine" "sweep" "profile" "octave" "keep-artifacts" "progress"
-    "timeout"))
+    "record-radiation" "record-fields" "dry-run" "timeout"))
 
 ;; Settings of the wire-network DSL.  As with the solid settings, these are
 ;; highlighted only in their declaration forms so identifiers such as `name`,
@@ -196,7 +196,7 @@
     "rogers-4003c" "rogers-4350b" "rogers-5880"
     "rect" "exact" "metal" "local" "world" "xy" "xz" "yz"
     "origin" "top" "bottom" "front" "start" "center" "end"
-    "draft" "standard" "openems"
+    "draft" "standard" "wire-reference" "openems"
     "series" "parallel" "miter" "bevel"))
 
 (defconst antenna-turtle--feed-locations
@@ -366,6 +366,7 @@ with INDENT-POINT first, so accept both documented conventions."
 
 (defconst antenna-turtle--indentation-rules
   '((with-scale . 1)
+    (with-max-length . 1)
     (with-wire-coating . 1)
     (wire-coating . 0)
     (with-material . 1)

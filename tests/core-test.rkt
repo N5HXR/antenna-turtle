@@ -424,6 +424,36 @@
   (check-true (wire-edge-feed? edge))
   (check-equal? (edge-segment-count edge) 5))
 
+(test-case "with-max-length records scoped per-edge segmentation"
+  (reset-model!)
+  (maximum-segment-length 1/2)
+  (with-wire
+    (forward 1)
+    (with-max-length 1/10
+      (forward 1)
+      (with-max-length 1/20
+        (forward 1))
+      (forward 1))
+    (forward 1))
+  (define edges (model-edges))
+  (check-equal?
+   (map wire-edge-maximum-segment-length edges)
+   (list #f 1/10 1/20 1/10 #f))
+  (check-equal? (map edge-segment-count edges) (list 2 10 20 10 2))
+  ;; An explicit exporter fallback remains subordinate to authored metadata.
+  (check-equal? (edge-segment-count (second edges) 1/4) 10))
+
+(test-case "reflection copies local maximum segment length"
+  (reset-model!)
+  (maximum-segment-length 1/2)
+  (with-max-length 1/10
+    (reflect up
+      (with-wire (move forward 1 up 1))))
+  (check-equal? (length (model-edges)) 2)
+  (for ([edge (in-list (model-edges))])
+    (check-equal? (wire-edge-maximum-segment-length edge) 1/10)
+    (check-equal? (edge-segment-count edge) 15)))
+
 (test-case "feed syntax accepts bare locations and named phased descriptors"
   (reset-model!)
   (maximum-segment-length 1/10)

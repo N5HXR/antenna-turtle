@@ -22,6 +22,7 @@
             "(wire-coating material petg diameter 0.012)\n"
             "(with-wire-coating material petg diameter 0.014\n"
             "  (with-wire (forward 1)))\n"
+            "(with-max-length 0.01 (with-wire (forward 1)))\n"
             "(wire-coating-off)\n"
             "(set-coating-experimental #t)\n"
             "(circular-wire-mesh 2 12 4)\n"
@@ -41,7 +42,8 @@
             "(with-material rogers-4003c\n"
             "  (sheet rect size '(10 2)))\n"
             "(conductor name foil conductivity 1e7 sheet-thickness 12e-6)\n"
-            "(simulate engine openems sweep '(800 1050) profile draft)\n")
+            "(simulate engine openems sweep '(800 1050)\n"
+            "          profile wire-reference dry-run #t)\n")
     (antenna-turtle-setup)
     (font-lock-ensure)
     (should (eq (antenna-turtle-test--face-at "cuboid" 1)
@@ -49,6 +51,8 @@
     (should (eq (antenna-turtle-test--face-at "wire-coating" 1)
                 'antenna-turtle-macro-face))
     (should (eq (antenna-turtle-test--face-at "with-wire-coating" 1)
+                'antenna-turtle-macro-face))
+    (should (eq (antenna-turtle-test--face-at "with-max-length" 1)
                 'antenna-turtle-macro-face))
     (should (eq (antenna-turtle-test--face-at "wire-coating-off" 1)
                 'antenna-turtle-api-face))
@@ -85,8 +89,10 @@
                 'font-lock-constant-face))
     (should (eq (antenna-turtle-test--face-at "xy" 1)
                 'font-lock-constant-face))
-    (should (eq (antenna-turtle-test--face-at "draft" 1)
+    (should (eq (antenna-turtle-test--face-at "wire-reference" 1)
                 'font-lock-constant-face))
+    (should (eq (antenna-turtle-test--face-at "dry-run" 1)
+                'antenna-turtle-loop-clause-face))
     (should (eq (antenna-turtle-test--face-at "rogers-4003c" 1)
                 'font-lock-constant-face))
     (should (eq (antenna-turtle-test--face-at "sheet-thickness" 1)
