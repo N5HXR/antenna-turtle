@@ -7,6 +7,7 @@
 ;; render wire/NEC2C data and are independent of the optional solid backend.
 (check-true (procedure? show-vswr-sweep))
 (check-true (procedure? show-radiation-cut))
+(check-true (procedure? show-radiation-cut-comparison))
 (check-true (procedure? show-radiation-pattern-3d))
 (check-true (procedure? show-near-field))
 (check-true (procedure? show-polarization-surface-poc))
@@ -24,6 +25,12 @@
   (procedure-keywords show-radiation-comparison))
 (check-not-false (member '#:difference? comparison-keywords))
 (check-not-false (member '#:difference-range-db comparison-keywords))
+(define-values (_required-cut-comparison-keywords cut-comparison-keywords)
+  (procedure-keywords show-radiation-cut-comparison))
+(check-not-false (member '#:cut cut-comparison-keywords))
+(check-not-false (member '#:azimuth cut-comparison-keywords))
+(check-not-false (member '#:elevation cut-comparison-keywords))
+(check-not-false (member '#:scale cut-comparison-keywords))
 (define-values (_required-palette-lab-keywords palette-lab-keywords)
   (procedure-keywords show-radiation-palette-lab))
 (check-not-false (member '#:spherical-grid? palette-lab-keywords))
@@ -62,3 +69,36 @@
 (check-exn #rx"positive-real"
            (lambda ()
              (html-auto-report "unused.html" #:pattern-step 0)))
+
+(define cut-grid
+  (nec2c-pattern-grid
+   #f
+   '(0 90)
+   '(0 90 180 270)
+   (for*/list ([theta (in-list '(0 90))]
+               [phi (in-list '(0 90 180 270))])
+     (define elevation (- 90 theta))
+     (define gain (- 10 (/ phi 90) (/ theta 90)))
+     (nec2c-pattern-sample
+      7.1 theta phi elevation phi
+      gain gain gain
+      +inf.0 0 'linear 1+0i 0+0i))))
+
+(define cut-cases
+  (list (radiation-case "reference" cut-grid)
+        (radiation-case "comparison" cut-grid)))
+
+(check-equal?
+ (length
+  (radiation-cut-comparison-renderers
+   cut-cases #:cut 'elevation #:azimuth 0 #:scale 'relative))
+ 3)
+(check-equal?
+ (length
+  (radiation-cut-comparison-renderers
+   cut-cases #:cut 'azimuth #:elevation 0 #:scale 'absolute))
+ 3)
+(check-exn #rx"relative.*absolute"
+           (lambda ()
+             (radiation-cut-comparison-renderers
+              cut-cases #:scale 'unknown)))

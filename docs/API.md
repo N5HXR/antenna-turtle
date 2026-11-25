@@ -3585,6 +3585,15 @@ accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
                     [#:floor-db -40]
                     [#:normalize? #t]
                     [#:legend? #f])
+(show-radiation-cut-comparison
+ (list (radiation-case title grid) ...)
+ [#:cut 'elevation]
+ [#:azimuth 0]
+ [#:elevation 0]
+ [#:component 'total]
+ [#:floor-db -40]
+ [#:scale 'relative]
+ [#:legend? #t])
 (show-radiation-pattern-3d grid
                            [#:component 'total]
                            [#:floor-db -40]
@@ -3655,7 +3664,8 @@ headless renderer constructors—`vswr-sweep-renderers`,
 `return-loss-sweep-renderers`, `gain-sweep-renderers`,
 `impedance-sweep-renderers`,
 `smith-chart-renderers`,
-`radiation-cut-renderers`, and
+`radiation-cut-renderers`,
+`radiation-cut-comparison-renderers`, and
 `radiation-grid-renderers`—return ordinary Racket Plot renderers for custom
 figures or bitmap generation.
 

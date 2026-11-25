@@ -1634,6 +1634,25 @@ grid and pass up to nine of them to the comparison viewer:
  #:palette 'inferno)
 ```
 
+The same named grids can be compared as traces through a selected plane:
+
+```racket
+(show-radiation-cut-comparison
+ (list (radiation-case "reference" reference-grid)
+       (radiation-case "longer directors" longer-grid)
+       (radiation-case "wider spacing" wider-grid))
+ #:cut 'elevation
+ #:azimuth 0
+ #:scale 'relative)
+```
+
+An elevation cut joins the selected azimuth and its reciprocal bearing into
+one vertical plane. Use `#:cut 'azimuth` with `#:elevation` for a horizontal
+cut. All traces share the maximum gain across every complete grid. The
+default `'relative` scale labels that reference as 0 dB; `'absolute` labels
+the same rings in dBi, without changing the trace geometry. `#:floor-db`
+sets the displayed dynamic range below the shared peak.
+
 For a direct pattern-difference view, make the first case the reference and
 enable difference coloring:
 

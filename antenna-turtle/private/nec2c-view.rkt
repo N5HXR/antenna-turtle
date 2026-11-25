@@ -9,6 +9,7 @@
          "radiation-case.rkt"
          "visualization-handle.rkt"
          "nec2c.rkt"
+         "measurement-radiation.rkt"
          "network.rkt")
 
 (provide
@@ -20,6 +21,7 @@
  s-parameter-magnitude-renderers
  s-parameter-phase-renderers
  radiation-cut-renderers
+ radiation-cut-comparison-renderers
  radiation-grid-renderers
  show-vswr-sweep
  show-return-loss-sweep
@@ -30,6 +32,7 @@
  show-s-parameter-magnitude
  show-s-parameter-phase
  show-radiation-cut
+ show-radiation-cut-comparison
  show-radiation-pattern-3d
  show-radiation-pattern-opengl
  show-near-field
@@ -529,6 +532,142 @@
                #:color "steelblue" #:width 2
                #:label (symbol->string component))))
 
+(define (validate-radiation-cut-cases who cases)
+  (unless (and (list? cases) (pair? cases))
+    (raise-argument-error who "nonempty-list?" cases))
+  (for ([case (in-list cases)])
+    (unless (radiation-case? case)
+      (raise-argument-error who "(listof radiation-case?)" cases))
+    (unless (nec2c-pattern-grid? (radiation-case-grid case))
+      (raise-arguments-error
+       who
+       "each radiation case must contain a radiation-pattern grid"
+       "case" (radiation-case-title case)
+       "value" (radiation-case-grid case)))))
+
+(define (validate-radiation-cut-options who cut scale component floor-db
+                                        azimuth elevation)
+  (unless (memq cut '(azimuth elevation))
+    (raise-argument-error who "(or/c 'azimuth 'elevation)" cut))
+  (unless (memq scale '(relative absolute))
+    (raise-argument-error who "(or/c 'relative 'absolute)" scale))
+  ;; Validate the component even before looking at the first sample, so an
+  ;; empty or solver-deficient grid does not obscure a spelling error.
+  (unless (memq component '(total vertical horizontal))
+    (raise-argument-error
+     who "(or/c 'total 'vertical 'horizontal)" component))
+  (unless (and (real? floor-db) (< floor-db 0))
+    (raise-argument-error who "negative-real?" floor-db))
+  (unless (real? azimuth)
+    (raise-argument-error who "real?" azimuth))
+  (unless (and (real? elevation) (<= -90 elevation 90))
+    (raise-argument-error who "real in [-90,90]" elevation)))
+
+(define (grid-component-peak who grid component)
+  (define gains
+    (filter real?
+            (for/list ([sample (in-list (nec2c-pattern-grid-samples grid))])
+              (sample-gain sample component))))
+  (when (null? gains)
+    (raise-arguments-error
+     who "a radiation-pattern grid has no gain samples"
+     "component" component))
+  (apply max gains))
+
+(define (grid-cut-directions grid cut azimuth elevation)
+  (case cut
+    [(azimuth)
+     (define phis (nec2c-pattern-grid-phi-values grid))
+     (when (null? phis)
+       (raise-arguments-error
+        'radiation-cut-comparison-renderers
+        "a radiation-pattern grid has no azimuth samples"))
+     ;; Repeat the first direction at +360 degrees so the plotted horizontal
+     ;; cut is visibly closed without requiring a duplicate solver sample.
+     (append
+      (for/list ([phi (in-list phis)])
+        (vector phi phi elevation))
+      (list (vector (+ 360 (first phis)) (first phis) elevation)))]
+    [(elevation)
+     (define thetas (nec2c-pattern-grid-theta-values grid))
+     (when (null? thetas)
+       (raise-arguments-error
+        'radiation-cut-comparison-renderers
+        "a radiation-pattern grid has no elevation samples"))
+     ;; One meridian supplies the first half of the vertical great circle;
+     ;; its reciprocal bearing supplies the second.  A grounded grid ends at
+     ;; the horizon and therefore naturally yields a 0--180 degree plot.
+     (append
+      (for/list ([theta (in-list (reverse thetas))])
+        (define sample-elevation (- 90 theta))
+        (vector sample-elevation azimuth sample-elevation))
+      (for/list ([theta (in-list (rest thetas))])
+        (vector (+ 90 theta) (+ azimuth 180) (- 90 theta))))]))
+
+(define (radiation-cut-case-points case cut azimuth elevation component
+                                   shared-peak floor-db)
+  (define grid (radiation-case-grid case))
+  (for/list ([direction (in-list
+                         (grid-cut-directions grid cut azimuth elevation))])
+    (define plot-angle (vector-ref direction 0))
+    (define sampled-gain
+      (gain-at grid
+               #:azimuth (vector-ref direction 1)
+               #:elevation (vector-ref direction 2)
+               #:component component))
+    ;; NEC represents an exact field null with unavailable logarithmic gain.
+    ;; Put that direction at the display floor instead of rejecting an
+    ;; otherwise useful cut through the null.
+    (define gain (if (real? sampled-gain) sampled-gain -inf.0))
+    (define relative-gain
+      (if (real? sampled-gain) (- sampled-gain shared-peak) -inf.0))
+    (define radius (- (max floor-db relative-gain) floor-db))
+    (define angle (degrees->radians plot-angle))
+    ;; The final three values support precise hover text while the first two
+    ;; remain ordinary Cartesian coordinates for Plot.
+    (vector (* radius (cos angle)) (* radius (sin angle))
+            plot-angle gain relative-gain)))
+
+(define (radiation-cut-comparison-data who cases cut azimuth elevation
+                                       component floor-db)
+  (validate-radiation-cut-cases who cases)
+  (define shared-peak
+    (apply max
+           (for/list ([case (in-list cases)])
+             (grid-component-peak who (radiation-case-grid case) component))))
+  (define series
+    (for/list ([case (in-list cases)] [index (in-naturals)])
+      (cursor-series
+       (radiation-case-title case)
+       (radiation-cut-case-points
+        case cut azimuth elevation component shared-peak floor-db)
+       (color-at index))))
+  (values series shared-peak))
+
+(define (radiation-cut-comparison-renderers
+         cases
+         #:cut [cut 'elevation]
+         #:azimuth [azimuth 0]
+         #:elevation [elevation 0]
+         #:component [component 'total]
+         #:floor-db [floor-db -40]
+         #:scale [scale 'relative])
+  (validate-radiation-cut-options
+   'radiation-cut-comparison-renderers
+   cut scale component floor-db azimuth elevation)
+  (define-values (series _shared-peak)
+    (radiation-cut-comparison-data
+     'radiation-cut-comparison-renderers
+     cases cut azimuth elevation component floor-db))
+  (cons
+   (polar-axes)
+   (for/list ([item (in-list series)])
+     (lines (for/list ([point (in-list (cursor-series-points item))])
+              (vector (vector-ref point 0) (vector-ref point 1)))
+            #:color (cursor-series-color item)
+            #:width 2
+            #:label (cursor-series-label item)))))
+
 (define (angle-key theta phi)
   (cons (inexact->exact (round (* theta 1000000)))
         (inexact->exact (round (* phi 1000000)))))
@@ -717,6 +856,7 @@
                    #:legend? [legend? #f]
                    #:axes? [axes? #t]
                    #:cursor-rule? [cursor-rule? #t]
+                   #:r-ticks [r-ticks #f]
                    #:theme [theme 'light])
   ((interactive-plot-procedure)
    renderers series label-proc
@@ -728,6 +868,7 @@
    #:legend? legend?
    #:axes? axes?
    #:cursor-rule? cursor-rule?
+   #:r-ticks r-ticks
    #:theme theme))
 
 (define (frequency-plot-renderers renderers series)
@@ -1052,6 +1193,78 @@
    #:legend? legend?
    #:x-label #f
    #:y-label #f))
+
+(define (show-radiation-cut-comparison
+         cases
+         #:cut [cut 'elevation]
+         #:azimuth [azimuth 0]
+         #:elevation [elevation 0]
+         #:component [component 'total]
+         #:floor-db [floor-db -40]
+         #:scale [scale 'relative]
+         #:legend? [legend? #t])
+  (validate-radiation-cut-options
+   'show-radiation-cut-comparison
+   cut scale component floor-db azimuth elevation)
+  (define-values (series shared-peak)
+    (radiation-cut-comparison-data
+     'show-radiation-cut-comparison
+     cases cut azimuth elevation component floor-db))
+  (define renderers
+    (cons
+     (polar-axes)
+     (for/list ([item (in-list series)])
+       (lines (for/list ([point (in-list (cursor-series-points item))])
+                (vector (vector-ref point 0) (vector-ref point 1)))
+              #:color (cursor-series-color item)
+              #:width 2
+              #:label (cursor-series-label item)))))
+  (define radius-limit (- floor-db))
+  (define tick-origin
+    (if (eq? scale 'relative)
+        floor-db
+        (+ shared-peak floor-db)))
+  (define radial-ticks
+    (ticks-scale
+     (linear-ticks #:number 5 #:scientific? #f)
+     (invertible-function
+      (lambda (radius) (+ radius tick-origin))
+      (lambda (gain) (- gain tick-origin)))))
+  (define fixed-angle
+    (if (eq? cut 'elevation) azimuth elevation))
+  (define fixed-axis
+    (if (eq? cut 'elevation) "azimuth" "elevation"))
+  (define scale-label
+    (if (eq? scale 'relative)
+        "relative dB"
+        "absolute dBi"))
+  ;; The plotted radius remains shared-peak-relative in both modes, so
+  ;; changing the radial labels never reshapes the comparison.
+  (show-plot
+   renderers
+   series
+   (lambda (item point)
+     (list
+      (format "~a  |  angle ~a degrees"
+              (cursor-series-label item)
+              (cursor-number (vector-ref point 2)))
+      (format "gain: ~a dBi  |  shared peak: ~a dB"
+              (cursor-number (vector-ref point 3))
+              (cursor-number (vector-ref point 4)))))
+   #:title
+   (format "Radiation pattern comparison — ~a cut at ~a ~a° — ~a"
+           cut fixed-axis fixed-angle scale-label)
+   #:x-label #f
+   #:y-label #f
+   #:x-min (- radius-limit)
+   #:x-max radius-limit
+   #:y-min (- radius-limit)
+   #:y-max radius-limit
+   #:aspect-ratio 1
+   #:legend? legend?
+   #:axes? #f
+   #:cursor-rule? #f
+   #:r-ticks radial-ticks))
 
 (define (show-radiation-pattern-3d grid
                                    #:component [component 'total]

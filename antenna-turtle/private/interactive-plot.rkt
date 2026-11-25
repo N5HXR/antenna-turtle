@@ -98,6 +98,7 @@
                                #:legend? [legend? #f]
                                #:axes? [axes? #t]
                                #:cursor-rule? [cursor-rule? #t]
+                               #:r-ticks [r-ticks #f]
                                #:theme [theme 'light])
   (unless (memq theme '(light dark))
     (raise-argument-error
@@ -133,7 +134,8 @@
                    [plot-x-axis? axes?]
                    [plot-y-axis? axes?]
                    [plot-x-far-axis? axes?]
-                   [plot-y-far-axis? axes?])
+                   [plot-y-far-axis? axes?]
+                   [plot-r-ticks (or r-ticks (plot-r-ticks))])
       (plot-snip renderer-tree
                  #:width requested-width
                  #:height requested-height

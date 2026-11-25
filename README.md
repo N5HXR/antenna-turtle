@@ -680,6 +680,11 @@ returns transparent Racket values without printing or opening a window:
        (radiation-case "revision" revised-sphere))
  #:aspect-ratio 16/9)
 
+(show-radiation-cut-comparison
+ (list (radiation-case "baseline" sphere)
+       (radiation-case "revision" revised-sphere))
+ #:cut 'elevation #:azimuth 0 #:scale 'absolute)
+
 ;; One portable file with wire geometry, matching plots, an interactive 3-D
 ;; radiation surface with unlit palette colors, opacity and a gain legend,
 ;; animated per-segment current/charge, a power budget, polarization phasors,
