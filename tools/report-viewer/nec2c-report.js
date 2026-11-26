@@ -824,7 +824,8 @@ export async function startNec2cReport(data) {
   axisGroup.add(axes);
   const table = patternTable(data.pattern);
   const totalRange = globalGainRange(data.pattern, "total");
-  const referencePeak = totalRange.peak;
+  const hasAbsoluteGain = Boolean(totalRange);
+  const referencePeak = totalRange?.peak ?? 0;
 
   const controlsPanel = document.createElement("section");
   controlsPanel.id = "nec-controls";
@@ -947,6 +948,12 @@ export async function startNec2cReport(data) {
   const inspectorEnabled = controlsPanel.querySelector("#inspector-enabled");
   const actualWireDiameter = controlsPanel.querySelector("#actual-wire-diameter");
   const powerBudget = diagnostics?.power_budget;
+  const patternVisible = controlsPanel.querySelector("#pattern-visible");
+  if (!hasAbsoluteGain) {
+    patternVisible.checked = false;
+    patternVisible.disabled = true;
+    patternGroup.visible = false;
+  }
   for (const option of segmentDisplay.querySelectorAll('option[value^="volume-current"]')) {
     option.hidden = !hasVolumeCurrents;
   }
@@ -1487,6 +1494,17 @@ export async function startNec2cReport(data) {
 
   function rebuildPattern() {
     disposePattern();
+    if (!hasAbsoluteGain) {
+      controlsPanel.querySelector("#pattern-legend").hidden = true;
+      controlsPanel.querySelector("#pattern-detail").textContent =
+        `${data.pattern.frequency_mhz.toPrecision(7)} MHz · absolute power gain unavailable; ` +
+        "NEC did not return finite gain samples (typically because accepted/input power is not positive)";
+      for (const id of ["#pattern-view", "#pattern-component", "#pattern-scale",
+        "#pattern-palette", "#pattern-opacity", "#color-bands"])
+        controlsPanel.querySelector(id).disabled = true;
+      updatePatternControlMode();
+      return;
+    }
     const polarization = patternViewSelect.value === "polarization";
     const component = polarization ? "total" : componentSelect.value;
     const gains = data.pattern.samples.map(sample => gainOf(sample, component)).filter(Number.isFinite);
@@ -2255,7 +2273,8 @@ export async function startNec2cReport(data) {
   const tabs = document.createElement("nav");
   tabs.id = "nec-tabs";
   tabs.innerHTML = `<button data-view="viewer3d" class="active">3D VIEW</button>
-    <button data-view="plots">PLOTS</button><button data-view="pattern2d">2D PATTERN</button>` +
+    <button data-view="plots">PLOTS</button>` +
+    (hasAbsoluteGain ? `<button data-view="pattern2d">2D PATTERN</button>` : "") +
     (nearFieldSections.length ? `<button data-view="nearfield">NEAR FIELD</button>` : "");
   document.body.append(tabs);
   installReportSideRail({
@@ -2293,6 +2312,8 @@ export async function startNec2cReport(data) {
 
   const requestedHash = location.hash.slice(1);
   const requested = ["geometry", "pattern3d"].includes(requestedHash) ? "viewer3d" : requestedHash;
+  const availableViews = ["viewer3d", "plots", "nearfield"];
+  if (hasAbsoluteGain) availableViews.push("pattern2d");
   let previousFrame = performance.now();
   let lastFieldAnimationDraw = 0;
   let fieldAnimationPending = false;
@@ -2361,7 +2382,7 @@ export async function startNec2cReport(data) {
     previousFrame = performance.now();
     scheduleAnimationFrame();
   });
-  show(["viewer3d", "plots", "pattern2d", "nearfield"].includes(requested) ? requested : "viewer3d");
+  show(availableViews.includes(requested) ? requested : "viewer3d");
   document.documentElement.dataset.reportReady = "true";
   scheduleAnimationFrame();
 }

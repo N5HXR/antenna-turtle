@@ -1,5 +1,6 @@
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const report = process.argv[2];
 if (!report) {
@@ -8,18 +9,21 @@ if (!report) {
 }
 
 const destination = resolve(report);
-const bundle = resolve("../../antenna-turtle/private/report-assets/viewer.bundle.js");
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const bundle = resolve(scriptDirectory,
+  "../../antenna-turtle/private/report-assets/viewer.bundle.js");
 const [html, viewer] = await Promise.all([
   readFile(destination, "utf8"),
   readFile(bundle, "utf8"),
 ]);
-const marker = "</script><script>";
-const start = html.lastIndexOf(marker);
-const end = html.lastIndexOf("</script></body></html>");
-if (start < 0 || end < start)
+const marker = '<script type="text/plain" id="antenna-turtle-report-viewer-source">';
+const start = html.indexOf(marker);
+const contentStart = start + marker.length;
+const end = html.indexOf("</script>", contentStart);
+if (start < 0 || end < contentStart)
   throw new Error(`${destination} is not an Antenna Turtle HTML report`);
 const temporary = join(dirname(destination), `.${process.pid}.viewer-refresh.html`);
 await writeFile(temporary,
-  html.slice(0, start + marker.length) + viewer + html.slice(end));
+  html.slice(0, contentStart) + viewer + html.slice(end));
 await rename(temporary, destination);
 console.log(`refreshed viewer in ${destination}`);

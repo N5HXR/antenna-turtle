@@ -2316,6 +2316,8 @@ requestAnimationFrame(animate);
 
 main().catch(error => {
   document.documentElement.dataset.reportReady = "error";
-  document.getElementById("capture-detail").textContent = `REPORT ERROR: ${error.message}`;
+  const detail = document.getElementById("capture-detail")
+    || document.getElementById("subtitle");
+  if (detail) detail.textContent = `REPORT ERROR: ${error.message}`;
   console.error(error);
 });
