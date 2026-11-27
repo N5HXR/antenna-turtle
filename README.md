@@ -588,6 +588,7 @@ opening a simulator:
 (show-model)                 ; conductors and feedpoints
 (show-model #:vertices? #t) ; also mark every DSL vertex
 (show-model #:wire-color "navy") ; choose any Plot3D conductor color
+(show-model #:wire-width 1 #:wire-opacity 0.25) ; inspect a dense model
 ```
 
 The Plot3D window can be dragged to rotate the antenna. All coordinate axes use

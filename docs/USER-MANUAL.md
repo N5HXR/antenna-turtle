@@ -725,6 +725,16 @@ generated. A different Plot3D wire color can be selected directly:
 (show-model #:wire-color "navy")
 ```
 
+Dense wire models can be drawn with thin, translucent conductor centerlines
+while keeping feeds, ports, vertices, and other annotations opaque:
+
+```racket
+(show-model #:wire-width 1 #:wire-opacity 0.25)
+```
+
+`#:wire-width` is a positive screen-space line width (default `2`), and
+`#:wire-opacity` ranges from `0` through `1` (default `1`).
+
 To expose the endpoints created by turtle operations:
 
 ```racket

@@ -87,11 +87,19 @@
 
 (define (model->plot-renderers [model (current-antenna-model)]
                                #:vertices? [vertices? #f]
-                               #:wire-color [wire-color default-wire-color])
+                               #:wire-color [wire-color default-wire-color]
+                               #:wire-width [wire-width 2]
+                               #:wire-opacity [wire-opacity 1.0])
   (unless (antenna-model? model)
     (raise-argument-error 'model->plot-renderers "antenna-model?" model))
   (unless (boolean? vertices?)
     (raise-argument-error 'model->plot-renderers "boolean?" vertices?))
+  (unless (and (rational? wire-width) (positive? wire-width))
+    (raise-argument-error 'model->plot-renderers "positive-real?" wire-width))
+  (unless (and (real? wire-opacity) (<= 0 wire-opacity 1))
+    (raise-argument-error 'model->plot-renderers
+                          "real-in-range-0-to-1?"
+                          wire-opacity))
   (define edges (model-edges model))
   (define solid-renderers
     (solid-preview-items 'solid-scene-geometry-renderers))
@@ -108,7 +116,8 @@
     (for/list ([edge (in-list edges)])
       (lines3d (edge-points edge)
                #:color (hash-ref coax-edge-colors edge wire-color)
-               #:width 2)))
+               #:width wire-width
+               #:alpha wire-opacity)))
   (define feeds
     (filter values (map feed-point edges)))
   (define lumped-elements (model-wire-lumped-elements))
@@ -212,6 +221,8 @@
 (define (show-model [model (current-antenna-model)]
                     #:vertices? [vertices? #f]
                     #:wire-color [wire-color default-wire-color]
+                    #:wire-width [wire-width 2]
+                    #:wire-opacity [wire-opacity 1.0]
                     #:width [width 900]
                     #:height [height 700]
                     #:aspect-ratio [aspect-ratio 1]
@@ -224,11 +235,17 @@
     (raise-argument-error 'show-model "exact-positive-integer?" height))
   (unless (and (rational? aspect-ratio) (positive? aspect-ratio))
     (raise-argument-error 'show-model "positive-real?" aspect-ratio))
+  (unless (and (rational? wire-width) (positive? wire-width))
+    (raise-argument-error 'show-model "positive-real?" wire-width))
+  (unless (and (real? wire-opacity) (<= 0 wire-opacity 1))
+    (raise-argument-error 'show-model "real-in-range-0-to-1?" wire-opacity))
   (validate-model!)
   (define renderers
     (model->plot-renderers model
                            #:vertices? vertices?
-                           #:wire-color wire-color))
+                           #:wire-color wire-color
+                           #:wire-width wire-width
+                           #:wire-opacity wire-opacity))
   (define-values (x-min x-max y-min y-max z-min z-max)
     (model-cubic-bounds model))
   ;; Loading the GUI backend only here keeps ordinary builds and exports usable

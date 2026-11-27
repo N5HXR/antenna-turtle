@@ -952,15 +952,20 @@ takes precedence over the fallback argument.
 
 ## 12. Geometry Viewer
 
-### `(show-model [model] [#:vertices? vertices?] [#:wire-color color] [#:width width] [#:height height] [#:aspect-ratio ratio] [#:legend? #f])`
+### `(show-model [model] [#:vertices? vertices?] [#:wire-color color] [#:wire-width line-width] [#:wire-opacity alpha] [#:width width] [#:height height] [#:aspect-ratio ratio] [#:legend? #f])`
 
 Opens the current model in a separate interactive Plot3D window. The optional
 `model` defaults to `(current-antenna-model)`. Drag the plot to rotate it.
 
 Conductors default to medium blue (`"steelblue"`) and feed locations are marked
 in red. `#:wire-color` accepts a Plot3D color such as `"navy"` or `"orange"`.
-With `#:vertices? #t`, every Antenna Turtle vertex is also marked. `width` and
-`height` are positive integer window dimensions and default to `900` and `700`.
+`#:wire-width` selects a positive screen-space line width and defaults to `2`;
+`#:wire-opacity` ranges from `0` (invisible) through `1` (opaque) and defaults
+to `1`. These settings affect conductor lines only, leaving feeds, ports,
+vertices, and other annotations opaque. A useful dense-model view is
+`(show-model #:wire-width 1 #:wire-opacity 0.25)`. With `#:vertices? #t`, every
+Antenna Turtle vertex is also marked. `width` and `height` are positive integer
+window dimensions and default to `900` and `700`.
 `#:aspect-ratio` is an additional width-to-height projection multiplier and
 defaults to `1` for an undistorted view.
 

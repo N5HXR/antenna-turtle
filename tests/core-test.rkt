@@ -1359,7 +1359,10 @@
   (move forward 1)
   (define plain-renderers (model->plot-renderers))
   (define detailed-renderers
-    (model->plot-renderers #:vertices? #t #:wire-color "steelblue"))
+    (model->plot-renderers #:vertices? #t
+                           #:wire-color "steelblue"
+                           #:wire-width 1
+                           #:wire-opacity 0.25))
   ;; Two conductor renderers plus one feed renderer; the detailed form adds
   ;; one renderer containing all model vertices.
   (check-equal? (length plain-renderers) 3)
@@ -1370,6 +1373,14 @@
   (check-equal? (send preview get-height) 240)
   (check-exn #rx"positive-real"
              (lambda () (show-model #:aspect-ratio 0)))
+  (check-exn #rx"positive-real"
+             (lambda () (show-model #:wire-width 0)))
+  (check-exn #rx"positive-real"
+             (lambda () (show-model #:wire-width +inf.0)))
+  (check-exn #rx"real-in-range-0-to-1"
+             (lambda () (show-model #:wire-opacity 1.1)))
+  (check-exn #rx"real-in-range-0-to-1"
+             (lambda () (model->plot-renderers #:wire-opacity -0.1)))
   (reset-model!)
   (check-exn #rx"empty model" model->plot-renderers))
 
