@@ -184,9 +184,123 @@
    who (network-samples-for who result port) frequency
    network-sample-frequency-mhz accessor interpolate-complex interpolate?))
 
-(define (impedance-at result frequency #:port [port #f]
-                      #:interpolate? [interpolate? #t])
+(struct aggregate-impedance-sample (frequency-mhz impedance) #:transparent)
+
+(define (nec2c-feedpoint-groups who result)
   (cond
+    [(nec2c-impedance-result? result)
+     (define samples (nec2c-impedance-result-samples result))
+     (for/list ([frequency
+                (in-list
+                 (unique-sorted
+                  (map nec2c-feedpoint-sample-frequency-mhz samples)))])
+       (cons frequency
+             (filter
+              (lambda (sample)
+                (approximately=?
+                 frequency (nec2c-feedpoint-sample-frequency-mhz sample)))
+              samples)))]
+    [(nec2c-sweep-result? result)
+     (for/list ([frequency
+                (in-list (nec2c-sweep-result-frequencies result))])
+       (cons
+        (nec2c-sweep-frequency-frequency-mhz frequency)
+        (map nec2c-sweep-sample-feedpoint
+             (nec2c-sweep-frequency-feed-samples frequency))))]
+    [else
+     (raise-arguments-error
+      who
+      "parallel port aggregation requires a native NEC2C impedance or VSWR sweep result"
+      "result" result)]))
+
+(define (complex-approximately=? left right [relative-tolerance 1e-9])
+  (<= (magnitude (- left right))
+      (* relative-tolerance
+         (max 1.0 (magnitude left) (magnitude right)))))
+
+(define (select-aggregate-ports who requested available)
+  (define names (unique-names available))
+  (cond
+    [(eq? requested 'all) names]
+    [(not (list? requested))
+     (raise-argument-error who "(or/c 'all (non-empty-listof port-name))"
+                           requested)]
+    [(null? requested)
+     (raise-argument-error who "(or/c 'all (non-empty-listof port-name))"
+                           requested)]
+    [else
+     (define selected
+       (for/list ([name (in-list requested)])
+         (or (findf (lambda (available-name) (name=? available-name name)) names)
+             (raise-arguments-error who "unknown port in aggregate selection"
+                                    "requested" name "available" names))))
+     (unless (= (length selected) (length (unique-names selected)))
+       (raise-arguments-error
+        who "aggregate port selection contains a duplicate"
+        "ports" requested))
+     selected]))
+
+(define (parallel-impedance-samples result requested-ports combine)
+  (define who 'impedance-at)
+  (unless (eq? combine 'parallel)
+    (raise-argument-error who "'parallel" combine))
+  (define groups (nec2c-feedpoint-groups who result))
+  (when (null? groups)
+    (raise-arguments-error who "the result contains no feedpoint samples"))
+  (define selected-names
+    (select-aggregate-ports
+     who requested-ports
+     (append-map
+      (lambda (group)
+        (map nec2c-feedpoint-sample-feed-name (cdr group)))
+      groups)))
+  (for/list ([group (in-list groups)])
+    (define frequency (car group))
+    (define samples
+      (for/list ([name (in-list selected-names)])
+        (or (findf (lambda (sample)
+                     (name=? name
+                             (nec2c-feedpoint-sample-feed-name sample)))
+                   (cdr group))
+            (raise-arguments-error
+             who "an aggregate port is missing at a sampled frequency"
+             "port" name "frequency (MHz)" frequency))))
+    (define voltage (nec2c-feedpoint-sample-voltage (first samples)))
+    (for ([sample (in-list (rest samples))])
+      (unless (complex-approximately=?
+               voltage (nec2c-feedpoint-sample-voltage sample))
+        (raise-arguments-error
+         who
+         "parallel aggregation requires equal complex source voltages and polarity"
+         "frequency (MHz)" frequency
+         "ports" selected-names
+         "voltages" (map nec2c-feedpoint-sample-voltage samples))))
+    (define total-current
+      (for/sum ([sample (in-list samples)])
+        (nec2c-feedpoint-sample-current sample)))
+    (when (zero? total-current)
+      (raise-arguments-error
+       who "aggregate feed current is zero; parallel impedance is undefined"
+       "frequency (MHz)" frequency "ports" selected-names))
+    (aggregate-impedance-sample frequency (/ voltage total-current))))
+
+(define (impedance-at result frequency #:port [port #f]
+                      #:ports [ports #f]
+                      #:combine [combine #f]
+                      #:interpolate? [interpolate? #t])
+  (when (and port (or ports combine))
+    (raise-arguments-error
+     'impedance-at
+     "#:port is mutually exclusive with aggregate #:ports or #:combine"
+     "port" port "ports" ports "combine" combine))
+  (cond
+    [(or ports combine)
+     (sample-at-frequency
+      'impedance-at
+      (parallel-impedance-samples result (or ports 'all)
+                                  (or combine 'parallel))
+      frequency aggregate-impedance-sample-frequency-mhz
+      aggregate-impedance-sample-impedance interpolate-complex interpolate?)]
     [(nec2c-impedance-result? result)
      (define samples (nec2c-impedance-result-samples result))
      (define selected

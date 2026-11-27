@@ -2448,6 +2448,8 @@ The complete one-port/network signatures are:
 
 ```racket
 (impedance-at result frequency #:port [name #f]
+              #:ports [names-or-all #f]
+              #:combine [method #f]
               #:interpolate? [boolean #t])
 (admittance-at result frequency #:port [name #f]
                #:interpolate? [boolean #t])
@@ -2480,6 +2482,29 @@ The complete one-port/network signatures are:
 (define null-frequency (first null))
 (define null-s11-db (second null))
 ```
+
+For a native NEC2C impedance or VSWR sweep containing several simultaneously
+driven, equal-voltage feeds, `impedance-at` can treat selected feeds as one
+parallel port. Use `#:ports 'all` or provide a nonempty list of feed names;
+symbol and string spellings are interchangeable. The optional `#:combine`
+method currently accepts only `'parallel` and defaults to it when `#:ports`
+is present. Conversely, `#:combine 'parallel` without `#:ports` combines all
+feeds:
+
+```racket
+(impedance-at sweep 915 #:combine 'parallel)
+(impedance-at sweep 915 #:ports 'all)
+(impedance-at sweep 915
+              #:ports '(f0 f1 f2 f3)
+              #:combine 'parallel)
+```
+
+The query sums the actual complex feed currents reported by NEC2C and divides
+their common complex source voltage by that total. Thus it includes coupling
+and remains valid when the individual active impedances are unequal. It
+rejects feeds with unequal voltage or polarity, missing feeds, and generic or
+independently excited network sweeps. `#:port` is mutually exclusive with the
+aggregate `#:ports` and `#:combine` options.
 
 ### `(deembed-transmission-line sweep line [#:feed name])`
 
@@ -3604,12 +3629,15 @@ These operations explicitly open Racket Plot windows. The four network plots
 accept either a `nec2c-sweep-result` or an `openems-sweep-result`:
 
 ```racket
-(show-vswr-sweep sweep [#:max-vswr #f] [#:legend? #f])
-(show-return-loss-sweep sweep [#:floor-db #f] [#:legend? #f])
+(show-vswr-sweep sweep [#:max-vswr #f]
+                 [#:combine #f] [#:legend? #f])
+(show-return-loss-sweep sweep [#:floor-db #f]
+                        [#:combine #f] [#:legend? #f])
 (show-gain-sweep gain-sweep [#:legend? #f])
 (show-gain-and-match-sweep gain-sweep [#:legend? #f]) ; alias
 (show-impedance-sweep sweep [#:legend? #f])
-(show-smith-chart sweep [#:markers? #t] [#:theme 'light] [#:legend? #f])
+(show-smith-chart sweep [#:markers? #t] [#:theme 'light]
+                  [#:combine #f] [#:legend? #f])
 (show-radiation-cut pattern
                     [#:component 'total]
                     [#:floor-db -40]
@@ -3741,6 +3769,13 @@ realized maximum horizon gain, and S11 on their common dB scale. Its data tip
 also reports maximum-lobe direction, unmatched horizon gain, impedance, and
 VSWR. This distinguishes a well-matched mode from one whose strongest lobe has
 moved away from the horizon.
+
+For a native NEC2C sweep with simultaneous equal-voltage feeds,
+`show-vswr-sweep`, `show-return-loss-sweep`, and `show-smith-chart` accept
+`#:combine 'parallel`. The views then show one aggregate trace computed from
+the common source voltage divided by the sum of all complex feed currents.
+This is the same coupling-aware calculation used by
+`(impedance-at sweep frequency #:combine 'parallel)`.
 
 `show-smith-chart` uses the sweep's reference impedance and plots
 `(Z - Z0) / (Z + Z0)` on a fixed, equal-scale unit circle. Its dense normalized

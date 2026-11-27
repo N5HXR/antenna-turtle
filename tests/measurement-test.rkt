@@ -274,6 +274,78 @@
   (check-equal? (measurement-ports result) '("feed"))
   (check-equal? (measurement-frequencies result) '(144)))
 
+(define (parallel-feed name frequency voltage current)
+  (nec2c-feedpoint-sample
+   name frequency 1 1 voltage current (/ voltage current)
+   (/ current voltage) (* 0.5 (real-part (* voltage (conjugate current))))))
+
+(define (parallel-sweep-frequency frequency currents)
+  (nec2c-sweep-frequency
+   frequency
+   (for/list ([current (in-list currents)]
+              [index (in-naturals)])
+     (define feedpoint
+       (parallel-feed (format "f~a" index) frequency 1+0i current))
+     (nec2c-sweep-sample feedpoint 0 +inf.0 1))))
+
+(test-case "impedance queries aggregate equal-voltage NEC feeds in parallel"
+  (define result
+    (nec2c-sweep-result
+     #f 50
+     (list (parallel-sweep-frequency 100 '(0.02+0.01i 0.03-0.01i))
+           (parallel-sweep-frequency 200 '(0.01+0.005i 0.015-0.005i)))))
+  (check-=
+   (magnitude
+    (- (impedance-at result 100 #:ports 'all #:combine 'parallel) 20))
+   0 1e-12)
+  (check-=
+   (magnitude (- (impedance-at result 100 #:combine 'parallel) 20))
+   0 1e-12)
+  (check-=
+   (magnitude
+    (- (impedance-at result 150 #:ports '(f0 "f1")) 30))
+   0 1e-12)
+  (check-exn
+   #rx"mutually exclusive"
+   (lambda ()
+     (impedance-at result 100 #:port 'f0 #:ports 'all)))
+  (check-exn
+   #rx"duplicate"
+   (lambda ()
+     (impedance-at result 100 #:ports '(f0 "f0"))))
+  (check-exn
+   #rx"native NEC2C"
+   (lambda ()
+     (impedance-at network 100 #:ports 'all))))
+
+(test-case "parallel impedance rejects unequal source voltage or polarity"
+  (define result
+    (nec2c-impedance-result
+     #f
+     (list (parallel-feed 'f0 100 1+0i 0.02)
+           (parallel-feed 'f1 100 -1+0i -0.02))))
+  (check-exn
+   #rx"equal complex source voltages and polarity"
+   (lambda ()
+     (impedance-at result 100 #:ports 'all))))
+
+(test-case "network plots accept parallel NEC feed aggregation"
+  (define result
+    (nec2c-sweep-result
+     #f 50
+     (list (parallel-sweep-frequency 100 '(0.02+0.01i 0.03-0.01i))
+           (parallel-sweep-frequency 200 '(0.01+0.005i 0.015-0.005i)))))
+  ;; One aggregate trace plus the three VSWR reference rules.
+  (check-equal?
+   (length (vswr-sweep-renderers result #:combine 'parallel)) 4)
+  ;; One aggregate trace plus the -10 dB return-loss reference rule.
+  (check-equal?
+   (length (return-loss-sweep-renderers result #:combine 'parallel)) 2)
+  (check-true
+   (> (length (smith-chart-renderers
+               result #:combine 'parallel #:markers? #f))
+      40)))
+
 (define (constant-pattern theta-values gain-db)
   (define phi-values '(0 90 180 270))
   (nec2c-pattern-grid

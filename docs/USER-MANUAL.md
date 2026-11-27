@@ -1166,6 +1166,20 @@ Simulation values can be queried directly without unpacking backend structs:
 (front-to-side-ratio pattern)
 ```
 
+Several simultaneous NEC2C feeds at the same complex voltage can also be
+measured as one parallel port. This is useful for a symmetric distributed feed
+whose individual source edges form one physical terminal:
+
+```racket
+(impedance-at sweep 915 #:combine 'parallel)
+```
+
+The result is the common source voltage divided by the sum of the reported
+complex feed currents. Unlike dividing one feed's active impedance by the feed
+count, this remains correct when nearby geometry makes the currents unequal.
+With no `#:ports` list, all feeds are combined. The selected feeds must retain
+equal voltage and polarity.
+
 Named ports remove any need to remember S-matrix indexes. Queries interpolate
 by default and never extend beyond the sampled range; pass `#:interpolate? #f`
 when an exact sample is required. See the measurement-query section of `docs/API.md`
@@ -1739,6 +1753,19 @@ plot. It includes a -10 dB reference line. The data object retains conventional
 positive return loss, and a mathematically exact match remains infinite there;
 the uncapped plot omits that point. Supply a floor such as `#:floor-db -40`
 when you want it drawn at a finite limit.
+
+When a distributed NEC2C excitation represents one physical port, pass
+`#:combine 'parallel` to the VSWR, return-loss, or Smith-chart view:
+
+```racket
+(show-vswr-sweep sweep #:combine 'parallel)
+(show-return-loss-sweep sweep #:combine 'parallel)
+(show-smith-chart sweep #:combine 'parallel)
+```
+
+Each graph then contains one aggregate trace derived from the common complex
+source voltage and the sum of every feed current. The calculation therefore
+continues to account for unequal currents caused by asymmetric geometry.
 
 For a normalized impedance view of the same sweep, use
 `(show-smith-chart sweep)`. The chart uses the sweep's reference impedance,

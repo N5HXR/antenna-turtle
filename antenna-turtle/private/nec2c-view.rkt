@@ -9,6 +9,7 @@
          "radiation-case.rkt"
          "visualization-handle.rkt"
          "nec2c.rkt"
+         "measurement-network.rkt"
          "measurement-radiation.rkt"
          "network.rkt")
 
@@ -99,22 +100,50 @@
      (if styles (list-ref styles (modulo index (length styles))) 'solid)
      'line)))
 
-(define (normalize-network-sweep who result)
-  (cond
-    [(network-sweep? result) result]
-    [(nec2c-sweep-result? result) (nec2c-sweep->network-sweep result)]
-    [(nec2c-gain-sweep-result? result)
-     (nec2c-gain-sweep->network-sweep result)]
-    [(or (openems-predicate? 'openems-sweep-result? result)
-         (openems-predicate? 'openems-multiport-result? result))
-     ((require-openems-binding who 'openems-sweep->network-sweep) result)]
-    [else
-     (raise-argument-error
-      who
-      (string-append
-       "(or/c nec2c-sweep-result? nec2c-gain-sweep-result? openems-sweep-result? "
-       "openems-multiport-result? network-sweep?)")
-      result)]))
+(define (normalize-network-sweep who result [combine #f])
+  (define normalized
+    (cond
+      [(network-sweep? result) result]
+      [(nec2c-sweep-result? result) (nec2c-sweep->network-sweep result)]
+      [(nec2c-gain-sweep-result? result)
+       (nec2c-gain-sweep->network-sweep result)]
+      [(or (openems-predicate? 'openems-sweep-result? result)
+           (openems-predicate? 'openems-multiport-result? result))
+       ((require-openems-binding who 'openems-sweep->network-sweep) result)]
+      [else
+       (raise-argument-error
+        who
+        (string-append
+         "(or/c nec2c-sweep-result? nec2c-gain-sweep-result? "
+         "openems-sweep-result? openems-multiport-result? network-sweep?)")
+        result)]))
+  (if combine
+      (let* ([reference (network-sweep-reference-impedance normalized)]
+             [frequencies
+              (sort
+               (remove-duplicates
+                (map network-sample-frequency-mhz
+                     (network-sweep-samples normalized))
+                =)
+               <)])
+        (network-sweep
+         (network-sweep-backend normalized)
+         (network-sweep-run normalized)
+         reference
+         (for/list ([frequency (in-list frequencies)])
+           (define impedance
+             (impedance-at result frequency
+                           #:combine combine #:interpolate? #f))
+           (define reflection
+             (impedance->reflection-coefficient impedance reference))
+           (define reflection-magnitude (magnitude reflection))
+           (network-sample
+            "parallel" frequency reflection impedance
+            (if (zero? reflection-magnitude)
+                -inf.0
+                (* 20.0 (/ (log reflection-magnitude) (log 10.0))))
+            (reflection-coefficient->vswr reflection)))))
+      normalized))
 
 (define (backend-title result)
   (case (network-sweep-backend result)
@@ -149,8 +178,10 @@
                    (vswr-points result name max-vswr)
                    (color-at index))))
 
-(define (vswr-sweep-renderers result #:max-vswr [max-vswr #f])
-  (define normalized (normalize-network-sweep 'vswr-sweep-renderers result))
+(define (vswr-sweep-renderers result #:max-vswr [max-vswr #f]
+                              #:combine [combine #f])
+  (define normalized
+    (normalize-network-sweep 'vswr-sweep-renderers result combine))
   (unless (or (not max-vswr)
               (and (rational? max-vswr) (> max-vswr 1)))
     (raise-argument-error
@@ -183,8 +214,10 @@
 
 (define (return-loss-sweep-renderers
          result
-         #:floor-db [floor-db #f])
-  (define normalized (normalize-network-sweep 'return-loss-sweep-renderers result))
+         #:floor-db [floor-db #f]
+         #:combine [combine #f])
+  (define normalized
+    (normalize-network-sweep 'return-loss-sweep-renderers result combine))
   (unless (or (not floor-db)
               (and (rational? floor-db) (negative? floor-db)))
     (raise-argument-error
@@ -452,8 +485,10 @@
 
 (define (smith-chart-renderers result
                                #:markers? [markers? #t]
-                               #:theme [theme 'light])
-  (define normalized (normalize-network-sweep 'smith-chart-renderers result))
+                               #:theme [theme 'light]
+                               #:combine [combine #f])
+  (define normalized
+    (normalize-network-sweep 'smith-chart-renderers result combine))
   (validate-smith-options 'smith-chart-renderers markers? theme)
   (define series-list (smith-cursor-series normalized))
   (append
@@ -1012,8 +1047,10 @@
    #:y-label "unwrapped phase (degrees)"))
 
 (define (show-vswr-sweep result #:max-vswr [max-vswr #f]
+                         #:combine [combine #f]
                          #:legend? [legend? #f])
-  (define normalized (normalize-network-sweep 'show-vswr-sweep result))
+  (define normalized
+    (normalize-network-sweep 'show-vswr-sweep result combine))
   (define backend (backend-title normalized))
   (define series (vswr-cursor-series normalized max-vswr))
   (show-plot
@@ -1037,8 +1074,10 @@
 (define (show-return-loss-sweep
          result
          #:floor-db [floor-db #f]
+         #:combine [combine #f]
          #:legend? [legend? #f])
-  (define normalized (normalize-network-sweep 'show-return-loss-sweep result))
+  (define normalized
+    (normalize-network-sweep 'show-return-loss-sweep result combine))
   (define backend (backend-title normalized))
   (define series (return-loss-cursor-series normalized floor-db))
   (show-plot
@@ -1125,8 +1164,10 @@
 (define (show-smith-chart result
                           #:markers? [markers? #t]
                           #:theme [theme 'light]
+                          #:combine [combine #f]
                           #:legend? [legend? #f])
-  (define normalized (normalize-network-sweep 'show-smith-chart result))
+  (define normalized
+    (normalize-network-sweep 'show-smith-chart result combine))
   (define backend (backend-title normalized))
   (validate-smith-options 'show-smith-chart markers? theme)
   (define series (smith-cursor-series normalized))
