@@ -25,6 +25,7 @@
   (procedure-keywords show-radiation-comparison))
 (check-not-false (member '#:difference? comparison-keywords))
 (check-not-false (member '#:difference-range-db comparison-keywords))
+(check-not-false (member '#:view comparison-keywords))
 (define-values (_required-cut-comparison-keywords cut-comparison-keywords)
   (procedure-keywords show-radiation-cut-comparison))
 (check-not-false (member '#:cut cut-comparison-keywords))
@@ -87,6 +88,14 @@
 (define cut-cases
   (list (radiation-case "reference" cut-grid)
         (radiation-case "comparison" cut-grid)))
+
+(check-exn #rx"'gain 'polarization"
+           (lambda ()
+             (show-radiation-comparison cut-cases #:view 'unknown)))
+(check-exn #rx"difference rendering.*polarization"
+           (lambda ()
+             (show-radiation-comparison
+              cut-cases #:view 'polarization #:difference? #t)))
 
 (check-equal?
  (length

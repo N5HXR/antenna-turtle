@@ -36,14 +36,17 @@
 
 (build #f)
 (define p1 (patternize))
-
+;(html-auto-report "nochoke.html")
 (build #t)
 (define p2 (patternize))
-
+;(html-auto-report "two-chokes.html")
 (show-radiation-comparison
- (list (radiation-case "No Chokes" (first p1))
-       (radiation-case "With Chokes" (first p2)))
- #:palette 'electric)
+ (list
+  (radiation-case "With Chokes" (first p2))
+  (radiation-case "No Chokes" (first p1))
+  )
+ #:palette 'electric
+ #:difference? #t)
 
 (show-radiation-cut (second p1) #:floor-db -3 #:normalize? #t)
 (show-radiation-cut (second p2) #:floor-db -3 #:normalize? #t)

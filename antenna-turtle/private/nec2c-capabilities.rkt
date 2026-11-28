@@ -87,8 +87,21 @@
     [(ground)
      (and (member (if (symbol? value) (symbol->string value) value)
                   (nec2c-capability-set-grounds capabilities)) #t)]
+    [(wire-engine ground-engine model-check)
+     (define key
+       (case feature
+         [(wire-engine) 'wire_engines]
+         [(ground-engine) 'ground_engines]
+         [(model-check) 'model_check_policies]))
+     (define features
+       (hash-ref (nec2c-capability-set-raw capabilities) 'features #hasheq()))
+     (and (member (if (symbol? value) (symbol->string value) value)
+                  (hash-ref features key '()))
+          #t)]
     [else
      (raise-argument-error
       'nec2c-capability-supports?
-      "(or/c 'dielectric-resource-version 'result-json-version 'solver 'ground)"
+      (string-append
+       "(or/c 'dielectric-resource-version 'result-json-version 'solver 'ground "
+       "'wire-engine 'ground-engine 'model-check)")
       feature)]))

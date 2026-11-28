@@ -44,6 +44,9 @@
 (provide
  nec2c-executable
  nec2c-use-ssh-alias
+ nec2c-wire-engine
+ nec2c-ground-engine
+ nec2c-model-check
  set-coating-experimental
  coating-experimental?
  probe-nec2c-capabilities
@@ -319,6 +322,34 @@
        (raise-argument-error
         'nec2c-use-ssh-alias "(or/c #f non-empty-string?)" value))
      value)))
+
+;; NEC2C-N5HXR execution policies.  Defaults deliberately match classic NEC2C
+;; and therefore add no command-line options, preserving compatibility with
+;; ordinary NEC2C executables.  Like the executable and SSH destination, these
+;; are process settings rather than model geometry and may be parameterized for
+;; a single comparison run.
+(define (engine-parameter who allowed default)
+  (make-parameter
+   default
+   (lambda (value)
+     (unless (memq value allowed)
+       (raise-argument-error who
+                             (format "(or/c ~a)"
+                                     (string-join
+                                      (map (lambda (item) (format "'~a" item))
+                                           allowed)
+                                      " "))
+                             value))
+     value)))
+
+(define nec2c-wire-engine
+  (engine-parameter 'nec2c-wire-engine '(nec2 auto nec4ish) 'nec2))
+
+(define nec2c-ground-engine
+  (engine-parameter 'nec2c-ground-engine '(nec2 auto nec4ish) 'nec2))
+
+(define nec2c-model-check
+  (engine-parameter 'nec2c-model-check '(warn strict off) 'warn))
 
 ;; Coated/bare and unequal-coating junctions are research-only in NEC2C.
 ;; Keep this execution policy separate from model geometry, like SSH target
@@ -1259,10 +1290,33 @@
       (and capabilities
            (nec2c-capability-supports?
             capabilities 'result-json-version 1)))
+    (define (require-execution-feature feature value option default)
+      (when (not (eq? value default))
+        (unless (and capabilities
+                     (nec2c-capability-supports? capabilities feature value))
+          (raise-user-error
+           'nec2c
+           "the selected executable does not advertise support for ~a ~a: ~a"
+           option value executable))))
+    (require-execution-feature
+     'wire-engine (nec2c-wire-engine) "wire engine" 'nec2)
+    (require-execution-feature
+     'ground-engine (nec2c-ground-engine) "ground engine" 'nec2)
+    (require-execution-feature
+     'model-check (nec2c-model-check) "model-check policy" 'warn)
     (define version (read-version executable directory timeout))
     (define arguments
       (append
        (if machine-results? '("--result-json" "analysis.json") '())
+       (if (eq? (nec2c-wire-engine) 'nec2)
+           '()
+           (list "--wire-engine" (symbol->string (nec2c-wire-engine))))
+       (if (eq? (nec2c-ground-engine) 'nec2)
+           '()
+           (list "--ground-engine" (symbol->string (nec2c-ground-engine))))
+       (if (eq? (nec2c-model-check) 'warn)
+           '()
+           (list "--model-check" (symbol->string (nec2c-model-check))))
        (if (and (model-has-wire-coatings?)
                 (coating-experimental-enabled?))
            '("--coated-wire-junctions" "experimental")

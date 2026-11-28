@@ -506,6 +506,28 @@ as `'((1 2) (2 3))`.
 
 ### 5.6 Common Wire Constructions
 
+`cuboid-wire-mesh` constructs a connected grid over all six faces of an
+enclosure using cell counts rather than physical spacing:
+
+```racket
+(with-conductivity 35000000
+  (cuboid-wire-mesh
+    size (list (* 52 millimeter) (* 32 millimeter) (* 100 millimeter))
+    divisions '(8 6 16)
+    anchor top))
+```
+
+The size and division triples run in local forward/left/up order. `anchor top`
+places the top-face center at the turtle. Its first two division counts must be
+even, producing odd numbers of wire planes and therefore a junction exactly at
+that attachment point. In general, every axis that an anchor leaves centered
+needs an even count; corner axes already lie on boundary planes.
+
+The helper chooses one equal-area diameter for the complete grid and uses the
+active wire material or conductivity. It restores the caller's turtle and
+diameter settings after construction. Enclosing `with-scale` and `scale-all`
+forms apply equally to the enclosure dimensions and this derived diameter.
+
 `circular-wire-mesh` draws the radial ribs and concentric rings used by dish
 reflectors, circular ground screens, and similar structures:
 
@@ -1522,6 +1544,11 @@ window unless the program explicitly calls a `show-*` operation:
 ```racket
 (nec2c-executable "/path/to/nec2c") ; omit when it is on PATH
 
+;; Optional NEC2C-N5HXR execution policy. The defaults are classic NEC2.
+(nec2c-wire-engine 'nec4ish)
+(nec2c-ground-engine 'nec2)
+(nec2c-model-check 'warn)
+
 (define feedpoint (nec2c-measure-impedance))
 (define sweep (nec2c-vswr-sweep 440 450 #:steps 51))
 (define horizontal-cut
@@ -1542,6 +1569,12 @@ window unless the program explicitly calls a `show-*` operation:
 (show-radiation-pattern-opengl sphere #:palette 'magma)
 (show-gain-sweep performance)
 ```
+
+The engine settings apply uniformly to impedance, sweep, pattern, near-field,
+power-report, and HTML-report analyses. They are process settings rather than
+model geometry and can be restricted to one experiment with `parameterize`.
+`'auto` delegates applicability decisions to NEC2C-N5HXR; the default `'nec2`
+passes no new option and remains compatible with classic NEC2C programs.
 
 To transfer an antenna-only NEC2C impedance sweep into a matching-network
 tool, write a one-port Touchstone file. The file uses the model reference
@@ -1657,6 +1690,25 @@ grid and pass up to nine of them to the comparison viewer:
  #:aspect-ratio 16/9
  #:palette 'inferno)
 ```
+
+To compare polarization instead of the gain palette, select the color-only
+polarization view:
+
+```racket
+(show-radiation-comparison
+ (list (radiation-case "without balun" unbalanced-grid)
+       (radiation-case "with balun" balanced-grid))
+ #:view 'polarization)
+```
+
+The tiles retain synchronized orbit and zoom and share total-gain ARRL
+geometry. Their surfaces use the same signed-circularity ramp as the
+single-pattern polarization viewer: pink is LHCP, green is linear, and blue is
+RHCP, with brightness following gain within each pattern. This comparison is
+deliberately color-only; it does not add polarization glyphs, animation, or
+controls. Gain-palette styling keywords are accepted but do not affect this
+view. Polarization difference rendering is not currently defined, so
+`#:difference?` cannot be combined with `#:view 'polarization`.
 
 The same named grids can be compared as traces through a selected plane:
 

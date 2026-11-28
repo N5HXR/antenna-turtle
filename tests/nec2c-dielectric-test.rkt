@@ -28,6 +28,9 @@
               'validate_only #t
               'legacy_result_output #t
               'solvers '("dense" "gmres" "fft")
+              'wire_engines '("auto" "nec2" "nec4ish")
+              'ground_engines '("auto" "nec2" "nec4ish")
+              'model_check_policies '("warn" "strict" "off")
               'grounds '("free-space" "pec" "sommerfeld-norton")
               'future_feature #t)
       'limits (hasheq 'default_max_cells 1000)
@@ -37,6 +40,12 @@
    (nec2c-capability-supports? capabilities 'dielectric-resource-version 2))
   (check-true (nec2c-capability-supports? capabilities 'solver 'dense))
   (check-false (nec2c-capability-supports? capabilities 'solver 'other))
+  (check-true
+   (nec2c-capability-supports? capabilities 'wire-engine 'nec4ish))
+  (check-true
+   (nec2c-capability-supports? capabilities 'ground-engine 'auto))
+  (check-true
+   (nec2c-capability-supports? capabilities 'model-check 'strict))
   (check-exn
    #rx"unknown capability schema version"
    (lambda ()

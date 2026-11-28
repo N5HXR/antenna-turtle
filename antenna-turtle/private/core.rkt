@@ -22,6 +22,7 @@
  (struct-out wire-edge)
  (struct-out wire-coating-spec)
  wire-edge-coating
+ wire-edge-material wire-edge-conductivity
  wire-edge-maximum-segment-length
  wire-edge-feed? wire-edge-feed-location wire-edge-feed-name
  wire-edge-feed-amplitude wire-edge-feed-phase
@@ -38,6 +39,7 @@
  (struct-out reflection-context)
  current-reflection-context
  current-turtle-affine-transform current-geometry-scale
+ set-wire-diameter-for-geometry!
  current-turtle-event-handler
 
  ;; Model settings.
@@ -70,6 +72,8 @@
  turn-x turn-y turn-z turn-axis
  scale scale-all
  wire-diameter
+ wire-material wire-conductivity
+ call-with-conductivity
  set-wire-coating! wire-coating-off current-wire-coating
  call-with-wire-coating model-has-wire-coatings?
  push pop
@@ -117,11 +121,31 @@
 ;; constructor arity, pattern matches, and printed forms remain unchanged.
 (define edge-coatings (make-weak-hasheq))
 
+;; Finite-conductivity wire material is likewise attached to authored edges
+;; without changing wire-edge's public representation.  Missing metadata is
+;; deliberately PEC for compatibility with every existing model.
+(define edge-materials (make-weak-hasheq))
+
 ;; Like coatings, local segmentation policy belongs to an authored edge but
 ;; is not part of wire-edge's historical transparent representation.  Keep it
 ;; by edge identity so existing constructors, patterns, and printed values do
 ;; not change.
 (define edge-maximum-segment-lengths (make-weak-hasheq))
+
+(define (wire-edge-material edge)
+  (unless (wire-edge? edge)
+    (raise-argument-error 'wire-edge-material "wire-edge?" edge))
+  (hash-ref edge-materials edge pec))
+
+(define (wire-edge-conductivity edge)
+  (define material (wire-edge-material edge))
+  (and (eq? (em-material-kind material) 'conductor)
+       (em-material-electric-conductivity material)))
+
+(define (set-wire-edge-material! edge material)
+  (if (eq? (em-material-kind material) 'pec)
+      (hash-remove! edge-materials edge)
+      (hash-set! edge-materials edge material)))
 
 (define (wire-edge-coating edge)
   (unless (wire-edge? edge)
@@ -176,6 +200,7 @@
 (define current-turtle-stack (make-parameter '()))
 (define pending-feed-location (make-parameter #f))
 (define current-wire-coating-state (make-parameter #f))
+(define current-wire-material-state (make-parameter pec))
 (define current-coordinate-warp (make-parameter #f))
 (define current-reflection-context (make-parameter #f))
 (define current-radial-iterations (make-parameter '()))
@@ -488,6 +513,7 @@
   (check-clear-context 'reset-model!)
   (clear-construction-state! millimeter)
   (current-wire-coating-state #f)
+  (current-wire-material-state pec)
   (for ([hook (in-list model-reset-hooks)]) (hook))
   (model-title "Turtle Antenna")
   (model-impedance 50)
@@ -869,6 +895,69 @@
      [base-diameter diameter]))
   (void))
 
+;; Geometry helpers express both their dimensions and their derived wire
+;; diameters in the same local coordinate system. `with-scale` changes only
+;; movement scale, while `scale-all` changes movement and ordinary diameter
+;; scale. Convert a helper-local diameter into the base setting that produces
+;; the intended physical diameter under either combination.
+(define (set-wire-diameter-for-geometry! diameter)
+  (ensure-positive-real
+   'set-wire-diameter-for-geometry! diameter "local wire diameter")
+  (define state (current-turtle-state))
+  (current-turtle-state
+   (struct-copy turtle-state state
+     [base-diameter
+      (* diameter
+         (/ (turtle-state-movement-scale state)
+            (turtle-state-diameter-scale state)))]))
+  (void))
+
+(define (validate-wire-material who material)
+  (unless (and (em-material? material)
+               (memq (em-material-kind material) '(pec conductor)))
+    (raise-argument-error who "(or/c pec conductor-material?)" material))
+  (when (eq? (em-material-kind material) 'conductor)
+    (ensure-positive-real
+     who (em-material-electric-conductivity material)
+     "wire conductivity in S/m"))
+  material)
+
+(define wire-material
+  (case-lambda
+    [() (current-wire-material-state)]
+    [(material)
+     (current-wire-material-state
+      (validate-wire-material 'wire-material material))
+     (void)]))
+
+(define (conductivity->wire-material who conductivity)
+  (cond
+    [(not conductivity) pec]
+    [else
+     (ensure-positive-real who conductivity "wire conductivity in S/m")
+     (make-conductor #:name 'wire #:conductivity conductivity)]))
+
+;; #f denotes the historical PEC default.  A finite value is bulk electric
+;; conductivity in siemens per metre, exactly the quantity consumed by NEC2
+;; LD 5.
+(define wire-conductivity
+  (case-lambda
+    [()
+     (define material (current-wire-material-state))
+     (and (eq? (em-material-kind material) 'conductor)
+          (em-material-electric-conductivity material))]
+    [(conductivity)
+     (current-wire-material-state
+      (conductivity->wire-material 'wire-conductivity conductivity))
+     (void)]))
+
+(define (call-with-conductivity conductivity thunk)
+  (validate-thunk 'with-conductivity thunk)
+  (define material
+    (conductivity->wire-material 'with-conductivity conductivity))
+  (parameterize ([current-wire-material-state material])
+    (thunk)))
+
 (define (validate-wire-coating-material who material)
   (unless (and (em-material? material)
                (eq? (em-material-kind material) 'dielectric))
@@ -1122,6 +1211,7 @@
         "metal wire diameter" diameter))
      (define new-edge
        (wire-edge (add1 (length edges)) start end diameter finalized-feed))
+     (set-wire-edge-material! new-edge (current-wire-material-state))
      (set-wire-edge-coating! new-edge coating)
      (set-wire-edge-maximum-segment-length!
       new-edge (current-edge-maximum-segment-length))
@@ -1129,15 +1219,17 @@
      (when (pending-feed-location) (pending-feed-location #f))])
   (values (vertex-point start) (vertex-point end)))
 
-(define (same-undirected-edge? edge start end diameter coating)
+(define (same-undirected-edge? edge start end diameter material coating)
   (and (= (wire-edge-diameter edge) diameter)
+       (equal? (wire-edge-material edge) material)
        (equal? (wire-edge-coating edge) coating)
        (or (and (eq? (wire-edge-start edge) start)
                 (eq? (wire-edge-end edge) end))
            (and (eq? (wire-edge-start edge) end)
                 (eq? (wire-edge-end edge) start)))))
 
-(define (append-reflected-edge! start-point end-point diameter coating max-length)
+(define (append-reflected-edge!
+         start-point end-point diameter material coating max-length)
   (define m (current-antenna-model))
   (define start (intern-vertex! start-point))
   (define end
@@ -1146,10 +1238,12 @@
         (intern-vertex! end-point start)))
   (unless (or (eq? start end)
               (for/or ([edge (in-list (antenna-model-edges m))])
-                (same-undirected-edge? edge start end diameter coating)))
+                (same-undirected-edge?
+                 edge start end diameter material coating)))
     (define edges (antenna-model-edges m))
     (define reflected-edge
       (wire-edge (add1 (length edges)) start end diameter #f))
+    (set-wire-edge-material! reflected-edge material)
     (set-wire-edge-coating! reflected-edge coating)
     (set-wire-edge-maximum-segment-length! reflected-edge max-length)
     (set-antenna-model-edges! m (append edges (list reflected-edge))))
@@ -1203,6 +1297,7 @@
      (reflect-point-across-plane
      (vertex-point (wire-edge-end edge)) anchor normal)
      (wire-edge-diameter edge)
+     (wire-edge-material edge)
      (wire-edge-coating edge)
      (wire-edge-maximum-segment-length edge)))
   (apply values results))

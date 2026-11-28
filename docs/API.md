@@ -19,12 +19,13 @@ For a Racket program that manages models explicitly:
 `validate-model!` afterward. When using `require` from ordinary Racket, call
 `reset-model!` before constructing each new model.
 
-The wire DSL and file exporters are always present. Solid-modeling, OpenEMS,
-material, solid measurement, and combined NEC/OpenEMS plotting bindings are
-exported only when the optional Manifold package and native library loaded
-successfully when Antenna Turtle was compiled. A minimal installation prints
-the capability warning and leaves those identifiers unbound. After installing
-Manifold, run `raco setup antenna-turtle` to enable the full API.
+The wire DSL, electromagnetic material declarations and catalog, and file
+exporters are always present. Solid-modeling, OpenEMS, solid measurement, and
+combined NEC/OpenEMS plotting bindings are exported only when the optional
+Manifold package and native library loaded successfully when Antenna Turtle
+was compiled. A minimal installation prints the capability warning and leaves
+those identifiers unbound. After installing Manifold, run
+`raco setup antenna-turtle` to enable the full API.
 
 The language includes normal `#lang racket` bindings and implicitly re-exports
 version 1.25 of `jphelps/loop`, including `loop`, `return`, `return-from`, and
@@ -153,13 +154,15 @@ any model declaration. The defaults are title `"Turtle Antenna"`, frequency
 `14.1` MHz, maximum segment length of one-twentieth wavelength, maximum NEC2
 surface-patch edge of one-fifth wavelength, snap length of one-millionth
 wavelength, wire diameter of one millimetre, reference impedance of 50 ohms,
-no ground, and zero height offset.
+perfectly conducting wire, no ground, and zero height offset.
 
 ### `(model [setting value] ...)`
 
 Sets any desired subset using contextual `title`, `frequency`, `max-length`,
-`snaplen`, `nec2-patch-length`, `wire-diameter`, `impedance`, `ground`, and
-`height` pairs. Each setting may appear at most once:
+`snaplen`, `nec2-patch-length`, `wire-diameter`, `wire-material`,
+`wire-conductivity`, `impedance`, `ground`, and `height` pairs. Each setting
+may appear at most once. `wire-material` and `wire-conductivity` are
+alternative ways to set the same property and may not appear together:
 
 ```racket
 (model title "Three-element Yagi"
@@ -168,6 +171,7 @@ Sets any desired subset using contextual `title`, `frequency`, `max-length`,
        snaplen {wavelength / 1000000}
        nec2-patch-length {wavelength / 5}
        wire-diameter {2 * millimeter}
+       wire-material copper
        impedance 50
        ground real
        height half-wave)
@@ -302,6 +306,59 @@ Use `show-segmentation-report` to inspect the resolved mixed segmentation.
 - Requires a positive finite real.
 - Sets the base diameter for subsequently created edges.
 - Effective diameter also includes the current `scale-all` diameter factor.
+
+### `(wire-material [material])`
+
+- Initial value: `pec`.
+- The setter accepts `pec` or a material produced by `conductor`.
+- Catalog conductors include `silver`, `copper`, `gold`, `aluminum`, `brass`,
+  and generic nonmagnetic `steel`.
+- Sets the material captured by subsequently created wire edges. Existing
+  edges retain their authored material.
+- The getter returns the active material value.
+
+For NEC2C, finite conductor material is exported as an `LD 5` surface-
+impedance load. NEC2C needs only the material's bulk electric conductivity in
+siemens per metre (S/m); wire diameter comes independently from
+`wire-diameter`. The material model does not capture magnetic permeability,
+plating interfaces, or turn-to-turn proximity effects.
+
+```racket
+(model wire-material copper)
+(wire-material steel)
+```
+
+### `(wire-conductivity [siemens-per-metre])`
+
+Provides an empirical alternative to `wire-material`. A positive finite value
+constructs an anonymous conductor with that bulk conductivity for subsequent
+wire edges. Passing `#f` restores PEC. The zero-argument getter returns the
+active finite conductivity or `#f` for PEC.
+
+```racket
+(model wire-conductivity 5.8e7)
+(wire-conductivity 6.0e6)
+(wire-conductivity #f)
+```
+
+`clear-wires` preserves the active material declaration so iterative geometry
+builders can reuse it; `reset-model!` restores PEC.
+
+### `(with-conductivity siemens-per-metre body ...)`
+
+Temporarily selects a positive finite bulk wire conductivity while evaluating
+`body`, then restores the previous material on normal or exceptional exit.
+Passing `#f` creates a temporary PEC scope. Forms may be nested arbitrarily;
+each completed edge captures the setting active at its creation.
+
+```racket
+(wire-material steel)
+(with-conductivity 5.8e7
+  (with-wire (move up coil-height))
+  (with-conductivity #f
+    (with-wire (move right fixture-length))))
+;; The active material is steel again here.
+```
 
 ### `(wire-coating material dielectric-material diameter outside-diameter)`
 
@@ -523,6 +580,38 @@ It always generates conductors; no surrounding `with-wire` is needed. It
 preserves the full turtle state, including the caller's wire state, position,
 orientation, scale, and diameter. A pending feed is rejected because a mesh has
 no unambiguous edge on which to place it.
+
+### `(cuboid-wire-mesh size dimensions divisions counts [anchor placement])`
+
+Builds an electrically connected wire grid over all six faces of a cuboid:
+
+```racket
+(with-conductivity 35000000
+  (cuboid-wire-mesh
+    size (list (* 52 millimeter) (* 32 millimeter) (* 100 millimeter))
+    divisions '(8 6 16)
+    anchor top))
+```
+
+`size` and `divisions` are three-element lists or vectors in local
+forward/left/up order. Division counts describe cells, so a count of eight
+places nine wire planes across that axis. The default anchor is `center`;
+directional face, edge, and corner anchors use the same `front`, `back`,
+`left`, `right`, `top`, and `bottom` vocabulary as `cuboid`.
+
+The anchor must coincide with a grid junction. Consequently, every axis left
+centered by an anchor needs an even division count. For example, `anchor top`
+requires even forward and left counts, while a three-face corner anchor has no
+parity requirement. This guarantees that the turtle position is an explicit
+model vertex suitable for attaching a feed or another conductor.
+
+The helper calculates one uniform equal-area wire diameter from the cuboid's
+surface area and the total length of its unique grid edges. It captures the
+active wire material or `with-conductivity` setting on every edge, and restores
+the caller's position, orientation, scale, wire state, and diameter afterward.
+The dimensions and derived diameter share the same local coordinate system, so
+both honor enclosing `with-scale` and `scale-all` forms. No surrounding
+`with-wire` is needed.
 
 ### `(move-nearest)`
 
@@ -930,6 +1019,9 @@ overlapping edges each count because each represents a laid wire edge.
 `wire-edge-feed-name`, `wire-edge-feed-amplitude`, and
 `wire-edge-feed-phase` expose the remaining excitation metadata.
 `wire-edge-feed?` remains available as a Boolean convenience predicate.
+`wire-edge-material` returns the conductor material captured when the edge was
+created, defaulting to `pec`; `wire-edge-conductivity` returns its finite S/m
+value or `#f` for PEC.
 `wire-edge-maximum-segment-length` returns the local positive length captured
 by `with-max-length`, or `#f` when the edge uses global segmentation.
 All structure predicates and accessors are exported. A `ground-spec` has kind
@@ -2877,6 +2969,35 @@ above-ground arc from 0 through 180 degrees, and radiation grids contain theta
 runs. With the default `#f`, each operation tries the `NEC2C` environment
 variable and then searches `PATH` for `nec2c`.
 
+### NEC2C-N5HXR wire and ground engines
+
+`(nec2c-wire-engine [engine])` selects `'nec2`, `'nec4ish`, or `'auto` for
+subsequent analyses. `(nec2c-ground-engine [engine])` independently selects
+the same choices for half-space interaction. `(nec2c-model-check [policy])`
+selects `'warn`, `'strict`, or `'off` validity diagnostics. Their defaults are
+`'nec2`, `'nec2`, and `'warn`, respectively.
+
+The settings are execution policy, not geometry: they persist across
+`reset-model!`, affect every NEC2C measurement and report function, and may be
+scoped with `parameterize`. Default values add no command-line switches, so
+ordinary NEC2C executables remain compatible. Nondefault values require an
+executable that advertises the corresponding NEC2C-N5HXR capability.
+
+For an A/B comparison of the experimental wire formulation while retaining
+classic ground treatment:
+
+```racket
+(parameterize ([nec2c-wire-engine 'nec4ish]
+               [nec2c-ground-engine 'nec2]
+               [nec2c-model-check 'warn])
+  (power-report))
+```
+
+NEC4ish is an independent NEC2C-N5HXR formulation, not licensed NEC-4. Its
+wire engine targets junction/end charge treatment and short or near-axis wire
+interactions. It is normally slower than the classic NEC2 engine. `'auto`
+allows NEC2C-N5HXR to choose an applicable engine from the model features.
+
 ### Remote NEC2C over SSH
 
 `(nec2c-use-ssh-alias [destination-or-#f])` selects a remote NEC2C host for
@@ -3931,6 +4052,16 @@ queued during the drag. Releasing the button restores all full-resolution
 colored surfaces at the final orientation. This keeps a large comparison
 responsive without changing the analyzed data or resting view.
 
+Pass `#:view 'polarization` to retain the synchronized tiled geometry while
+coloring every surface with the signed-circularity polarization ramp used by
+`show-radiation-pattern-opengl`. The default is `#:view 'gain`. Polarization
+comparison always uses total-gain ARRL geometry; gain-only component, scale,
+palette, and color-step styling remains accepted for source compatibility but
+does not affect the polarization view. The comparison is color-only and does
+not include glyphs, animation, or workbench controls. Because polarization
+difference semantics are not defined, `#:difference?` must be `#f` in this
+view.
+
 In the ordinary comparison mode, the comparison is absolute, not merely
 stylistic: all surfaces share the largest selected-component peak as their
 0 dB color and radial reference, and all cameras share the same world-space
@@ -4027,10 +4158,12 @@ the order shown. For example, `(openems-run-info-artifacts run)` reads the
 large accessor surface without requiring callers to memorize a separate name
 list.
 
+`wire-edge-material` returns the conductor material captured by an edge, and
+`wire-edge-conductivity` returns its finite conductivity or `#f` for PEC.
 `wire-edge-coating` returns `#f` for a bare `wire-edge` or its captured
-`wire-coating-spec` for a coated edge. Coating metadata is associated with the
-edge without changing the historical five-field transparent structure or its
-constructor signature shown below.
+`wire-coating-spec` for a coated edge. Material and coating metadata are
+associated with the edge without changing the historical five-field
+transparent structure or its constructor signature shown below.
 
 ### Core and solid-scene structures
 

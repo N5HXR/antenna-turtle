@@ -8,6 +8,108 @@
            (sqr (- (point3-y point) (point3-y center)))
            (sqr (- (point3-z point) (point3-z center))))))
 
+(define (coordinate-bounds vertices accessor)
+  (define coordinates (map (lambda (vertex) (accessor (vertex-point vertex)))
+                           vertices))
+  (values (apply min coordinates) (apply max coordinates)))
+
+(test-case "cuboid-wire-mesh anchors an equal-area conductive grid at a node"
+  (reset-model!)
+  (wire-diameter (* 2 millimeter))
+  (with-conductivity 12345678
+    (cuboid-wire-mesh
+     size '(2 4 6)
+     divisions '(2 4 6)
+     anchor top))
+
+  ;; Unit pitch on every axis makes the equal-area diameter exactly 1/pi.
+  ;; There are 90 boundary vertices and 176 unique unit lattice edges.
+  (check-equal? (length (model-vertices)) 90)
+  (check-equal? (length (model-edges)) 176)
+  (for ([edge (in-list (model-edges))])
+    (check-= (wire-edge-diameter edge) (/ pi) 1e-12)
+    (check-equal? (wire-edge-conductivity edge) 12345678))
+
+  (define-values (xmin xmax)
+    (coordinate-bounds (model-vertices) point3-x))
+  (define-values (ymin ymax)
+    (coordinate-bounds (model-vertices) point3-y))
+  (define-values (zmin zmax)
+    (coordinate-bounds (model-vertices) point3-z))
+  (check-equal? (list xmin xmax ymin ymax zmin zmax) '(-1 1 -2 2 -6 0))
+  (check-true
+   (ormap (lambda (vertex) (equal? (vertex-point vertex) (here)))
+          (model-vertices)))
+
+  ;; The helper restores the caller's wire diameter and turtle state. A new
+  ;; conductor starts on the existing top-center vertex rather than creating
+  ;; a coincident, disconnected attachment point.
+  (with-wire (move up 1))
+  (define final-edge (last (model-edges)))
+  (check-equal? (length (model-vertices)) 91)
+  (check-equal? (vertex-point (wire-edge-start final-edge)) (point3 0 0 0))
+  (check-equal? (wire-edge-diameter final-edge) (* 2 millimeter))
+  (check-false (wire-edge-conductivity final-edge)))
+
+(test-case "cuboid-wire-mesh requires its anchor to be a grid junction"
+  (reset-model!)
+  ;; Top centers X and Y, so both corresponding division counts must be even.
+  (check-exn
+   #rx"anchor must coincide with a wire-grid junction"
+   (lambda ()
+     (cuboid-wire-mesh size '(2 4 6) divisions '(3 4 6) anchor top)))
+  (check-equal? (model-edges) '())
+
+  ;; A corner lies on boundary planes and does not require even counts.
+  (cuboid-wire-mesh
+   size '(2 4 6)
+   divisions '(1 3 5)
+   anchor '(front left top))
+  (check-true
+   (ormap (lambda (vertex) (equal? (vertex-point vertex) (here)))
+          (model-vertices))))
+
+(test-case "cuboid-wire-mesh scales its derived diameter with its geometry"
+  (reset-model!)
+  (with-scale millimeter
+    (cuboid-wire-mesh
+     size '(2 4 6)
+     divisions '(2 4 6)
+     anchor top))
+
+  ;; Local unit pitch becomes one millimetre, including the equal-area
+  ;; diameter. Before this regression was fixed, only the coordinates scaled
+  ;; and every grid wire remained roughly 0.318 metre in diameter.
+  (for ([edge (in-list (model-edges))])
+    (check-= (wire-edge-diameter edge) (/ (* 1000 pi)) 1e-15))
+  (define-values (xmin xmax)
+    (coordinate-bounds (model-vertices) point3-x))
+  (define-values (_ymin _ymax)
+    (coordinate-bounds (model-vertices) point3-y))
+  (define-values (zmin zmax)
+    (coordinate-bounds (model-vertices) point3-z))
+  (check-equal? (list xmin xmax zmin zmax)
+                (list -1/1000 1/1000 -6/1000 0)))
+
+(test-case "cuboid-wire-mesh validates contextual settings"
+  (check-exn exn:fail:syntax?
+             (lambda () (expand #'(cuboid-wire-mesh divisions '(2 2 2)))))
+  (check-exn exn:fail:syntax?
+             (lambda () (expand #'(cuboid-wire-mesh size '(1 1 1)))))
+  (check-exn exn:fail:syntax?
+             (lambda ()
+               (expand
+                #'(cuboid-wire-mesh
+                   size '(1 1 1) divisions '(2 2 2) spacing 1))))
+  (reset-model!)
+  (check-exn exn:fail:contract?
+             (lambda ()
+               (cuboid-wire-mesh size '(0 1 1) divisions '(2 2 2))))
+  (check-exn exn:fail:contract?
+             (lambda ()
+               (cuboid-wire-mesh size '(1 1 1) divisions '(2 0 2))))
+  (check-equal? (model-edges) '()))
+
 (test-case "circular-wire-mesh draws shared ribs and rings without moving"
   (reset-model!)
   (move forward 3)

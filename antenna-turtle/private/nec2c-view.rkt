@@ -1554,6 +1554,7 @@
             #:height height))
 
 (define (show-radiation-comparison cases
+                                   #:view [view 'gain]
                                    #:component [component 'total]
                                    #:floor-db [floor-db -40]
                                    #:scale [radial-scale 'arrl]
@@ -1564,6 +1565,16 @@
                                    #:mesh-step [mesh-step 2]
                                    #:aspect-ratio [aspect-ratio 16/9]
                                    #:width [width 1400])
+  (unless (memq view '(gain polarization))
+    (raise-argument-error
+     'show-radiation-comparison
+     "(or/c 'gain 'polarization)" view))
+  (when (and (eq? view 'polarization) difference?)
+    (raise-arguments-error
+     'show-radiation-comparison
+     "difference rendering is not defined for the polarization view"
+     "view" view
+     "difference mode" difference?))
   (define show-comparison
     (with-handlers ([exn:fail?
                      (lambda (failure)
@@ -1573,6 +1584,7 @@
                         (exn-message failure)))])
       (dynamic-require opengl-view-path 'show-radiation-comparison)))
   (show-comparison cases
+                   #:view view
                    #:component component
                    #:floor-db floor-db
                    #:scale radial-scale

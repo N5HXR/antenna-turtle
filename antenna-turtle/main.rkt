@@ -10,6 +10,7 @@
          "private/nec2c-html-report.rkt"
          "private/nec2c-view.rkt"
          "private/material-dsl.rkt"
+         "private/material-catalog.rkt"
          "private/nec2c-dielectric.rkt"
          "private/nec2c-dielectric-dsl.rkt"
          "private/nec2c-result-json.rkt"
@@ -59,7 +60,6 @@
                    (except-in "private/solid-dsl.rkt" dielectric conductor lumped-element)
                    "private/solid-trace-dsl.rkt"
                    "private/solid-primitives.rkt"
-                   "private/material-catalog.rkt"
                    "private/simulation-profile.rkt"
                    "private/simulation-dsl.rkt"
                    "private/field-capture.rkt"
@@ -73,7 +73,6 @@
            (all-from-out "private/solid-dsl.rkt")
            (all-from-out "private/solid-trace-dsl.rkt")
            (all-from-out "private/solid-primitives.rkt")
-           (all-from-out "private/material-catalog.rkt")
            (all-from-out "private/simulation-profile.rkt")
            (all-from-out "private/simulation-dsl.rkt")
            (all-from-out "private/field-capture.rkt")
@@ -96,6 +95,7 @@
  (all-from-out "private/nec2c-view.rkt")
  (all-from-out "private/electrical-units.rkt")
  (all-from-out "private/material-dsl.rkt")
+ (all-from-out "private/material-catalog.rkt")
  (all-from-out "private/nec2c-dielectric.rkt")
  (all-from-out "private/nec2c-dielectric-dsl.rkt")
  (all-from-out "private/nec2c-result-json.rkt")
@@ -118,11 +118,13 @@
              mark-feed
              call-with-wire call-with-points call-with-scale call-from-here
              call-with-maximum-segment-length
+             call-with-conductivity
              call-with-warp call-with-surface call-with-reflection
              call-with-radial-repeat radial-iterations-value
              set-wire-coating! call-with-wire-coating
              model-has-wire-coatings?
              register-model-reset-hook! current-turtle-affine-transform
+             set-wire-diameter-for-geometry!
              current-turtle-event-handler current-wire-active?
              call-with-pen call-with-push)
  model
@@ -142,6 +144,7 @@
  with-pen
  with-scale
  with-max-length
+ with-conductivity
  with-push
  export-nec2c
  (struct-out segmentation-report)
@@ -541,18 +544,19 @@
          'model stx
          (string-append
           "expected setting/value pairs using title, frequency, max-length, "
-          "snaplen, nec2-patch-length, wire-diameter, impedance, ground, or height"))))
+          "snaplen, nec2-patch-length, wire-diameter, wire-material, "
+          "wire-conductivity, impedance, ground, or height"))))
   (define seen (make-hasheq))
   (define settings (make-hasheq))
   (for ([pair (in-list pairs)])
     (define key (syntax-e (car pair)))
     (unless (memq key '(title frequency max-length snaplen nec2-patch-length wire-diameter
-                              impedance ground height))
+                              wire-material wire-conductivity impedance ground height))
       (raise-syntax-error
        'model
        (string-append
         "expected title, frequency, max-length, snaplen, nec2-patch-length, wire-diameter, "
-        "impedance, ground, or height")
+        "wire-material, wire-conductivity, impedance, ground, or height")
        stx
        (car pair)))
     (when (hash-ref seen key #f)
@@ -560,6 +564,12 @@
        'model "setting may be specified only once" stx (car pair)))
     (hash-set! seen key #t)
     (hash-set! settings key (cdr pair)))
+  (when (and (hash-has-key? settings 'wire-material)
+             (hash-has-key? settings 'wire-conductivity))
+    (raise-syntax-error
+     'model
+     "use either wire-material or wire-conductivity, not both"
+     stx))
   ;; A model form is declarative rather than order-sensitive. Apply frequency
   ;; before wavelength-derived height, segmentation, and snapping expressions
   ;; regardless of the pair order written by the programmer.
@@ -567,7 +577,7 @@
     (filter
      values
      (for/list ([key '(title frequency ground height max-length snaplen nec2-patch-length
-                            wire-diameter impedance)])
+                            wire-diameter wire-material wire-conductivity impedance)])
        (define value (hash-ref settings key #f))
        (and value
             (case key
@@ -580,6 +590,8 @@
               [(nec2-patch-length)
                #`(maximum-nec2c-patch-length #,value)]
               [(wire-diameter) #`(wire-diameter #,value)]
+              [(wire-material) #`(wire-material #,value)]
+              [(wire-conductivity) #`(wire-conductivity #,value)]
               [(impedance)     #`(model-impedance #,value)])))))
   #`(begin #,@forms))
 
@@ -606,6 +618,9 @@
 
 (define-syntax-rule (with-max-length length body ...)
   (call-with-maximum-segment-length length (lambda () body ...)))
+
+(define-syntax-rule (with-conductivity conductivity body ...)
+  (call-with-conductivity conductivity (lambda () body ...)))
 
 (define-syntax-rule (with-push body ...)
   (from-here body ...))

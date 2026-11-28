@@ -6,6 +6,7 @@
          racket/list
          racket/math
          racket/port
+         racket/runtime-path
          racket/string
          racket/system
          typed/opengl
@@ -30,6 +31,8 @@
          ;; Experimental viewers reuse the production surface construction
          ;; without sharing its increasingly specialized window layout.
          build-radiation-pict3d)
+
+(define-runtime-path polarization-view-path "polarization-poc.rkt")
 
 ;; MMANA retains its conventional nonlinear stop distribution. The other
 ;; ramps share a gentler perceptual curve: fine resolution through the first
@@ -1176,6 +1179,48 @@
       (list (+ (abs (log tile-aspect)) (* 0.18 empty)) rows columns)))
   (define best (argmin first candidates))
   (values (second best) (third best)))
+
+(define polarization-comparison-legend-canvas%
+  (class canvas%
+    (init-field color-at)
+    (super-new [min-height 66]
+               [stretchable-width #t]
+               [stretchable-height #f]
+               [style '(border)])
+    (define/override (on-paint)
+      (define dc (send this get-dc))
+      (define-values (width _height) (send this get-client-size))
+      (define left 12)
+      (define right (max (+ left 1) (- width 12)))
+      (define top 23)
+      (define bar-height 16)
+      (send dc set-background (make-object color% 248 248 248))
+      (send dc clear)
+      (send dc set-pen "transparent" 0 'transparent)
+      (for ([x (in-range left right)])
+        (define fraction (/ (- x left) (max 1 (- right left 1))))
+        (define rgb (color-at (- (* 2.0 fraction) 1.0)))
+        (send dc set-brush
+              (make-object color%
+                           (exact-round (first rgb))
+                           (exact-round (second rgb))
+                           (exact-round (third rgb)))
+              'solid)
+        (send dc draw-rectangle x top 1 bar-height))
+      (send dc set-text-foreground "black")
+      (send dc draw-text "LHCP  -1" left 3)
+      (define center-label "LINEAR  0")
+      (define-values (center-width _ch _cd _cs)
+        (send dc get-text-extent center-label))
+      (send dc draw-text center-label
+            (- (/ width 2) (/ center-width 2)) 3)
+      (define right-label "RHCP  +1")
+      (define-values (right-width _rh _rd _rs)
+        (send dc get-text-extent right-label))
+      (send dc draw-text right-label (- right right-width) 3)
+      (send dc draw-text
+            "signed circularity · brightness follows each pattern's gain"
+            left (+ top bar-height 4)))))
 
 (define (component-peak grid component)
   (define gains
@@ -3028,7 +3073,8 @@
 
 (define (comparison-data cases component floor-db radial-scale palette
                          color-step mesh-step drag-mesh-step
-                         difference-mode difference-range-db)
+                         difference-mode difference-range-db
+                         polarization-color-maker)
   (define difference? (and difference-mode #t))
   (define surface-difference? (eq? difference-mode 'surface))
   (define local-peaks
@@ -3050,10 +3096,14 @@
                        reference-grid
                        candidate-grid))
       (define color-at
-        (and difference? (positive? index)
-             (difference-color-function
-              reference-grid candidate-grid component
-              effective-difference-range-db)))
+        (cond
+          [polarization-color-maker
+           (polarization-color-maker candidate-grid)]
+          [(and difference? (positive? index))
+           (difference-color-function
+            reference-grid candidate-grid component
+            effective-difference-range-db)]
+          [else #f]))
       (define radius-at
         (and surface-difference? (positive? index)
              (difference-radius-function
@@ -3099,6 +3149,7 @@
           who "(or/c #f #t 'color 'surface)" value)]))
 
 (define (show-radiation-comparison cases
+                                   #:view [view 'gain]
                                    #:component [component 'total]
                                    #:floor-db [floor-db -40]
                                    #:scale [radial-scale 'arrl]
@@ -3110,8 +3161,18 @@
                                    #:aspect-ratio [aspect-ratio 16/9]
                                    #:width [width 1400])
   (validate-comparison-cases 'show-radiation-comparison cases)
+  (unless (memq view '(gain polarization))
+    (raise-argument-error
+     'show-radiation-comparison
+     "(or/c 'gain 'polarization)" view))
   (define difference-mode
     (normalize-difference-mode 'show-radiation-comparison difference?))
+  (when (and (eq? view 'polarization) difference-mode)
+    (raise-arguments-error
+     'show-radiation-comparison
+     "difference rendering is not defined for the polarization view"
+     "view" view
+     "difference mode" difference?))
   (unless (or (eq? difference-range-db 'auto)
               (and (real? difference-range-db)
                    (positive? difference-range-db)))
@@ -3132,8 +3193,25 @@
                           "exact-positive-integer?" width))
   (validate-radial-scale 'show-radiation-comparison radial-scale)
   (validate-color-step 'show-radiation-comparison color-step)
+  (define polarization-color-maker
+    (and (eq? view 'polarization)
+         (dynamic-require polarization-view-path
+                          'make-polarization-color-at)))
+  (define polarization-legend-color
+    (and (eq? view 'polarization)
+         (dynamic-require polarization-view-path
+                          'signed-circularity-color)))
+  ;; Match the single-pattern polarization view: polarization is painted on
+  ;; total-gain geometry using the ARRL radial scale. Gain-only styling
+  ;; keywords remain accepted so callers can switch views without rebuilding
+  ;; an argument list.
+  (define rendered-component
+    (if (eq? view 'polarization) 'total component))
+  (define rendered-radial-scale
+    (if (eq? view 'polarization) 'arrl radial-scale))
   (define color-stops
-    (resolve-palette 'show-radiation-comparison palette))
+    (and (eq? view 'gain)
+         (resolve-palette 'show-radiation-comparison palette)))
   ;; The drag proxy is projected and drawn in 2-D rather than sent through a
   ;; second OpenGL scene. It samples the same gain grid but carries only a
   ;; sparse set of latitude/longitude polylines.
@@ -3141,9 +3219,11 @@
     (min 20 (max 10 (* 4 mesh-step))))
   (define-values (local-peaks shared-peak scene-data shared-radius
                               effective-difference-range-db)
-    (comparison-data cases component floor-db radial-scale palette
+    (comparison-data cases rendered-component floor-db
+                     rendered-radial-scale palette
                      color-step mesh-step drag-mesh-step
-                     difference-mode difference-range-db))
+                     difference-mode difference-range-db
+                     polarization-color-maker))
   (define height (max 1 (exact-round (/ width aspect-ratio))))
   (define-values (rows columns)
     (comparison-layout (length cases) width height
@@ -3171,14 +3251,19 @@
          [spacing 0]
          [stretchable-width #t]
          [stretchable-height #f]))
-  (define legend
-    (new horizontal-legend-canvas%
+  (define gain-legend
+    (and (eq? view 'gain)
+         (new horizontal-legend-canvas%
+              [parent legend-panel]
+              [radial-scale radial-scale]
+              [palette palette]
+              [color-stops color-stops]
+              [peak-gain shared-peak]
+              [color-step color-step])))
+  (when (eq? view 'polarization)
+    (new polarization-comparison-legend-canvas%
          [parent legend-panel]
-         [radial-scale radial-scale]
-         [palette palette]
-         [color-stops color-stops]
-         [peak-gain shared-peak]
-         [color-step color-step]))
+         [color-at polarization-legend-color]))
   (define difference-legend
     (and difference-mode
          (new difference-legend-canvas%
@@ -3258,9 +3343,11 @@
      (define-values (new-local-peaks new-shared-peak
                                     new-scene-data new-shared-radius
                                     new-effective-difference-range-db)
-       (comparison-data new-cases component floor-db radial-scale palette
+       (comparison-data new-cases rendered-component floor-db
+                        rendered-radial-scale palette
                         color-step mesh-step drag-mesh-step
-                        difference-mode difference-range-db))
+                        difference-mode difference-range-db
+                        polarization-color-maker))
      (queue-in-eventspace
       eventspace
       (lambda ()
@@ -3277,7 +3364,8 @@
                 (first data) (fourth data) new-shared-radius)
           (send proxy replace-polylines
                 (second data) (fourth data) new-shared-radius))
-        (send legend set-peak-gain new-shared-peak)
+        (when gain-legend
+          (send gain-legend set-peak-gain new-shared-peak))
         (when difference-legend
           (send difference-legend set-range-db
                 new-effective-difference-range-db))

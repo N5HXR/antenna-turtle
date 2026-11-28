@@ -150,6 +150,28 @@
              (coordinate-string who tangent)
              (coordinate-string who (em-material-electric-conductivity material)))))
 
+(define (write-wire-conductivity-cards out who edges extra-wire-tags?)
+  (define lossy-edges
+    (filter wire-edge-conductivity edges))
+  (cond
+    [(null? lossy-edges) (void)]
+    ;; Tag zero applies to every wire segment.  Use the compact form only when
+    ;; every authored edge shares one conductivity and the exporter has not
+    ;; introduced separate lumped-element fixture wires.
+    [(and (not extra-wire-tags?)
+          (= (length lossy-edges) (length edges))
+          (for/and ([edge (in-list (cdr lossy-edges))])
+            (= (wire-edge-conductivity edge)
+               (wire-edge-conductivity (car lossy-edges)))))
+     (fprintf out "LD 5 0 0 0 ~a\n"
+              (coordinate-string who
+                                 (wire-edge-conductivity (car lossy-edges))))]
+    [else
+     (for ([edge (in-list lossy-edges)])
+       (fprintf out "LD 5 ~a 0 0 ~a\n"
+                (wire-edge-id edge)
+                (coordinate-string who (wire-edge-conductivity edge))))]))
+
 (define (nec2c-edge-segment-count edge max-length)
   (if (wire-port-edge? edge)
       1
@@ -601,6 +623,11 @@
   (when (pair? wire-loads)
     (fprintf out "CM ~a inline NEC lumped element~a\n"
              (length wire-loads) (if (= (length wire-loads) 1) "" "s")))
+  (define lossy-wire-count
+    (count wire-edge-conductivity (model-edges)))
+  (when (positive? lossy-wire-count)
+    (fprintf out "CM ~a finite-conductivity wire edge~a (NEC LD 5)\n"
+             lossy-wire-count (if (= lossy-wire-count 1) "" "s")))
   (fprintf out "CE\n")
   (write-surface-patches out who surface-geometry)
   (for ([edge (in-list (model-edges))])
@@ -647,6 +674,8 @@
        dielectric-resource))
     (fprintf out "DF \"~a\"\n" dielectric-resource))
   (write-ground-card out who)
+  (write-wire-conductivity-cards
+   out who (model-edges) (pair? wire-loads))
   (for ([edge (in-list (model-edges))])
     (write-wire-coating-card out who edge))
   (for ([load (in-list wire-loads)])

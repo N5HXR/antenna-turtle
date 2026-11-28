@@ -125,7 +125,7 @@ raco pkg remove antenna-turtle
 #lang antenna-turtle
 
 ;; Defaults: 14.1 MHz, wavelength/20 segmentation, wavelength/1e6 vertex
-;; snapping, 1 mm wire, 50-ohm reference impedance, and the title
+;; snapping, 1 mm PEC wire, 50-ohm reference impedance, and the title
 ;; "Turtle Antenna".
 (with-wire
   (spread forward half-wave feed center))
@@ -139,6 +139,7 @@ Override any subset declaratively when needed:
        max-length {wavelength / 100}
        snaplen {wavelength / 1000000}
        wire-diameter {2 * millimeter}
+       wire-material copper
        impedance 50)
 ```
 
@@ -254,6 +255,9 @@ For example:
 (wire-on)
 (wire-coating material dielectric-material diameter outside-diameter)
 (wire-coating-off)
+(wire-material material)
+(wire-conductivity siemens-per-metre)
+(with-conductivity siemens-per-metre body ...)
 (with-wire-coating material dielectric-material
                     diameter outside-diameter
   body ...)
@@ -267,6 +271,7 @@ For example:
 (cylinder radius)
 (dome radius)  (bowl radius)
 (catenary span sag)
+(cuboid-wire-mesh size dimensions divisions counts [anchor placement])
 (circular-wire-mesh diameter ribcount ringcount)
 (circular-wire-mesh outer-diameter inner-diameter ribcount ringcount)
 (circular-shielded-reflector diameter height ribcount ringcount
@@ -324,6 +329,12 @@ height-field shorthand:
 Both forms restore the complete entry turtle state like `from-here`. They map
 emitted vertices, so curved paths must contain enough explicit points to
 approximate the desired surface.
+
+`cuboid-wire-mesh` builds a connected six-face grid using explicit cell counts
+and the same directional anchor vocabulary as `cuboid`. Centered anchor axes
+require even counts, guaranteeing that the current turtle position is a real
+grid junction. The helper derives one uniform equal-area wire diameter and
+inherits the current wire material or conductivity.
 
 `paraboloid`, `dome`, `bowl`, and `catenary` construct common height fields.
 The catenary hangs along local X between supports separated by `span`, with its
@@ -469,6 +480,23 @@ unequal-coating junctions retain NEC2C's strict default policy. Research models
 may explicitly enable NEC2C's experimental junction treatment with
 `(set-coating-experimental #t)`; this is an execution setting, not model
 geometry, and remains in effect until disabled.
+
+Finite-conductivity NEC2C wires use the same conductor catalog as solid
+models. Select a named material, supply an empirical conductivity in S/m, or
+scope a temporary value. Each authored edge captures the active value, and
+NEC2C export emits the corresponding `LD 5` surface-impedance load:
+
+```racket
+(model wire-material copper)
+(wire-material steel)
+(with-conductivity 5.8e7
+  (with-wire (forward half-wave)))
+(wire-conductivity #f) ; return subsequent wires to PEC
+```
+
+`with-conductivity` nests normally and restores the enclosing material after
+normal or exceptional exit. NEC2C needs bulk conductivity in siemens per metre
+in addition to the physical diameter supplied by `wire-diameter`.
 
 `with-points` similarly requires wire-off and no active point trace. It starts
 an independent point path and terminates that path on normal or exceptional
@@ -680,6 +708,12 @@ returns transparent Racket values without printing or opening a window:
  (list (radiation-case "baseline" sphere)
        (radiation-case "revision" revised-sphere))
  #:aspect-ratio 16/9)
+
+;; Compare the same patterns using signed-circularity polarization colors.
+(show-radiation-comparison
+ (list (radiation-case "baseline" sphere)
+       (radiation-case "revision" revised-sphere))
+ #:view 'polarization)
 
 (show-radiation-cut-comparison
  (list (radiation-case "baseline" sphere)

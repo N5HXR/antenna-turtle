@@ -82,6 +82,24 @@ REPORT
   (check-equal? (radiation-case-title case) "comparison title")
   (check-equal? (radiation-case-grid case) 'grid-placeholder))
 
+(test-case "NEC2C execution-engine settings validate and parameterize"
+  (check-eq? (nec2c-wire-engine) 'nec2)
+  (check-eq? (nec2c-ground-engine) 'nec2)
+  (check-eq? (nec2c-model-check) 'warn)
+  (parameterize ([nec2c-wire-engine 'nec4ish]
+                 [nec2c-ground-engine 'auto]
+                 [nec2c-model-check 'strict])
+    (check-eq? (nec2c-wire-engine) 'nec4ish)
+    (check-eq? (nec2c-ground-engine) 'auto)
+    (check-eq? (nec2c-model-check) 'strict))
+  (check-eq? (nec2c-wire-engine) 'nec2)
+  (check-exn #rx"nec2c-wire-engine"
+             (lambda () (nec2c-wire-engine 'nec4)))
+  (check-exn #rx"nec2c-ground-engine"
+             (lambda () (nec2c-ground-engine 'sommerfeld)))
+  (check-exn #rx"nec2c-model-check"
+             (lambda () (nec2c-model-check 'maybe))))
+
 (test-case "visualization handles forward update and window lifecycle actions"
   (define updated #f)
   (define visible? #t)
@@ -267,6 +285,26 @@ REPORT
 (define integration-executable
   (or (getenv "NEC2C")
       (find-executable-path "nec2c")))
+
+(when integration-executable
+  (define capabilities
+    (probe-nec2c-capabilities #:executable integration-executable))
+  (when (and capabilities
+             (nec2c-capability-supports?
+              capabilities 'wire-engine 'nec4ish))
+    (test-case "NEC2C-N5HXR NEC4ish wire engine executes through the common runner"
+      (reset-model!)
+      (model frequency 299.792458 max-length 0.024)
+      (wire-on)
+      (spread forward 0.5 feed center)
+      (nec2c-executable integration-executable)
+      (parameterize ([nec2c-wire-engine 'nec4ish])
+        (define result (nec2c-measure-impedance))
+        (check-equal? (length (nec2c-impedance-result-samples result)) 1)
+        (check-true
+         (complex?
+          (nec2c-feedpoint-sample-impedance
+           (first (nec2c-impedance-result-samples result)))))))))
 
 (when integration-executable
   (test-case "NEC2C round trip supports named quadrature feeds and data renderers"

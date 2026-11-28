@@ -32,13 +32,13 @@
 
 (qfhloop 0.524)
 
-(export-mmana "../mmana/qfh.maa")
+;(export-mmana "../mmana/qfh.maa")
 
 (show-model)
 
 (define pattern (nec2c-radiation-grid #:frequency 915 #:theta-step 1 #:phi-step 1))
 
-(show-radiation-pattern-opengl pattern #:palette 'electric)
+(show-radiation-pattern-opengl pattern)
 
 (show-return-loss-sweep
  (nec2c-vswr-sweep 500 1400 #:steps 201))

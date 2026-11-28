@@ -36,16 +36,10 @@
    (define pattern (nec2c-radiation-grid))
    (show-radiation-pattern-opengl pattern #:view 'polarization)
 
-   (define fields
-     (nec2c-near-field-planes
-      #:planes
-      (list
-       (near-field-section
-        #:plane 'xy
-        #:position {1/2 * wavelength}
-        #:samples '(101 101)))))
+   ;(html-auto-report "helix.html")
 
-   (show-near-field fields #:view 'polarization)]
+   ;(show-near-field fields #:view 'polarization)
+   ]
 
   ;; optimizing pitch
   [(eq? view 'opt-pitch)

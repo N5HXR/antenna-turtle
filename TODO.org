@@ -112,6 +112,33 @@ with lazily cached NF2FF radiated power. Report watts, percent, and dB relative
 to incident power. Treat conducting-sheet loss as a conservation remainder
 that explicitly includes numerical closure error.
 
+* TODO Reuse identical NEC2C analyses and complete dielectric power reporting
+This is primarily valuable for expensive NEC2C dielectric and other long-running
+models; do not prioritize it as routine simulation work.
+
+Add a transparent, session-local cache of the last successful NEC2C analysis.
+Reuse a result only when a content fingerprint proves that the generated NEC
+deck, staged dielectric resources, analysis cards, executable identity/version,
+solver controls, wire/ground engines, and model-check settings are identical.
+Changing geometry, materials, mesh, frequency, angular resolution, or any
+backend setting must miss the cache. Never cache failed or interrupted runs,
+and print a concise notice when a result is reused. Exact reuse is the first
+scope: different RP angular grids remain different analyses, and preserving a
+solved operator for new postprocessing requests is a separate future feature.
+
+Extend source-free ~power-report~ calls with the same NEC2C execution controls
+as ~nec2c-radiation-grid~, including ~#:dielectrics?~,
+~#:dielectric-solver~, ~#:solver-tolerance~, ~#:solver-iterations~,
+~#:keep-artifacts?~, and ~#:timeout~. Passing an already calculated pattern
+must remain the explicit, preferred way to avoid a second solve.
+
+Complete the NEC2C power path by propagating N5HXR's
+~dielectric_absorbed_w~ result into ~nec2c-power-budget~ and
+~power-metrics~. Display it as a separate ~Dielectric loss~ row and subtract it
+before reporting the true numerical power-balance residual; currently that
+physical absorption is incorrectly folded into ~Unaccounted / integration
+error~.
+
 * TODO Add planar turtle-path extrusion
 Inside a future path context, constrain turtle movement to the local XY plane,
 reject any Z displacement, close the traced outline, and extrude it along
